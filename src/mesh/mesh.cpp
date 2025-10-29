@@ -669,9 +669,4 @@ void Mesh::AddCoordinatesAndPhysics(ParameterInput *pinput) {
     }
   }
 
-  // Call RefinementCriteria constructor to enroll various criteria
-  // can only be done after the physics modules have been constructed
-  if (adaptive) {
-    pmr->pmrc = new RefinementCriteria(this, pinput);
-  }
 }

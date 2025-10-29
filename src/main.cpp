@@ -36,6 +36,7 @@
 #include "globals.hpp"
 #include "parameter_input.hpp"
 #include "mesh/mesh.hpp"
+#include "mesh/mesh_refinement.hpp"
 #include "outputs/outputs.hpp"
 #include "driver/driver.hpp"
 #include "utils/utils.hpp"
@@ -328,6 +329,13 @@ int main(int argc, char *argv[]) {
                                                      single_file_per_rank);
     restartfile.Close(single_file_per_rank);
   }
+
+  // Construct MeshRefinement object only after physics modules have been added because
+  // size of buffers for load balancing, refinement criteria, etc. depend on physics
+  if (pmesh->multilevel) {
+    pmesh->pmr = new MeshRefinement(pmesh, pinput);
+  }
+  
   //--- Step 6. --------------------------------------------------------------------------
   // Construct Driver and Outputs. Actual outputs (including initial conditions) are made
   // in Driver.Initialize(). Add wall clock timer to Driver if necessary.
