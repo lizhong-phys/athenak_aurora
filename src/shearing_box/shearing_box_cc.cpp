@@ -83,7 +83,7 @@ TaskStatus ShearingBoxCC::PackAndSendCC(DvceArray5D<Real> &a, ReconstructionMeth
           a_(j) = a(mm,v,k,j,(ie+1)+i);
         });
       }
-      member.team_barrier();
+      // member.team_barrier();
 
       // compute fractional offset
       Real eps = fmod(yshear_,(mbsize.d_view(mm).dx2))/(mbsize.d_view(mm).dx2);
@@ -105,7 +105,7 @@ TaskStatus ShearingBoxCC::PackAndSendCC(DvceArray5D<Real> &a, ReconstructionMeth
         default:
           break;
       }
-      member.team_barrier();
+      // member.team_barrier();
 
       // update data in send buffer with fracational shift
       par_for_inner(member, js, je, [&](const int j) {
@@ -375,12 +375,12 @@ TaskStatus ShearingBoxCC::RecvAndUnpackCC(DvceArray5D<Real> &a) {
         par_for_inner(member, 0, nj, [&](const int j) {
           a(mm,v,k,j,i) = rbuf[n].vars(m,j,v,k,i);
         });
-        member.team_barrier();
+        // member.team_barrier();
       } else {
         par_for_inner(member, 0, nj, [&](const int j) {
           a(mm,v,k,j,(ie+1)+i) = rbuf[n].vars(m,j,v,k,i);
         });
-        member.team_barrier();
+        // member.team_barrier();
       }
     });
   }

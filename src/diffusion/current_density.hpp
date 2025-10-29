@@ -35,14 +35,14 @@ void CurrentDensity(TeamMember_t const &member, const int m, const int k, const 
     j2(i) = -(b.x3f(m,k,j,i) - b.x3f(m,k,j,i-1))/size.dx1;
     j3(i) =  (b.x2f(m,k,j,i) - b.x2f(m,k,j,i-1))/size.dx1;
   });
-  member.team_barrier();
+  // member.team_barrier();
 
   if (b.x1f.extent_int(2) > 1) {  // proxy for nx2gt1: 2D problems
     par_for_inner(member, il, iu, [&](const int i) {
       j1(i) += (b.x3f(m,k,j,i) - b.x3f(m,k,j-1,i))/size.dx2;
       j3(i) -= (b.x1f(m,k,j,i) - b.x1f(m,k,j-1,i))/size.dx2;
     });
-    member.team_barrier();
+    // member.team_barrier();
   }
 
   if (b.x1f.extent_int(1) > 1) {  // proxy for nx3gt1: 3D problems

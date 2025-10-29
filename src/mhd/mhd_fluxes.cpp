@@ -112,7 +112,7 @@ void MHD::CalculateFluxes(Driver *pdriver, int stage) {
         break;
     }
     // Sync all threads in the team so that scratch memory is consistent
-    member.team_barrier();
+    // member.team_barrier();
 
     // compute fluxes over [is,ie+1].  MHD RS also computes electric fields, where
     // (IBY) component of flx = E_{z} = -(v x B)_{z} = -(v1*b2 - v2*b1)
@@ -143,7 +143,7 @@ void MHD::CalculateFluxes(Driver *pdriver, int stage) {
     } else if constexpr (rsolver_method_ == MHD_RSolver::hlle_gr) {
       HLLE_GR(member,eos,indcs,size,coord,m,k,j,il,iu,IVX,wl,wr,bl,br,bx,flx1,e31,e21);
     }
-    member.team_barrier();
+    // member.team_barrier();
 
     // calculate fluxes of scalars (if any)
     if (nvars > nmhd_) {
@@ -225,7 +225,7 @@ void MHD::CalculateFluxes(Driver *pdriver, int stage) {
           default:
             break;
         }
-        member.team_barrier();
+        // member.team_barrier();
 
         // compute fluxes over [js,je+1].  MHD RS also computes electric fields, where
         // (IBY) component of flx = E_{x} = -(v x B)_{x} = -(v2*b3 - v3*b2)
@@ -265,7 +265,7 @@ void MHD::CalculateFluxes(Driver *pdriver, int stage) {
             HLLE_GR(member,eos,indcs,size,coord,
                     m,k,j,is-1,ie+1,IVY,wl,wr,bl,br,by,flx2,e12,e32);
           }
-          member.team_barrier();
+          // member.team_barrier();
         }
 
         // calculate fluxes of scalars (if any)
@@ -345,7 +345,7 @@ void MHD::CalculateFluxes(Driver *pdriver, int stage) {
           default:
             break;
         }
-        member.team_barrier();
+        // member.team_barrier();
 
         // compute fluxes over [ks,ke+1].  MHD RS also computes electric fields, where
         // (IBY) component of flx = E_{y} = -(v x B)_{y} = -(v3*b1 - v1*b3)
@@ -385,7 +385,7 @@ void MHD::CalculateFluxes(Driver *pdriver, int stage) {
             HLLE_GR(member,eos,indcs,size,coord,
                     m,k,j,is-1,ie+1,IVZ,wl,wr,bl,br,bz,flx3,e23,e13);
           }
-          member.team_barrier();
+          // member.team_barrier();
         }
 
         // calculate fluxes of scalars (if any)

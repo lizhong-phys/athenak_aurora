@@ -120,7 +120,7 @@ void MeshBoundaryValuesCC::FillCoarseInBndryCC(DvceArray5D<Real> &a,
           }
         });
       }
-      tmember.team_barrier();
+      // tmember.team_barrier();
     });
   }
   return;
@@ -204,7 +204,7 @@ void MeshBoundaryValuesCC::ProlongateCC(DvceArray5D<Real> &a, DvceArray5D<Real> 
         }
       });
     }
-    tmember.team_barrier();
+    // tmember.team_barrier();
   });
   return;
 }
@@ -302,7 +302,7 @@ void MeshBoundaryValuesFC::FillCoarseInBndryFC(DvceFaceFld4D<Real> &b,
           }
         });
       }
-      tmember.team_barrier();
+      // tmember.team_barrier();
     });
   }
   return;
@@ -373,7 +373,7 @@ void MeshBoundaryValuesFC::ProlongateFC(DvceFaceFld4D<Real> &b, DvceFaceFld4D<Re
         }
       });
     }
-    tmember.team_barrier();
+    // tmember.team_barrier();
   });}
 
   // Now prolongate b.x1f/b.x2f/b.x3f at interior fine cells using the 2nd-order
@@ -426,7 +426,7 @@ void MeshBoundaryValuesFC::ProlongateFC(DvceFaceFld4D<Real> &b, DvceFaceFld4D<Re
         }
       });
     }
-    tmember.team_barrier();
+    // tmember.team_barrier();
   });}
 
   return;
