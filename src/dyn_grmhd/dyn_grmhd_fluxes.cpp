@@ -120,7 +120,7 @@ TaskStatus DynGRMHDPS<EOSPolicy, ErrorPolicy>::CalcFluxes(Driver *pdriver, int s
         break;
     }
     // Sync all threads in the team so that scratch memory is consistent
-    // member.team_barrier();
+    member.team_barrier();
 
     // compute fluxes over [is,ie+1]
     auto &dyn_eos = dyn_eos_;
@@ -144,7 +144,7 @@ TaskStatus DynGRMHDPS<EOSPolicy, ErrorPolicy>::CalcFluxes(Driver *pdriver, int s
                 wl, wr, bl, br, bx, nhyd_, nscal_, adm_,
                 flx1, e31, e21);
     }
-    // member.team_barrier();
+    member.team_barrier();
 
     // Calculate fluxes of scalars (if any)
     if (nvars > nhyd) {
@@ -158,7 +158,7 @@ TaskStatus DynGRMHDPS<EOSPolicy, ErrorPolicy>::CalcFluxes(Driver *pdriver, int s
         });
       }
     }
-    // member.team_barrier();
+    member.team_barrier();
   });
 
   //--------------------------------------------------------------------------------------
@@ -232,7 +232,7 @@ TaskStatus DynGRMHDPS<EOSPolicy, ErrorPolicy>::CalcFluxes(Driver *pdriver, int s
             break;
         }
         // Sync all threads in the team so that scratch memory is consistent
-        // member.team_barrier();
+        member.team_barrier();
 
         // compute fluxes over [js,je+1]
         auto &dyn_eos = dyn_eos_;
@@ -256,7 +256,7 @@ TaskStatus DynGRMHDPS<EOSPolicy, ErrorPolicy>::CalcFluxes(Driver *pdriver, int s
                       wl, wr, bl, br, by, nhyd_, nscal_, adm_, flx2, e12, e32);
           }
         }
-        // member.team_barrier();
+        member.team_barrier();
 
         // Calculate fluxes of scalars (if any)
         if (nvars > nhyd) {
@@ -271,7 +271,7 @@ TaskStatus DynGRMHDPS<EOSPolicy, ErrorPolicy>::CalcFluxes(Driver *pdriver, int s
           }
         }
       } // end of loop over j
-      // member.team_barrier();
+      member.team_barrier();
     });
   }
 
@@ -340,7 +340,7 @@ TaskStatus DynGRMHDPS<EOSPolicy, ErrorPolicy>::CalcFluxes(Driver *pdriver, int s
             break;
         }
         // Sync all threads in the team so that scratch memory is consistent
-        // member.team_barrier();
+        member.team_barrier();
 
         // compute fluxes over [ks,ke+1]
         auto &dyn_eos = dyn_eos_;
@@ -364,7 +364,7 @@ TaskStatus DynGRMHDPS<EOSPolicy, ErrorPolicy>::CalcFluxes(Driver *pdriver, int s
                       wl, wr, bl, br, bz, nhyd_, nscal_, adm_, flx3, e23, e13);
           }
         }
-        // member.team_barrier();
+        member.team_barrier();
 
         // Calculate fluxes of scalars (if any)
         if (nvars > nhyd) {
@@ -379,7 +379,7 @@ TaskStatus DynGRMHDPS<EOSPolicy, ErrorPolicy>::CalcFluxes(Driver *pdriver, int s
           }
         }
       } // end of loop over j
-      // member.team_barrier();
+      member.team_barrier();
     });
   }
 

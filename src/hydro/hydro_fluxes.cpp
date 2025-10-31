@@ -98,7 +98,7 @@ void Hydro::CalculateFluxes(Driver *pdriver, int stage) {
         break;
     }
     // Sync all threads in the team so that scratch memory is consistent
-    // member.team_barrier();
+    member.team_barrier();
 
     // compute fluxes over [is,ie+1]
     // NOTE(@pdmullen): Capture variables prior to if constexpr.  Required for cuda 11.6+.
@@ -128,7 +128,7 @@ void Hydro::CalculateFluxes(Driver *pdriver, int stage) {
     } else if constexpr (rsolver_method_ == Hydro_RSolver::hlle_gr) {
       HLLE_GR(member, eos, indcs, size, coord, m, k, j, il, iu, IVX, wl, wr, flx1);
     }
-    // member.team_barrier();
+    member.team_barrier();
 
     // calculate fluxes of scalars (if any)
     if (nvars > nhyd_) {
@@ -196,7 +196,7 @@ void Hydro::CalculateFluxes(Driver *pdriver, int stage) {
           default:
             break;
         }
-        // member.team_barrier();
+        member.team_barrier();
 
         // compute fluxes over [js,je+1].  RS returns flux in input wr array
         if (j>jl) {
@@ -227,7 +227,7 @@ void Hydro::CalculateFluxes(Driver *pdriver, int stage) {
           } else if constexpr (rsolver_method_ == Hydro_RSolver::hlle_gr) {
             HLLE_GR(member, eos, indcs, size, coord, m, k, j, il, iu, IVY, wl, wr, flx2);
           }
-          // member.team_barrier();
+          member.team_barrier();
         }
 
         // calculate fluxes of scalars (if any)
@@ -291,7 +291,7 @@ void Hydro::CalculateFluxes(Driver *pdriver, int stage) {
           default:
             break;
         }
-        // member.team_barrier();
+        member.team_barrier();
 
         // compute fluxes over [ks,ke+1].  RS returns flux in input wr array
         if (k>kl) {
@@ -322,7 +322,7 @@ void Hydro::CalculateFluxes(Driver *pdriver, int stage) {
           } else if constexpr (rsolver_method_ == Hydro_RSolver::hlle_gr) {
             HLLE_GR(member, eos, indcs, size, coord, m, k, j, il, iu, IVZ, wl, wr, flx3);
           }
-          // member.team_barrier();
+          member.team_barrier();
         }
 
         // calculate fluxes of scalars (if any)

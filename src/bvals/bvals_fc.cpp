@@ -178,7 +178,7 @@ TaskStatus MeshBoundaryValuesFC::PackAndSendFC(DvceFaceFld4D<Real> &b,
           }
         }
       } // end if-neighbor-exists block
-      // tmember.team_barrier();
+      tmember.team_barrier();
     }
   }); // end par_for_outer
   }
@@ -352,7 +352,7 @@ TaskStatus MeshBoundaryValuesFC::RecvAndUnpackFC(DvceFaceFld4D<Real> &b,
             }
           });
         }
-        // tmember.team_barrier();
+        tmember.team_barrier();
       }  // end if-neighbor-exists block
     }
   });  // end par_for_outer

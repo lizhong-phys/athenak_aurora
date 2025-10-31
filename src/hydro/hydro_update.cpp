@@ -55,7 +55,7 @@ TaskStatus Hydro::RKUpdate(Driver *pdriver, int stage) {
     par_for_inner(member, is, ie, [&](const int i) {
       divf(i) = (flx1(m,n,k,j,i+1) - flx1(m,n,k,j,i))/mbsize.d_view(m).dx1;
     });
-    // member.team_barrier();
+    member.team_barrier();
 
     // Add dF2/dx2
     // Fluxes must be summed in pairs to symmetrize round-off error in each dir
@@ -63,7 +63,7 @@ TaskStatus Hydro::RKUpdate(Driver *pdriver, int stage) {
       par_for_inner(member, is, ie, [&](const int i) {
         divf(i) += (flx2(m,n,k,j+1,i) - flx2(m,n,k,j,i))/mbsize.d_view(m).dx2;
       });
-      // member.team_barrier();
+      member.team_barrier();
     }
 
     // Add dF3/dx3
@@ -72,7 +72,7 @@ TaskStatus Hydro::RKUpdate(Driver *pdriver, int stage) {
       par_for_inner(member, is, ie, [&](const int i) {
         divf(i) += (flx3(m,n,k+1,j,i) - flx3(m,n,k,j,i))/mbsize.d_view(m).dx3;
       });
-      // member.team_barrier();
+      member.team_barrier();
     }
 
     par_for_inner(member, is, ie, [&](const int i) {

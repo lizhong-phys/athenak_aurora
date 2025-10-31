@@ -103,7 +103,7 @@ TaskStatus ShearingBoxFC::PackAndSendFC(DvceFaceFld4D<Real> &b,
           });
         }
       }
-      // member.team_barrier();
+      member.team_barrier();
 
       // compute fractional offset
       Real eps = fmod(yshear_,(mbsize.d_view(mm).dx2))/(mbsize.d_view(mm).dx2);
@@ -125,7 +125,7 @@ TaskStatus ShearingBoxFC::PackAndSendFC(DvceFaceFld4D<Real> &b,
         default:
           break;
       }
-      // member.team_barrier();
+      member.team_barrier();
 
       // update data in send buffer with fracational shift
       par_for_inner(member, js, je, [&](const int j) {
@@ -395,34 +395,34 @@ TaskStatus ShearingBoxFC::RecvAndUnpackFC(DvceFaceFld4D<Real> &b) {
           par_for_inner(member, 0, nj, [&](const int j) {
             b.x1f(mm,k,j,i) = rbuf[n].vars(m,j,v,k,i);
           });
-          // member.team_barrier();
+          member.team_barrier();
         } else if (v==1) {
           par_for_inner(member, 0, nj, [&](const int j) {
             b.x2f(mm,k,j,i) = rbuf[n].vars(m,j,v,k,i);
           });
-          // member.team_barrier();
+          member.team_barrier();
         } else if (v==2) {
           par_for_inner(member, 0, nj, [&](const int j) {
             b.x3f(mm,k,j,i) = rbuf[n].vars(m,j,v,k,i);
           });
-          // member.team_barrier();
+          member.team_barrier();
         }
       } else {
         if (v==0) {
           par_for_inner(member, 0, nj, [&](const int j) {
             b.x1f(mm,k,j,(ie+2)+i) = rbuf[n].vars(m,j,v,k,i);
           });
-          // member.team_barrier();
+          member.team_barrier();
         } else if (v==1) {
           par_for_inner(member, 0, nj, [&](const int j) {
             b.x2f(mm,k,j,(ie+1)+i) = rbuf[n].vars(m,j,v,k,i);
           });
-          // member.team_barrier();
+          member.team_barrier();
         } else if (v==2) {
           par_for_inner(member, 0, nj, [&](const int j) {
             b.x3f(mm,k,j,(ie+1)+i) = rbuf[n].vars(m,j,v,k,i);
           });
-          // member.team_barrier();
+          member.team_barrier();
         }
       }
     });

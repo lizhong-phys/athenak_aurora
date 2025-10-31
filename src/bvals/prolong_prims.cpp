@@ -176,7 +176,7 @@ void MeshBoundaryValuesCC::ConsToPrimCoarseBndry(const DvceArray5D<Real> &cons,
         }
       });
     }
-    // tmember.team_barrier();
+    tmember.team_barrier();
   });
   return;
 }
@@ -288,7 +288,7 @@ void MeshBoundaryValuesCC::PrimToConsFineBndry(const DvceArray5D<Real> &prim,
         }
       });
     }
-    // tmember.team_barrier();
+    tmember.team_barrier();
   });
   return;
 }
@@ -451,7 +451,7 @@ void MeshBoundaryValuesCC::ConsToPrimCoarseBndry(const DvceArray5D<Real> &cons,
         }
       });
     }
-    // tmember.team_barrier();
+    tmember.team_barrier();
   });
   return;
 }
@@ -567,7 +567,7 @@ void MeshBoundaryValuesCC::PrimToConsFineBndry(const DvceArray5D<Real> &prim,
         }
       });
     }
-    // tmember.team_barrier();
+    tmember.team_barrier();
   });
   return;
 }
