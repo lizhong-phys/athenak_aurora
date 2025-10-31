@@ -863,7 +863,7 @@ void MeshBoundaryValuesFC::AverageBoundaryFluxes(DvceEdgeFld4D<Real> &flx,
                 int j = idx + jl;
                 flx.x2e(m,k,j,il) *= 0.5;
               });
-              tmember.team_barrier();
+              // tmember.team_barrier();
             }
           }
         } else if (v==2) {
@@ -920,7 +920,7 @@ void MeshBoundaryValuesFC::AverageBoundaryFluxes(DvceEdgeFld4D<Real> &flx,
                 int i = idx + il;
                 flx.x1e(m,k,jl,i) *= 0.5;
               });
-              tmember.team_barrier();
+              // tmember.team_barrier();
             }
           }
         } else if (v==2) {
@@ -936,7 +936,7 @@ void MeshBoundaryValuesFC::AverageBoundaryFluxes(DvceEdgeFld4D<Real> &flx,
               k += kl;
               flx.x3e(m,k,jl,i) *= 0.5;
             });
-            tmember.team_barrier();
+            // tmember.team_barrier();
           // finer level; divide EMFs that overlap at edges of fine faces by 2
           } else if (nghbr.d_view(m,n).lev >= mblev.d_view(m)) {
             int i = il + (iu - il + 1)/2;
@@ -945,7 +945,7 @@ void MeshBoundaryValuesFC::AverageBoundaryFluxes(DvceEdgeFld4D<Real> &flx,
               int k = idx + kl;
               flx.x3e(m,k,jl,i) *= 0.5;
             });
-            tmember.team_barrier();
+            // tmember.team_barrier();
           }
         }
 
@@ -974,7 +974,7 @@ void MeshBoundaryValuesFC::AverageBoundaryFluxes(DvceEdgeFld4D<Real> &flx,
               j += jl;
               flx.x1e(m,kl,j,i) *= 0.5;
             });
-            tmember.team_barrier();
+            // tmember.team_barrier();
           // finer level; divide EMFs that overlap at edges of fine faces by 2
           } else if (nghbr.d_view(m,n).lev >= mblev.d_view(m)) {
             int j = jl + (ju - jl + 1)/2;
@@ -982,7 +982,7 @@ void MeshBoundaryValuesFC::AverageBoundaryFluxes(DvceEdgeFld4D<Real> &flx,
               int i = idx + il;
               flx.x1e(m,kl,j,i) *= 0.5;
             });
-            tmember.team_barrier();
+            // tmember.team_barrier();
           }
         } else if (v==1) {
           int nj = ju - jl + 1;
@@ -997,7 +997,7 @@ void MeshBoundaryValuesFC::AverageBoundaryFluxes(DvceEdgeFld4D<Real> &flx,
               j += jl;
               flx.x2e(m,kl,j,i) *= 0.5;
             });
-            tmember.team_barrier();
+            // tmember.team_barrier();
           // finer level; divide EMFs that overlap at edges of fine faces by 2
           } else if (nghbr.d_view(m,n).lev >= mblev.d_view(m)) {
             int i = il + (iu - il + 1)/2;
@@ -1005,7 +1005,7 @@ void MeshBoundaryValuesFC::AverageBoundaryFluxes(DvceEdgeFld4D<Real> &flx,
               int j = idx + jl;
               flx.x2e(m,kl,j,i) *= 0.5;
             });
-            tmember.team_barrier();
+            // tmember.team_barrier();
           }
         }
 
