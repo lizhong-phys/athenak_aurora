@@ -505,13 +505,15 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
     // multiple-loop field configuration
     torus.is_multiple_loop = pin->GetOrAddBoolean("problem", "multiple_loop", false);
-    torus.potential_r_num     = pin->GetInteger("problem", "potential_r_num");
-    torus.potential_theta_num = pin->GetInteger("problem", "potential_theta_num");
-    torus.potential_r_min     = pin->GetReal("problem", "potential_r_min");
-    torus.potential_r_max     = pin->GetReal("problem", "potential_r_max");
-    torus.potential_theta_min = pin->GetReal("problem", "potential_theta_min");
-    torus.potential_pgas_pow  = pin->GetReal("problem", "potential_pgas_pow");
-    torus.potential_pgas_cutoff = pin->GetReal("problem", "potential_pgas_cutoff");
+    if (torus.is_multiple_loop) {
+      torus.potential_r_num     = pin->GetInteger("problem", "potential_r_num");
+      torus.potential_theta_num = pin->GetInteger("problem", "potential_theta_num");
+      torus.potential_r_min     = pin->GetReal("problem", "potential_r_min");
+      torus.potential_r_max     = pin->GetReal("problem", "potential_r_max");
+      torus.potential_theta_min = pin->GetReal("problem", "potential_theta_min");
+      torus.potential_pgas_pow  = pin->GetReal("problem", "potential_pgas_pow");
+      torus.potential_pgas_cutoff = pin->GetReal("problem", "potential_pgas_cutoff");
+    }
 
     // compute vector potential over all faces
     int ncells1 = indcs.nx1 + 2*(indcs.ng);
