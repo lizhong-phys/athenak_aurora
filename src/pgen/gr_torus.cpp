@@ -894,6 +894,7 @@ static Real CalculateLFromRPeak(struct torus_pgen pgen, Real r) {
 
 KOKKOS_INLINE_FUNCTION
 static Real LogHAux(struct torus_pgen pgen, Real r, Real sin_theta) {
+  bool use_aurora = true;
   Real logh;
   if (pgen.fm_torus) {
     Real sin_sq_theta = SQR(sin_theta);
@@ -925,11 +926,23 @@ static Real LogHAux(struct torus_pgen pgen, Real r, Real sin_theta) {
       h *= (pow(fabs(1.0 - pow(pgen.c_param, pow_c)*pow(l   , pow_l)), pow_abs) *
             pow(fabs(1.0 - pow(pgen.c_param, pow_c)*pow(l_edge, pow_l)), -1.0*pow_abs));
     }
-    if (isfinite(h) && h >= 1.0) {
-      logh = log(h);
+
+    if (use_aurora) {
+      if (isfinite(h) && h >= 1.0) {
+        logh = log(h);
+      } else if (fabs(h-1.0) <= 1e-15) {
+        logh = 0.0;
+      } else {
+        logh = -1.0;
+      }
     } else {
-      logh = -1.0;
+      if (isfinite(h) && h >= 1.0) {
+        logh = log(h);
+      } else {
+        logh = -1.0;
+      }
     }
+
   }
   return logh;
 }
