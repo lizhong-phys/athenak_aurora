@@ -41,7 +41,9 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
     tet_d2_x2f("tet_d2_x2f",1,1,1,1,1),
     tet_d3_x3f("tet_d3_x3f",1,1,1,1,1),
     na("na",1,1,1,1,1,1),
-    norm_to_tet("norm_to_tet",1,1,1,1,1,1) {
+    norm_to_tet("norm_to_tet",1,1,1,1,1,1),
+    freq_grid("freq_grid",1),
+    nnu_coeff("nnu_coeff",1,1,1,1,1) {
   // Check for general relativity
   if (!(pmy_pack->pcoord->is_general_relativistic)) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
@@ -69,6 +71,45 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
   sigmoid_residual = pin->GetOrAddReal("radiation","sigmoid_residual",1e-2);
   sigmoid_residual = fmin(sigmoid_residual, 1./3); // sigmoid residual must be less than 1./3
 
+  // Check for multi-frequency radiation
+  nfreq = 1;
+  freq_fluxes = false;
+  multi_freq = pin->GetOrAddBoolean("radiation","multi_freq",false);
+  if (multi_freq) {
+    // number of frequency groups
+    nfreq = pin->GetOrAddInteger("radiation","nfreq",3);
+
+    if (nfreq < 3) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+        << std::endl << "Number of frequency groups must be >= 3 for multi-frequency radiation" << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+
+    // frequency grid
+    nu_min = pin->GetReal("radiation", "nu_min");
+    nu_max = pin->GetReal("radiation", "nu_max");
+    std::string freq_scale = pin->GetOrAddString("radiation", "freq_scale", "log");
+    if (freq_scale.compare("linear") == 0)
+      flag_fscale = 0;
+    else if (freq_scale.compare("customize") == 0)
+      flag_fscale = 2;
+    else // log frequency grid
+      flag_fscale = 1;
+
+    if (nu_max <= nu_min) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+        << std::endl << "Frequency maximum must be larger than frequency minumum for multi-frequency radiation" << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+
+    // auxiliary quantities
+    Kokkos::realloc(freq_grid,nfreq);
+    SetFrequencyGrid();
+
+    // flag for frequency fluxes
+    freq_fluxes = pin->GetOrAddBoolean("radiation","freq_fluxes",true);
+  } // endif (multi_freq)
+
   // Enable radiation source term (radiation+(M)HD) by default if hydro or mhd enabled
   // Otherwise, disable radiation source term.  The former can be overriden by
   // specification in the input file.
@@ -88,11 +129,11 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
       kappa_p = pin->GetReal("radiation","kappa_p");
     }
     is_compton_enabled = pin->GetOrAddBoolean("radiation","compton",false);
-    if (is_compton_enabled && !(are_units_enabled)) {
-      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-        << std::endl << "Compton requires enabling units" << std::endl;
-      std::exit(EXIT_FAILURE);
-    }
+    // if (is_compton_enabled && !(are_units_enabled)) {
+    //   std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+    //     << std::endl << "Compton requires enabling units" << std::endl;
+    //   std::exit(EXIT_FAILURE);
+    // }
     if (are_units_enabled) {
       arad = (pmy_pack->punit->rad_constant_cgs*
               SQR(SQR(pmy_pack->punit->temperature_cgs()))/
@@ -102,6 +143,39 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
     }
     affect_fluid = pin->GetOrAddBoolean("radiation","affect_fluid",true);
   }
+
+  // multi-frequency radiation
+    if (multi_freq) {
+      // flags for fluid update
+      if (affect_fluid) {
+        update_fluid_energy = pin->GetOrAddBoolean("radiation","update_fluid_energy",true);
+        update_fluid_moment = pin->GetOrAddBoolean("radiation","update_fluid_moment",true);
+      } else {
+        update_fluid_energy = false;
+        update_fluid_moment = false;
+      }
+
+      // parameters for intensity mapping
+      order_multifreq = pin->GetOrAddInteger("radiation","order_multifreq",2);
+      limiter_multifreq = pin->GetOrAddInteger("radiation","limiter_multifreq",2);
+
+      // flags and parameters used in compton
+      if (is_compton_enabled) {
+        num_iter_compton     = pin->GetOrAddInteger("radiation","num_iter_compton",5);
+        tol_rel_tgas_compton = pin->GetOrAddReal("radiation","tol_rel_tgas_compton",1e-6);
+        est_tgas_4th_compton = pin->GetOrAddBoolean("radiation","est_tgas_4th_compton",true);
+        est_tgas_5th_compton = pin->GetOrAddBoolean("radiation","est_tgas_5th_compton",false);
+        test_only_compton_therm = pin->GetOrAddBoolean("radiation","test_only_compton_therm",false);
+      } // endif is_compton_enabled
+    } // endif (multi_freq)
+
+    // if (multi_freq && !are_units_enabled) {
+    //   std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+    //     << std::endl << "Units must be specified for multi-frequency radiation" << std::endl;
+    //   std::exit(EXIT_FAILURE);
+    // }
+
+  } // endif rad_source
 
   // Check for fluid evolution
   fixed_fluid = pin->GetOrAddBoolean("radiation","fixed_fluid",false);
@@ -133,6 +207,7 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
   Kokkos::realloc(tet_d2_x2f,nmb,4,ncells3,ncells2+1,ncells1);
   Kokkos::realloc(tet_d3_x3f,nmb,4,ncells3+1,ncells2,ncells1);
   if (angular_fluxes) {Kokkos::realloc(na,nmb,prgeo->nangles,ncells3,ncells2,ncells1,6);}
+  if (freq_fluxes) {Kokkos::realloc(nnu_coeff,nmb,prgeo->nangles,ncells3,ncells2,ncells1);}
   if (is_hydro_enabled || is_mhd_enabled) {
     Kokkos::realloc(norm_to_tet,nmb,4,4,ncells3,ncells2,ncells1);
   }
@@ -148,7 +223,7 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
   int ncells1 = indcs.nx1 + 2*(indcs.ng);
   int ncells2 = (indcs.nx2 > 1)? (indcs.nx2 + 2*(indcs.ng)) : 1;
   int ncells3 = (indcs.nx3 > 1)? (indcs.nx3 + 2*(indcs.ng)) : 1;
-  Kokkos::realloc(i0,nmb,prgeo->nangles,ncells3,ncells2,ncells1);
+  Kokkos::realloc(i0,nmb,nfreq*prgeo->nangles,ncells3,ncells2,ncells1);
   }
 
   // allocate memory for conserved variables on coarse mesh
@@ -157,12 +232,12 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
     int nccells1 = indcs.cnx1 + 2*(indcs.ng);
     int nccells2 = (indcs.cnx2 > 1)? (indcs.cnx2 + 2*(indcs.ng)) : 1;
     int nccells3 = (indcs.cnx3 > 1)? (indcs.cnx3 + 2*(indcs.ng)) : 1;
-    Kokkos::realloc(coarse_i0,nmb,prgeo->nangles,nccells3,nccells2,nccells1);
+    Kokkos::realloc(coarse_i0,nmb,nfreq*prgeo->nangles,nccells3,nccells2,nccells1);
   }
 
   // allocate boundary buffers for conserved (cell-centered) variables
   pbval_i = new MeshBoundaryValuesCC(ppack, pin, false);
-  pbval_i->InitializeBuffers(prgeo->nangles);
+  pbval_i->InitializeBuffers(nfreq*prgeo->nangles);
 
   // for time-evolving problems, continue to construct methods, allocate arrays
   if (evolution_t.compare("stationary") != 0) {
@@ -201,12 +276,12 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
     int ncells1 = indcs.nx1 + 2*(indcs.ng);
     int ncells2 = (indcs.nx2 > 1)? (indcs.nx2 + 2*(indcs.ng)) : 1;
     int ncells3 = (indcs.nx3 > 1)? (indcs.nx3 + 2*(indcs.ng)) : 1;
-    Kokkos::realloc(i1,      nmb,prgeo->nangles,ncells3,ncells2,ncells1);
-    Kokkos::realloc(iflx.x1f,nmb,prgeo->nangles,ncells3,ncells2,ncells1);
-    Kokkos::realloc(iflx.x2f,nmb,prgeo->nangles,ncells3,ncells2,ncells1);
-    Kokkos::realloc(iflx.x3f,nmb,prgeo->nangles,ncells3,ncells2,ncells1);
-    if (angular_fluxes) {
-      Kokkos::realloc(divfa,nmb,prgeo->nangles,ncells3,ncells2,ncells1);
+    Kokkos::realloc(i1,      nmb,nfreq*prgeo->nangles,ncells3,ncells2,ncells1);
+    Kokkos::realloc(iflx.x1f,nmb,nfreq*prgeo->nangles,ncells3,ncells2,ncells1);
+    Kokkos::realloc(iflx.x2f,nmb,nfreq*prgeo->nangles,ncells3,ncells2,ncells1);
+    Kokkos::realloc(iflx.x3f,nmb,nfreq*prgeo->nangles,ncells3,ncells2,ncells1);
+    if (angular_fluxes || freq_fluxes) {
+      Kokkos::realloc(divfa,nmb,nfreq*prgeo->nangles,ncells3,ncells2,ncells1);
     }
   }
 }

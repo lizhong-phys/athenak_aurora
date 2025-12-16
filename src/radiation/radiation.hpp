@@ -122,6 +122,32 @@ class Radiation {
   Real n_0_floor;                     // floor on n_0
   GeodesicGrid *prgeo = nullptr;      // pointer to radiation angular mesh
 
+  // Multi-frequency radiation
+  bool multi_freq = false;
+  int nfreq = 1;               // for multi-frequency, nfreq >= 3
+  int flag_fscale;             // 0: linear, 1: log, 2: customize
+  Real nu_max, nu_min;         // minimum and maximum frequency (excluding zero and infinity)
+  bool freq_fluxes;            // flag to enable/disable frequency fluxes
+  DvceArray1D<Real> freq_grid;
+  DvceArray5D<Real> nnu_coeff; // n^a n^b omega^0_{ab} for computing frequency fluxes
+  Real tol_rel_tgas_compton;
+  int num_iter_compton;
+  int order_multifreq;    // reconstruction order used in intensity mapping; option: 0, 1, 2 (default)
+  int limiter_multifreq;  // reconstruction limiter used in intensity mapping; 0: no limiter, 1: minmod, 2: van Leer (default)
+
+  // Flags used in multi-frequency radiation
+  bool update_fluid_energy;
+  bool update_fluid_moment;
+  bool test_only_compton_therm;
+  bool est_tgas_4th_compton;
+  bool est_tgas_5th_compton;
+
+  // DvceArray2D<Real> matrix_imap;
+  Real kappa_r_multi_freq; // constant Rosseland mean absoprtion coefficient
+  Real kappa_s_multi_freq; // constant scattering coefficient
+  Real kappa_p_multi_freq; // Planck mean coefficient
+  void SetFrequencyGrid();
+
   // Tetrad arrays and functions
   DualArray2D<Real> nh_c;             // normal vector computed at face center
   DualArray3D<Real> nh_f;             // normal vector computed at face edges
@@ -144,7 +170,7 @@ class Radiation {
   // following only used for time-evolving flow
   DvceArray5D<Real> i1;         // intensity at intermediate step
   DvceFaceFld5D<Real> iflx;     // spatial fluxes on zone faces
-  DvceArray5D<Real> divfa;      // angular flux divergence
+  DvceArray5D<Real> divfa;      // angular flux divergence + frequency flux divergence (if applicable)
   Real dtnew;
 
   // reconstruction method
@@ -174,6 +200,9 @@ class Radiation {
   // ...in "after_stagen_tl" task list
   TaskStatus ClearSend(Driver *d, int stage);
   TaskStatus ClearRecv(Driver *d, int stage);
+
+  // Multi-frequency radiation
+  TaskStatus MultiFreqRadFluidCoupling(Driver *d, int stage);
 
  private:
   MeshBlockPack* pmy_pack;  // ptr to MeshBlockPack containing this Radiation

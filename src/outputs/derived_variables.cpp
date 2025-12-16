@@ -27,6 +27,7 @@
 #include "mhd/mhd.hpp"
 #include "radiation/radiation.hpp"
 #include "radiation/radiation_tetrad.hpp"
+#include "radiation/radiation_multi_freq.hpp"
 #include "particles/particles.hpp"
 #include "outputs.hpp"
 #include "utils/current.hpp"
@@ -1002,14 +1003,30 @@ void BaseTypeOutput::ComputeDerivedVariable(std::string name, Mesh *pm) {
 
   // radiation moments
   if (name.compare(0, 3, "rad") == 0) {
+    // Multi-frequency radiation
+    bool multi_freq = pm->pmb_pack->prad->multi_freq;
+    int nfreq_ = pm->pmb_pack->prad->nfreq;
+
     // Determine if coordinate and/or fluid frame moments required
     bool needs_coord_only = (name.compare("rad_coord") == 0);
     bool needs_fluid_only = (name.compare("rad_fluid") == 0);
     bool needs_both = !(needs_coord_only || needs_fluid_only);
+    if (multi_freq) {
+      if (name.compare(0, 5, "radnu") == 0) needs_both = false; // correct it first
+      bool needs_radnu_coord = (name.compare("radnu_coord") == 0);
+      bool needs_radnu_fluid = (name.compare("radnu_fluid") == 0);
+      bool needs_radnu_both  = (name.compare("radnu_coord_fluid") == 0);
+      needs_coord_only = (needs_coord_only || needs_radnu_coord);
+      needs_fluid_only = (needs_fluid_only || needs_radnu_fluid);
+      needs_both = (needs_both || needs_radnu_both);
+    }
+
     int mom_var_size = (needs_both) ? 20 : 10;
     int moments_offset = (needs_both) ? 10 : 0;
     Kokkos::realloc(derived_var, nmb, mom_var_size, n3, n2, n1);
     auto dv = derived_var;
+    if (multi_freq) Kokkos::realloc(derived_var6d, nmb, mom_var_size, nfreq_, n3, n2, n1);
+    auto dv6d = derived_var6d;
 
     // Coordinates
     auto &coord = pm->pmb_pack->pcoord->coord_data;
@@ -1017,7 +1034,8 @@ void BaseTypeOutput::ComputeDerivedVariable(std::string name, Mesh *pm) {
     Real &spin = coord.bh_spin;
 
     // Radiation
-    int nang1 = pm->pmb_pack->prad->prgeo->nangles - 1;
+    int nang = pm->pmb_pack->prad->prgeo->nangles;
+    int nang1 = nang - 1;
     auto nh_c_ = pm->pmb_pack->prad->nh_c;
     auto tet_c_ = pm->pmb_pack->prad->tet_c;
     auto tetcov_c_ = pm->pmb_pack->prad->tetcov_c;
@@ -1057,40 +1075,42 @@ void BaseTypeOutput::ComputeDerivedVariable(std::string name, Mesh *pm) {
       // set coordinate frame components
       for (int n1=0, n12=0; n1<4; ++n1) {
         for (int n2=n1; n2<4; ++n2, ++n12) {
-          dv(m,n12,k,j,i) = 0.0;
-          for (int n=0; n<=nang1; ++n) {
-            Real nmun1 = 0.0; Real nmun2 = 0.0; Real n_0 = 0.0;
-            for (int d=0; d<4; ++d) {
-              nmun1 += tet_c_   (m,d,n1,k,j,i)*nh_c_.d_view(n,d);
-              nmun2 += tet_c_   (m,d,n2,k,j,i)*nh_c_.d_view(n,d);
-              n_0   += tetcov_c_(m,d,0, k,j,i)*nh_c_.d_view(n,d);
-            }
-            dv(m,n12,k,j,i) += (nmun1*nmun2*(i0_(m,n,k,j,i)/(n0*n_0))*
-                                solid_angles_.d_view(n));
-          }
-        }
-      }
+          if (!multi_freq) {
+            // gray radiation
+            dv(m,n12,k,j,i) = 0.0;
+            for (int n=0; n<=nang1; ++n) {
+              Real nmun1 = 0.0; Real nmun2 = 0.0; Real n_0 = 0.0;
+              for (int d=0; d<4; ++d) {
+                nmun1 += tet_c_   (m,d,n1,k,j,i)*nh_c_.d_view(n,d);
+                nmun2 += tet_c_   (m,d,n2,k,j,i)*nh_c_.d_view(n,d);
+                n_0   += tetcov_c_(m,d,0, k,j,i)*nh_c_.d_view(n,d);
+              }
+              dv(m,n12,k,j,i) += (nmun1*nmun2*(i0_(m,n,k,j,i)/(n0*n_0))*
+                                  solid_angles_.d_view(n));
+            } // endfor n
+          } else { // multi_freq
+            // multi-frequency radiation
+            dv(m,n12,k,j,i) = 0.0; // frequency-integrated moments
+            for (int ifr=0; ifr<nfreq_; ++ifr) {
+              dv6d(m,n12,ifr,k,j,i) = 0.0; // each frequency group
+              for (int n=0; n<=nang1; ++n) {
+                Real nmun1 = 0.0; Real nmun2 = 0.0; Real n_0 = 0.0;
+                for (int d=0; d<4; ++d) {
+                  nmun1 += tet_c_   (m,d,n1,k,j,i)*nh_c_.d_view(n,d);
+                  nmun2 += tet_c_   (m,d,n2,k,j,i)*nh_c_.d_view(n,d);
+                  n_0   += tetcov_c_(m,d,0, k,j,i)*nh_c_.d_view(n,d);
+                }
+                int i_fr_ang = getFreqAngIndex(ifr, n, nang);
+                dv6d(m,n12,ifr,k,j,i) += (nmun1*nmun2*(i0_(m,i_fr_ang,k,j,i)/(n0*n_0))*
+                                          solid_angles_.d_view(n));
+              } // endfor n
+              dv(m,n12,k,j,i) += dv6d(m,n12,ifr,k,j,i);
+            } // endfor ifr
+          } // endelse (!multi_freq)
+        } // endfor n2
+      } // endfor n1
 
       if (needs_fluid_only || needs_both) {
-        // stash coordinate frame moments
-        Real moments_coord[4][4];
-        moments_coord[0][0] = dv(m,0,k,j,i);
-        moments_coord[0][1] = dv(m,1,k,j,i);
-        moments_coord[0][2] = dv(m,2,k,j,i);
-        moments_coord[0][3] = dv(m,3,k,j,i);
-        moments_coord[1][1] = dv(m,4,k,j,i);
-        moments_coord[1][2] = dv(m,5,k,j,i);
-        moments_coord[1][3] = dv(m,6,k,j,i);
-        moments_coord[2][2] = dv(m,7,k,j,i);
-        moments_coord[2][3] = dv(m,8,k,j,i);
-        moments_coord[3][3] = dv(m,9,k,j,i);
-        moments_coord[1][0] = moments_coord[0][1];
-        moments_coord[2][0] = moments_coord[0][2];
-        moments_coord[3][0] = moments_coord[0][3];
-        moments_coord[2][1] = moments_coord[1][2];
-        moments_coord[3][1] = moments_coord[1][3];
-        moments_coord[3][2] = moments_coord[2][3];
-
         // fluid velocity in tetrad frame
         Real uu1 = w0_(m,IVX,k,j,i);
         Real uu2 = w0_(m,IVY,k,j,i);
@@ -1128,22 +1148,92 @@ void BaseTypeOutput::ComputeDerivedVariable(std::string name, Mesh *pm) {
         tet_to_fluid[3][1] = tet_to_fluid[1][3];
         tet_to_fluid[3][2] = tet_to_fluid[2][3];
 
+        // stash coordinate frame moments
+        Real moments_coord[4][4];
+        moments_coord[0][0] = dv(m,0,k,j,i);
+        moments_coord[0][1] = dv(m,1,k,j,i);
+        moments_coord[0][2] = dv(m,2,k,j,i);
+        moments_coord[0][3] = dv(m,3,k,j,i);
+        moments_coord[1][1] = dv(m,4,k,j,i);
+        moments_coord[1][2] = dv(m,5,k,j,i);
+        moments_coord[1][3] = dv(m,6,k,j,i);
+        moments_coord[2][2] = dv(m,7,k,j,i);
+        moments_coord[2][3] = dv(m,8,k,j,i);
+        moments_coord[3][3] = dv(m,9,k,j,i);
+        moments_coord[1][0] = moments_coord[0][1];
+        moments_coord[2][0] = moments_coord[0][2];
+        moments_coord[3][0] = moments_coord[0][3];
+        moments_coord[2][1] = moments_coord[1][2];
+        moments_coord[3][1] = moments_coord[1][3];
+        moments_coord[3][2] = moments_coord[2][3];
+
         // set tetrad frame moments
-        for (int n1=0, n12=0; n1<4; ++n1) {
-          for (int n2=n1; n2<4; ++n2, ++n12) {
+        if (!multi_freq) {
+          // gray radiation
+          for (int n1=0, n12=0; n1<4; ++n1) {
+            for (int n2=n1; n2<4; ++n2, ++n12) {
+              dv(m,moments_offset+n12,k,j,i) = 0.0;
+              for (int m1=0; m1<4; ++m1) {
+                for (int m2=0; m2<4; ++m2) {
+                  dv(m,moments_offset+n12,k,j,i) += (tetcov_c_(m,n1,m1,k,j,i)*
+                                                     tetcov_c_(m,n2,m2,k,j,i)*
+                                                     moments_coord[m1][m2]);
+                } // endfor m2
+              } // endfor m1
+            } // endfor n2
+          } // endfor n1
+        } else {
+          // multi-frequency radiation
+          for (int ifr=0; ifr<nfreq_; ++ifr) {
+            Real moments_coord_f[4][4];
+            moments_coord_f[0][0] = dv6d(m,0,ifr,k,j,i);
+            moments_coord_f[0][1] = dv6d(m,1,ifr,k,j,i);
+            moments_coord_f[0][2] = dv6d(m,2,ifr,k,j,i);
+            moments_coord_f[0][3] = dv6d(m,3,ifr,k,j,i);
+            moments_coord_f[1][1] = dv6d(m,4,ifr,k,j,i);
+            moments_coord_f[1][2] = dv6d(m,5,ifr,k,j,i);
+            moments_coord_f[1][3] = dv6d(m,6,ifr,k,j,i);
+            moments_coord_f[2][2] = dv6d(m,7,ifr,k,j,i);
+            moments_coord_f[2][3] = dv6d(m,8,ifr,k,j,i);
+            moments_coord_f[3][3] = dv6d(m,9,ifr,k,j,i);
+            moments_coord_f[1][0] = moments_coord_f[0][1];
+            moments_coord_f[2][0] = moments_coord_f[0][2];
+            moments_coord_f[3][0] = moments_coord_f[0][3];
+            moments_coord_f[2][1] = moments_coord_f[1][2];
+            moments_coord_f[3][1] = moments_coord_f[1][3];
+            moments_coord_f[3][2] = moments_coord_f[2][3];
+            for (int n1=0, n12=0; n1<4; ++n1) {
+              for (int n2=n1; n2<4; ++n2, ++n12) {
+                dv6d(m,moments_offset+n12,ifr,k,j,i) = 0.0;
+                for (int m1=0; m1<4; ++m1) {
+                  for (int m2=0; m2<4; ++m2) {
+                    dv6d(m,moments_offset+n12,ifr,k,j,i) += (tetcov_c_(m,n1,m1,k,j,i)*
+                                                             tetcov_c_(m,n2,m2,k,j,i)*
+                                                             moments_coord_f[m1][m2]);
+                  } // endfor m2
+                } // endfor m1
+              } // endfor n2
+            } // endfor n1
+          } // endfor ifr
+
+          for (int n12=0; n12<10; ++n12) {
             dv(m,moments_offset+n12,k,j,i) = 0.0;
-            for (int m1=0; m1<4; ++m1) {
-              for (int m2=0; m2<4; ++m2) {
-                dv(m,moments_offset+n12,k,j,i) += (tetcov_c_(m,n1,m1,k,j,i)*
-                                                   tetcov_c_(m,n2,m2,k,j,i)*
-                                                   moments_coord[m1][m2]);
-              }
-            }
-          }
-        }
+            for (int ifr=0; ifr<nfreq_; ++ifr) {
+              dv(m,moments_offset+n12,k,j,i) += dv6d(m,moments_offset+n12,ifr,k,j,i);
+            } // endfor ifr
+          } // endfor n12
+        } // endelse (!multi_freq)
+
         dv(m,moments_offset+1,k,j,i) *= -1.0;
         dv(m,moments_offset+2,k,j,i) *= -1.0;
         dv(m,moments_offset+3,k,j,i) *= -1.0;
+        if (multi_freq) {
+          for (int ifr=0; ifr<nfreq_; ++ifr) {
+            dv6d(m,moments_offset+1,ifr,k,j,i) *= -1.0;
+            dv6d(m,moments_offset+2,ifr,k,j,i) *= -1.0;
+            dv6d(m,moments_offset+3,ifr,k,j,i) *= -1.0;
+          } // endfor ifr
+        } // endelse (!multi_freq)
 
         // stash tetrad frame moments
         Real moments_tetrad[4][4];
@@ -1165,21 +1255,64 @@ void BaseTypeOutput::ComputeDerivedVariable(std::string name, Mesh *pm) {
         moments_tetrad[3][2] = moments_tetrad[2][3];
 
         // set R^{\mu \nu} (fluid frame)
-        for (int n1=0, n12=0; n1<4; ++n1) {
-          for (int n2=n1; n2<4; ++n2, ++n12) {
+        if (!multi_freq) {
+          // gray radiation
+          for (int n1=0, n12=0; n1<4; ++n1) {
+            for (int n2=n1; n2<4; ++n2, ++n12) {
+              dv(m,moments_offset+n12,k,j,i) = 0.0;
+              for (int m1=0; m1<4; ++m1) {
+                for (int m2=0; m2<4; ++m2) {
+                  dv(m,moments_offset+n12,k,j,i) += (tet_to_fluid[n1][m1]*
+                                                     tet_to_fluid[n2][m2]*
+                                                     moments_tetrad[m1][m2]);
+                } // endfor m2
+              } // endfor m1
+            } // endfor n2
+          } // endfor n1
+        } else {
+          // multi-frequency radiation
+          for (int ifr=0; ifr<nfreq_; ++ifr) {
+            Real moments_tetrad_f[4][4];
+            moments_tetrad_f[0][0] = dv6d(m,moments_offset+0,ifr,k,j,i);
+            moments_tetrad_f[0][1] = dv6d(m,moments_offset+1,ifr,k,j,i);
+            moments_tetrad_f[0][2] = dv6d(m,moments_offset+2,ifr,k,j,i);
+            moments_tetrad_f[0][3] = dv6d(m,moments_offset+3,ifr,k,j,i);
+            moments_tetrad_f[1][1] = dv6d(m,moments_offset+4,ifr,k,j,i);
+            moments_tetrad_f[1][2] = dv6d(m,moments_offset+5,ifr,k,j,i);
+            moments_tetrad_f[1][3] = dv6d(m,moments_offset+6,ifr,k,j,i);
+            moments_tetrad_f[2][2] = dv6d(m,moments_offset+7,ifr,k,j,i);
+            moments_tetrad_f[2][3] = dv6d(m,moments_offset+8,ifr,k,j,i);
+            moments_tetrad_f[3][3] = dv6d(m,moments_offset+9,ifr,k,j,i);
+            moments_tetrad_f[1][0] = moments_tetrad_f[0][1];
+            moments_tetrad_f[2][0] = moments_tetrad_f[0][2];
+            moments_tetrad_f[3][0] = moments_tetrad_f[0][3];
+            moments_tetrad_f[2][1] = moments_tetrad_f[1][2];
+            moments_tetrad_f[3][1] = moments_tetrad_f[1][3];
+            moments_tetrad_f[3][2] = moments_tetrad_f[2][3];
+            for (int n1=0, n12=0; n1<4; ++n1) {
+              for (int n2=n1; n2<4; ++n2, ++n12) {
+                dv6d(m,moments_offset+n12,ifr,k,j,i) = 0.0;
+                for (int m1=0; m1<4; ++m1) {
+                  for (int m2=0; m2<4; ++m2) {
+                    dv6d(m,moments_offset+n12,ifr,k,j,i) += (tet_to_fluid[n1][m1]*
+                                                             tet_to_fluid[n2][m2]*
+                                                             moments_tetrad_f[m1][m2]);
+                  } // endfor m2
+                } // endfor m1
+              } // endfor n2
+            } // endfor n1
+          } // endfor ifr
+
+          for (int n12=0; n12<10; ++n12) {
             dv(m,moments_offset+n12,k,j,i) = 0.0;
-            for (int m1=0; m1<4; ++m1) {
-              for (int m2=0; m2<4; ++m2) {
-                dv(m,moments_offset+n12,k,j,i) += (tet_to_fluid[n1][m1]*
-                                                   tet_to_fluid[n2][m2]*
-                                                   moments_tetrad[m1][m2]);
-              }
-            }
-          }
-        }
-      }
-    });
-  }
+            for (int ifr=0; ifr<nfreq_; ++ifr) {
+              dv(m,moments_offset+n12,k,j,i) += dv6d(m,moments_offset+n12,ifr,k,j,i);
+            } // endfor ifr
+          } // endfor n12
+        } // endelse (!multi_freq)
+      } // endif fluid-frame output
+    }); // end par_for "moments"
+  } // endif (name.compare(0, 3, "rad") == 0)
 
   // Particle density binned to mesh.
   if (name.compare("prtcl_d") == 0) {

@@ -57,7 +57,11 @@ void Radiation::AssembleRadTasks(std::map<std::string, std::shared_ptr<TaskList>
     id.mhd_sende = tl["stagen"]->AddTask(&mhd::MHD::SendE, pmhd, id.mhd_efld);
     id.mhd_recve = tl["stagen"]->AddTask(&mhd::MHD::RecvE, pmhd, id.mhd_sende);
     id.mhd_ct    = tl["stagen"]->AddTask(&mhd::MHD::CT, pmhd, id.mhd_recve);
-    id.rad_coupl = tl["stagen"]->AddTask(&Radiation::RadFluidCoupling,this,id.mhd_ct);
+    if (!multi_freq) {
+      id.rad_coupl = tl["stagen"]->AddTask(&Radiation::RadFluidCoupling,this,id.mhd_ct);
+    } else {
+      id.rad_coupl = tl["stagen"]->AddTask(&Radiation::MultiFreqRadFluidCoupling,this,id.mhd_ct);
+    }
     id.rad_resti = tl["stagen"]->AddTask(&Radiation::RestrictI, this, id.rad_coupl);
     id.rad_sendi = tl["stagen"]->AddTask(&Radiation::SendI, this, id.rad_resti);
     id.rad_recvi = tl["stagen"]->AddTask(&Radiation::RecvI, this, id.rad_sendi);
@@ -98,7 +102,11 @@ void Radiation::AssembleRadTasks(std::map<std::string, std::shared_ptr<TaskList>
     id.hyd_recvf = tl["stagen"]->AddTask(&hydro::Hydro::RecvFlux, phyd, id.hyd_sendf);
     id.hyd_rkupdt= tl["stagen"]->AddTask(&hydro::Hydro::RKUpdate,phyd,id.hyd_recvf);
     id.hyd_src   = tl["stagen"]->AddTask(&hydro::Hydro::HydroSrcTerms,phyd,id.hyd_rkupdt);
-    id.rad_coupl = tl["stagen"]->AddTask(&Radiation::RadFluidCoupling,this,id.hyd_src);
+    if (!multi_freq) {
+      id.rad_coupl = tl["stagen"]->AddTask(&Radiation::RadFluidCoupling,this,id.hyd_src);
+    } else {
+      id.rad_coupl = tl["stagen"]->AddTask(&Radiation::MultiFreqRadFluidCoupling,this,id.hyd_src);
+    }
     id.rad_resti = tl["stagen"]->AddTask(&Radiation::RestrictI, this, id.rad_coupl);
     id.rad_sendi = tl["stagen"]->AddTask(&Radiation::SendI, this, id.rad_resti);
     id.rad_recvi = tl["stagen"]->AddTask(&Radiation::RecvI, this, id.rad_sendi);
@@ -131,7 +139,11 @@ void Radiation::AssembleRadTasks(std::map<std::string, std::shared_ptr<TaskList>
     id.rad_recvf = tl["stagen"]->AddTask(&Radiation::RecvFlux, this, id.rad_sendf);
     id.rad_rkupdt= tl["stagen"]->AddTask(&Radiation::RKUpdate, this, id.rad_recvf);
     id.rad_src   = tl["stagen"]->AddTask(&Radiation::RadSrcTerms, this, id.rad_rkupdt);
-    id.rad_coupl = tl["stagen"]->AddTask(&Radiation::RadFluidCoupling,this,id.rad_src);
+    if (!multi_freq) {
+      id.rad_coupl = tl["stagen"]->AddTask(&Radiation::RadFluidCoupling,this,id.rad_src);
+    } else {
+      id.rad_coupl = tl["stagen"]->AddTask(&Radiation::MultiFreqRadFluidCoupling,this,id.rad_src);
+    }
     id.rad_resti = tl["stagen"]->AddTask(&Radiation::RestrictI, this, id.rad_coupl);
     id.rad_sendi = tl["stagen"]->AddTask(&Radiation::SendI, this, id.rad_resti);
     id.rad_recvi = tl["stagen"]->AddTask(&Radiation::RecvI, this, id.rad_sendi);
@@ -155,15 +167,16 @@ void Radiation::AssembleRadTasks(std::map<std::string, std::shared_ptr<TaskList>
 //  receive status flags to waiting (with or without MPI) for Radiation variables.
 
 TaskStatus Radiation::InitRecv(Driver *pdrive, int stage) {
+  int &nfreq_ = nfreq;
   // post receives for I
-  TaskStatus tstat = pbval_i->InitRecv(prgeo->nangles);
+  TaskStatus tstat = pbval_i->InitRecv(nfreq_*prgeo->nangles);
   if (tstat != TaskStatus::complete) return tstat;
 
   // do not post receives for fluxes when stage < 0 (i.e. ICs)
   if (stage >= 0) {
     // with SMR/AMR, post receives for fluxes of I
     if (pmy_pack->pmesh->multilevel) {
-      tstat = pbval_i->InitFluxRecv(prgeo->nangles);
+      tstat = pbval_i->InitFluxRecv(nfreq_*prgeo->nangles);
       if (tstat != TaskStatus::complete) return tstat;
     }
   }
