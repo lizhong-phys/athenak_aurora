@@ -142,9 +142,8 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
       arad = pin->GetReal("radiation","arad");
     }
     affect_fluid = pin->GetOrAddBoolean("radiation","affect_fluid",true);
-  }
-
-  // multi-frequency radiation
+    
+    // multi-frequency radiation
     if (multi_freq) {
       // flags for fluid update
       if (affect_fluid) {

@@ -78,8 +78,8 @@ Real HolBBIntSmall(const Real &a) {
 //         Return 1/(arad*temp^4) \int_0^a B_{nu/temp} d(nu/temp)
 KOKKOS_INLINE_FUNCTION
 Real HolBBIntLarge(const Real &a) {
-  int num_itr_max = 50;
-  Real err = 1e-12;
+  int num_itr_max = 10; // fast=10, best=50
+  Real err = 1e-6;      // fast=1e-6, best=1e-12
   Real tol = err / (15./SQR(SQR(M_PI)));
 
   Real a2  = a*a;
@@ -164,8 +164,8 @@ Real dBcapSmall(const Real &a) {
 //         Return d\mathbb{B}_{large}/da
 KOKKOS_INLINE_FUNCTION
 Real dBcapLarge(const Real &a) {
-  int num_itr_max = 50;
-  Real err = 1e-12;
+  int num_itr_max = 10; // fast=10, best=50
+  Real err = 1e-6;      // fast=1e-6, best=1e-12
   Real tol = err / (15./SQR(SQR(M_PI)));
 
   Real a2  = a*a;
@@ -208,7 +208,8 @@ KOKKOS_INLINE_FUNCTION
 Real dBcapTemp(const Real &temp, const Real &nu_f) {
   Real a = nu_f/temp;
   Real da_ = -nu_f/SQR(temp);
-  if (a <= 0.5)
+  // fast=0.9, best=0.5
+  if (a <= 0.9)
     return dBcapSmall(a)*da_;
   else if (a <= 31.609864819846077)
     return dBcapLarge(a)*da_;
@@ -397,7 +398,12 @@ KOKKOS_INLINE_FUNCTION
 Real GuessEffTemperature(const Real &Acap) {
   // parameters
   Real Acap_mid  = 0.9653823091764577; // Acap_mid = A(1)
-  Real Acap_tiny = 1e-16; // Acap_tiny = A(31.609864819846077)
+  // best
+  // Real Acap_tiny = 1e-16; // Acap_tiny = A(31.609864819846077)
+  // fast
+  Real Acap_tiny = 1e-12;
+
+
   Real a = 0;
 
   if (Acap >= Acap_mid) {
@@ -522,7 +528,10 @@ Real DelNuTNR(const Real &a, const Real &Acap) {
 //         Note that we adapt this function when a is huge (i.e., Acap is tiny).
 KOKKOS_INLINE_FUNCTION
 Real EffTempTarFunc(const Real &a, const Real &Acap) {
-  Real Acap_tiny = 1e-16; // Acap_tiny = A(31.609864819846077)
+  // best
+  // Real Acap_tiny = 1e-16; // Acap_tiny = A(31.609864819846077)
+  // fast
+  Real Acap_tiny = 1e-12;
   Real a2 = SQR(a);
   Real a3 = a*a2;
   Real a4 = a*a3;
@@ -552,7 +561,10 @@ Real GetEffTemperature(const Real &ir_cm_e, const Real &nu_cm_e, const Real &a_r
 
   // parameters
   Real Acap_mid = 0.9653823091764577; // Acap_mid = A(1)
-  Real Acap_tiny = 1e-16; // Acap_tiny = A(31.609864819846077)
+  // best
+  // Real Acap_tiny = 1e-16; // Acap_tiny = A(31.609864819846077)
+  // fast
+  Real Acap_tiny = 1e-12;
 
   // estimate temperature;
   Real Acap = 4*M_PI/a_rad * ir_cm_e/SQR(SQR(nu_cm_e));
