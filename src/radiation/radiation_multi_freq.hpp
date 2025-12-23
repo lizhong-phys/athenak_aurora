@@ -11,7 +11,9 @@
 #include <math.h>
 #include "athena.hpp"
 
+//========================================================================================
 //=================================== Index Operations ===================================
+//========================================================================================
 //----------------------------------------------------------------------------------------
 //! \fn void getFreqAngIndices
 //  \brief Exact frequency index (ifr) and angular index (iang) given
@@ -33,7 +35,9 @@ int getFreqAngIndex(const int &ifr, const int &iang, const int &nang) {
   return ret;
 }
 
+//========================================================================================
 //============================== Blackbody Helper Functions ==============================
+//========================================================================================
 //----------------------------------------------------------------------------------------
 //! \fn Real BBSpectrum
 //  \brief Compute blackbody spectrum given frequency (nu).
@@ -217,7 +221,9 @@ Real dBcapTemp(const Real &temp, const Real &nu_f) {
     return dBcapHuge(a)*da_;
 }
 
+//========================================================================================
 //============================= Mathmatical Helper Functions =============================
+//========================================================================================
 //----------------------------------------------------------------------------------------
 //! \fn bool FourthPolyRoot
 //  \brief Exact solution for fourth order polynomial of
@@ -387,7 +393,9 @@ bool SolveTriLinearSystem(const int N, const ScrArray2D<Real> &A, const ScrArray
   return true;
 }
 
-//============================= Effective Temperature Functions =============================
+//========================================================================================
+//============================ Effective Temperature Functions ===========================
+//========================================================================================
 //----------------------------------------------------------------------------------------
 //! \fn Real GuessEffTemperature
 //  \brief Make an initial guess of the effective temperature in terms of a (nu/temp)
@@ -418,11 +426,16 @@ Real GuessEffTemperature(const Real &Acap) {
 
   } else if (Acap >= Acap_tiny) {
     // large a (1 < a <= 31.609864819846077)
-    Real c0 = 0.964272215486288;
-    Real c1 = -0.529732261375545;
-    Real c2 = 0.24130597940731527;
-    Real c3 = 0.01573219167683236;
-    Real c4 = 0.0003799940235742786;
+    // Real c0 = 0.964272215486288;
+    // Real c1 = -0.529732261375545;
+    // Real c2 = 0.24130597940731527;
+    // Real c3 = 0.01573219167683236;
+    // Real c4 = 0.0003799940235742786;
+    Real c0 = 0.9932719368978558;
+    Real c1 = -0.46978807915998205;
+    Real c2 = 0.26533283531363155;
+    Real c3 = 0.018694681610672934;
+    Real c4 = 0.0004866528519712597;
     Real lg_Acap = log10(Acap);
     Real lg_Acap2 = SQR(lg_Acap);
     Real lg_Acap3 = lg_Acap2*lg_Acap;
@@ -627,7 +640,9 @@ Real GetEffTemperature(const Real &ir_cm_e, const Real &nu_cm_e, const Real &a_r
   return nu_cm_e/a_new;
 }
 
+//========================================================================================
 //================================= Emissivity Functions =================================
+//========================================================================================
 //----------------------------------------------------------------------------------------
 //! \fn Real ComputeEmissivity
 //  \brief Compute the thermal emissivity given frequency bin [nu_f, nu_fp1].
@@ -666,7 +681,9 @@ Real ComputeEmDerivative(const DvceArray1D<Real> &nu_tet, const int &ifr, const 
   return deps_f;
 }
 
+//========================================================================================
 //============================= Fluid-Frame Intensity Mapping ============================
+//========================================================================================
 //----------------------------------------------------------------------------------------
 //! \fn bool AssignFreqIntensity
 //  \brief Assign the intensities and corresponding frequency bins to prepare
@@ -1357,7 +1374,9 @@ Real InvMapIntensity(const int &ifr, const DvceArray1D<Real> &nu_tet, const ScrA
   return ir_cm_star_f;
 }
 
-//============================= Compton Helper Functions =============================
+//========================================================================================
+//=============================== Compton Helper Functions ===============================
+//========================================================================================
 //----------------------------------------------------------------------------------------
 //! \fn void WienInt
 //  \brief Integrate Wien's tail from nu_e to inf given jr_cm_e for normalization

@@ -129,11 +129,13 @@ class Radiation {
   Real nu_max, nu_min;         // minimum and maximum frequency (excluding zero and infinity)
   bool freq_fluxes;            // flag to enable/disable frequency fluxes
   DvceArray1D<Real> freq_grid;
+  DvceArray1D<Real> coeff_ffp; // coefficients for multi-frequency power-laws opacities
+  DvceArray1D<Real> coeff_ffr; // coefficients for multi-frequency power-laws opacities
   DvceArray5D<Real> nnu_coeff; // n^a n^b omega^0_{ab} for computing frequency fluxes
   Real tol_rel_tgas_compton;
   int num_iter_compton;
-  int order_multifreq;    // reconstruction order used in intensity mapping; option: 0, 1, 2 (default)
-  int limiter_multifreq;  // reconstruction limiter used in intensity mapping; 0: no limiter, 1: minmod, 2: van Leer (default)
+  int order_multifreq;   // reconstruction order used in intensity mapping; option: 0, 1, 2 (default)
+  int limiter_multifreq; // reconstruction limiter used in intensity mapping; 0: no limiter, 1: minmod, 2: van Leer (default)
 
   // Flags used in multi-frequency radiation
   bool update_fluid_energy;
@@ -147,6 +149,7 @@ class Radiation {
   Real kappa_s_multi_freq; // constant scattering coefficient
   Real kappa_p_multi_freq; // Planck mean coefficient
   void SetFrequencyGrid();
+  void ComputeMultiGroupFFOpacityCoeff();
 
   // Tetrad arrays and functions
   DualArray2D<Real> nh_c;             // normal vector computed at face center

@@ -106,6 +106,11 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
     Kokkos::realloc(freq_grid,nfreq);
     SetFrequencyGrid();
 
+    // opacity for multi-frequency radiation
+    Kokkos::realloc(coeff_ffp,nfreq);
+    Kokkos::realloc(coeff_ffr,nfreq);
+    ComputeMultiGroupFFOpacityCoeff();
+
     // flag for frequency fluxes
     freq_fluxes = pin->GetOrAddBoolean("radiation","freq_fluxes",true);
   } // endif (multi_freq)
@@ -142,7 +147,7 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
       arad = pin->GetReal("radiation","arad");
     }
     affect_fluid = pin->GetOrAddBoolean("radiation","affect_fluid",true);
-    
+
     // multi-frequency radiation
     if (multi_freq) {
       // flags for fluid update

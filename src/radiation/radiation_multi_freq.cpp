@@ -75,6 +75,52 @@ void Radiation::SetFrequencyGrid() {
   return;
 }
 
+//----------------------------------------------------------------------------------------
+//! \fn  void Radiation::MultiGroupOpacityCoeff()
+//! \brief Compute opacity weight
+void Radiation::ComputeMultiGroupFFOpacityCoeff() {
+  Real err = 1e-6; // error level
+
+  // Extract auxiliary quantities for frequency grid
+  int  &nfrq   = nfreq;
+  auto &nu_tet = freq_grid;
+  auto &c_ffp  = coeff_ffp;
+  auto &c_ffr  = coeff_ffr;
+
+  // iterate from 0 to nu_tet[nfrq-2]
+  Real numer_plck_e = exp(-nu_tet(nfrq-1));
+  Real denom_plck_e = SQR(SQR(M_PI))/15;
+  Real numer_ross_e = 25.97575760906731659638409;
+  Real denom_ross_e = 5104.744695203257355716875;
+  for (int n=0; n<nfrq-1; n++) {
+    Real al = nu_tet(n);
+    Real ar = nu_tet(n+1);
+
+    Real numer_plck = exp(-al) - exp(-ar);
+    Real denom_plck = SimpsonIntegration(al, ar, err, 0);
+    Real numer_ross = SimpsonIntegration(al, ar, err, 1);
+    Real denom_ross = SimpsonIntegration(al, ar, err, 2);
+    denom_plck_e -= denom_plck;
+    numer_ross_e -= numer_ross;
+    denom_ross_e -= denom_ross;
+
+    c_ffp(n) = (denom_plck == 0) ? 0.0 :
+               numer_plck/denom_plck * SQR(SQR(M_PI))/15;
+    c_ffr(n) = (denom_ross == 0) ? 0.0 :
+               numer_ross/denom_ross * 196.51939;
+  } // endfor n
+
+  numer_plck_e = fmax(numer_plck_e, 0.0);
+  denom_plck_e = fmax(denom_plck_e, 0.0);
+  numer_ross_e = fmax(numer_ross_e, 0.0);
+  denom_ross_e = fmax(denom_ross_e, 0.0);
+  c_ffp(nfrq-1) = (denom_plck_e == 0) ? 0.0 :
+                  numer_plck_e/denom_plck_e * SQR(SQR(M_PI))/15;
+  c_ffr(nfrq-1) = (denom_ross_e == 0) ? 0.0 :
+                  numer_ross_e/denom_ross_e * 196.51939;
+  return;
+}
+
 
 //----------------------------------------------------------------------------------------
 //! \fn TaskStatus Radiation::MultiFreqRadFluidCoupling(Driver *pdriver, int stage)
@@ -161,6 +207,10 @@ TaskStatus Radiation::MultiFreqRadFluidCoupling(Driver *pdriver, int stage) {
   Real &kappa_s_ = kappa_s;
   Real &kappa_p_ = kappa_p;
   bool &power_opacity_ = power_opacity;
+
+  // Extract multi-group opacity coefficients
+  auto &c_ffp  = coeff_ffp;
+  auto &c_ffr  = coeff_ffr;
 
   // Extract hydro/mhd quantities
   DvceArray5D<Real> u0_, w0_;
@@ -298,7 +348,6 @@ TaskStatus Radiation::MultiFreqRadFluidCoupling(Driver *pdriver, int stage) {
     } // endfor iang
 
     // frequency-dependent coefficients
-    // TODO: implement a better default opacity function for multi-frequency radiation
     Real chi_abs, chi_s, chi_pmr;
     OpacityFunction(wdn, den_unit, tgas, temp_unit, l_unit,
                     gm1, mu_molecular, power_opacity_, coeff_r, coeff_pmr,
@@ -311,10 +360,15 @@ TaskStatus Radiation::MultiFreqRadFluidCoupling(Driver *pdriver, int stage) {
     }
 
     for (int ifr=0; ifr<=nfreq1; ++ifr) {
-      // opacities
       // TODO: interpolate frequency-dependent opacity table
+      // opacities
       chi_p(ifr) = chi_pmr + chi_abs;
       chi_r(ifr) = chi_abs;
+      if (power_opacity_) {
+        // multiply frequency-dependent opacity coefficients
+        chi_p(ifr) *= c_ffp(ifr);
+        chi_r(ifr) *= c_ffr(ifr);
+      }
 
       // initialize coefficients for later use when solving temperature update
       sum_a(ifr) = 0;
