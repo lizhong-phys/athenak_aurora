@@ -75,6 +75,166 @@ void Radiation::SetFrequencyGrid() {
   return;
 }
 
+
+//----------------------------------------------------------------------------------------
+//! \fn  void Radiation::IniBBRadiation()
+//! \brief Initialize multi-frequency radiation using allocated gray radiation.
+//         Grey radiation is assigned from 0 to nang-1 in the second index of i0(m,n,k,j,i)
+void Radiation::IniBBRadiation() {
+  // Extract indices, size data, hydro/mhd/units flags, and coupling flags
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  int &is = indcs.is, &ie = indcs.ie;
+  int &js = indcs.js, &je = indcs.je;
+  int &ks = indcs.ks, &ke = indcs.ke;
+  int &ng = indcs.ng;
+  int n1 = indcs.nx1 + 2*ng;
+  int n2 = (indcs.nx2 > 1)? (indcs.nx2 + 2*ng) : 1;
+  int n3 = (indcs.nx3 > 1)? (indcs.nx3 + 2*ng) : 1;
+  int nmb1 = pmy_pack->nmb_thispack - 1;
+  int &nang = prgeo->nangles;
+  int &nfrq = nfreq;
+  const int nang1 = nang - 1;
+  const int nfreq1 = nfrq - 1;
+  const int nfr_ang = nang*nfrq;
+  auto &size = pmy_pack->pmb->mb_size;
+  auto &nu_tet = freq_grid;
+  bool &is_hydro_enabled_ = is_hydro_enabled;
+  bool &is_mhd_enabled_ = is_mhd_enabled;
+
+  // Extract coordinate/excision data
+  auto &coord = pmy_pack->pcoord->coord_data;
+  bool &flat = coord.is_minkowski;
+  Real &spin = coord.bh_spin;
+
+  // Extract radiation constant and units
+  Real &arad_ = arad;
+
+  // Extract radiation, radiation frame, and radiation angular mesh data
+  auto &i0_ = i0;
+  auto &nh_c_ = nh_c;
+  auto &tt = tet_c;
+  auto &tc = tetcov_c;
+  auto &norm_to_tet_ = norm_to_tet;
+  auto &solid_angles_ = prgeo->solid_angles;
+
+  // Extract hydro/mhd quantities
+  DvceArray5D<Real> w0_;
+  if (is_hydro_enabled_) {
+    w0_ = pmy_pack->phydro->w0;
+  } else if (is_mhd_enabled_) {
+    w0_ = pmy_pack->pmhd->w0;
+  }
+
+  par_for("ini_bb_multi_freq_rad",DevExeSpace(),0,nmb1,0,(n3-1),0,(n2-1),0,(n1-1),
+  KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    // extract spatial position
+    Real &x1min = size.d_view(m).x1min;
+    Real &x1max = size.d_view(m).x1max;
+    Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+
+    Real &x2min = size.d_view(m).x2min;
+    Real &x2max = size.d_view(m).x2max;
+    Real x2v = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+
+    Real &x3min = size.d_view(m).x3min;
+    Real &x3max = size.d_view(m).x3max;
+    Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+
+    // compute metric and inverse
+    Real glower[4][4], gupper[4][4];
+    ComputeMetricAndInverse(x1v,x2v,x3v,flat,spin,glower,gupper);
+    Real alpha = sqrt(-1.0/gupper[0][0]);
+
+    // compute fluid velocity in tetrad frame
+    Real &wvx = w0_(m,IVX,k,j,i);
+    Real &wvy = w0_(m,IVY,k,j,i);
+    Real &wvz = w0_(m,IVZ,k,j,i);
+    Real q = glower[1][1]*wvx*wvx + 2.0*glower[1][2]*wvx*wvy + 2.0*glower[1][3]*wvx*wvz
+           + glower[2][2]*wvy*wvy + 2.0*glower[2][3]*wvy*wvz
+           + glower[3][3]*wvz*wvz;
+    Real gamma = sqrt(1.0 + q);
+    Real u0 = gamma/alpha;
+
+    // compute fluid velocity in tetrad frame
+    Real u_tet[4];
+    u_tet[0] = (norm_to_tet_(m,0,0,k,j,i)*gamma + norm_to_tet_(m,0,1,k,j,i)*wvx +
+                norm_to_tet_(m,0,2,k,j,i)*wvy   + norm_to_tet_(m,0,3,k,j,i)*wvz);
+    u_tet[1] = (norm_to_tet_(m,1,0,k,j,i)*gamma + norm_to_tet_(m,1,1,k,j,i)*wvx +
+                norm_to_tet_(m,1,2,k,j,i)*wvy   + norm_to_tet_(m,1,3,k,j,i)*wvz);
+    u_tet[2] = (norm_to_tet_(m,2,0,k,j,i)*gamma + norm_to_tet_(m,2,1,k,j,i)*wvx +
+                norm_to_tet_(m,2,2,k,j,i)*wvy   + norm_to_tet_(m,2,3,k,j,i)*wvz);
+    u_tet[3] = (norm_to_tet_(m,3,0,k,j,i)*gamma + norm_to_tet_(m,3,1,k,j,i)*wvx +
+                norm_to_tet_(m,3,2,k,j,i)*wvy   + norm_to_tet_(m,3,3,k,j,i)*wvz);
+
+    // coordinate component n^0
+    Real n0 = tt(m,0,0,k,j,i);
+
+    // compute angular weight
+    Real wght_sum = 0.0;
+    for (int iang=0; iang<=nang1; ++iang) {
+      // coordinate-frame normal components
+      Real n_0 = tc(m,0,0,k,j,i)*nh_c_.d_view(iang,0) + tc(m,1,0,k,j,i)*nh_c_.d_view(iang,1)
+               + tc(m,2,0,k,j,i)*nh_c_.d_view(iang,2) + tc(m,3,0,k,j,i)*nh_c_.d_view(iang,3);
+
+      // fluid-frame time component
+      Real n0_cm = (u_tet[0]*nh_c_.d_view(iang,0) - u_tet[1]*nh_c_.d_view(iang,1)
+                  - u_tet[2]*nh_c_.d_view(iang,2) - u_tet[3]*nh_c_.d_view(iang,3));
+
+      Real domega_cm = solid_angles_.d_view(iang)/SQR(n0_cm);
+      wght_sum += domega_cm/(4*M_PI);
+    }
+
+    // compute radiation temperature from grey radiation
+    // note: grey radiation is assigned from 0 to nang-1 in the second index of i0(m,n,k,j,i)
+    Real jr_cm = 0.0;
+    for (int iang=0; iang<=nang1; ++iang) {
+      // coordinate-frame normal components
+      Real n_0 = tc(m,0,0,k,j,i)*nh_c_.d_view(iang,0) + tc(m,1,0,k,j,i)*nh_c_.d_view(iang,1)
+               + tc(m,2,0,k,j,i)*nh_c_.d_view(iang,2) + tc(m,3,0,k,j,i)*nh_c_.d_view(iang,3);
+
+      // fluid-frame time component
+      Real n0_cm = (u_tet[0]*nh_c_.d_view(iang,0) - u_tet[1]*nh_c_.d_view(iang,1)
+                  - u_tet[2]*nh_c_.d_view(iang,2) - u_tet[3]*nh_c_.d_view(iang,3));
+
+      // fluid-frame angular weight sum
+      Real domega_cm = solid_angles_.d_view(iang)/SQR(n0_cm);
+      domega_cm /= wght_sum; // normalize fluid-frame weight
+      int n_ = getFreqAngIndex(0, iang, nang);
+      jr_cm += SQR(SQR(n0_cm))*i0_(m,n_,k,j,i)/(n0*n_0)*domega_cm/(4*M_PI);
+    } // endfor iang
+
+    Real trad = sqrt(sqrt(4*M_PI*jr_cm/arad_));
+
+    // go through each angle and frequency
+    for (int iang=0; iang<=nang1; ++iang) {
+      // coordinate-frame normal components
+      Real n_0 = tc(m,0,0,k,j,i)*nh_c_.d_view(iang,0) + tc(m,1,0,k,j,i)*nh_c_.d_view(iang,1)
+               + tc(m,2,0,k,j,i)*nh_c_.d_view(iang,2) + tc(m,3,0,k,j,i)*nh_c_.d_view(iang,3);
+
+      // fluid-frame time component
+      Real n0_cm = (u_tet[0]*nh_c_.d_view(iang,0) - u_tet[1]*nh_c_.d_view(iang,1)
+                  - u_tet[2]*nh_c_.d_view(iang,2) - u_tet[3]*nh_c_.d_view(iang,3));
+
+      for (int ifr=0; ifr<=nfreq1; ++ifr) {
+        // assign intensity in fluid frame
+        Real eps_f = (ifr < nfreq1) ? BBIntegral(0, n0_cm*nu_tet(ifr+1), trad, arad_)
+                                    : arad_*SQR(SQR(trad));
+        eps_f -= BBIntegral(0, n0_cm*nu_tet(ifr), trad, arad_);
+        eps_f = 1./(4*M_PI) * fmax(FLT_MIN, eps_f);
+        Real &i_cm_star_f = eps_f;
+
+        // convert intensity in tetrad frame
+        int n_ = getFreqAngIndex(ifr, iang, nang);
+        i0(m,n_,k,j,i) = n0*n_0*i_cm_star_f/SQR(SQR(n0_cm));
+      } // endfor ifr
+    } // endfor iang
+  });
+
+  return;
+}
+
+
+
 //----------------------------------------------------------------------------------------
 //! \fn  void Radiation::MultiGroupOpacityCoeff()
 //! \brief Compute opacity weight
@@ -120,7 +280,6 @@ void Radiation::ComputeMultiGroupFFOpacityCoeff() {
                   numer_ross_e/denom_ross_e * 196.51939;
   return;
 }
-
 
 //----------------------------------------------------------------------------------------
 //! \fn TaskStatus Radiation::MultiFreqRadFluidCoupling(Driver *pdriver, int stage)

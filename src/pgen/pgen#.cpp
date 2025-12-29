@@ -93,7 +93,6 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
     user_bcs(false),
     user_srcs(false),
     user_hist(false),
-    rst_multi_freq_from_grey(false),
     pmy_mesh_(pm) {
   // check for user-defined boundary conditions
   for (int dir=0; dir<6; ++dir) {
@@ -103,7 +102,6 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
   }
   user_srcs = pin->GetOrAddBoolean("problem","user_srcs",false);
   user_hist = pin->GetOrAddBoolean("problem","user_hist",false);
-  rst_multi_freq_from_grey = pin->GetOrAddBoolean("problem","rst_multi_freq_from_grey",false);
 
   // get spatial dimensions of arrays, including ghost zones
   auto &indcs = pm->pmb_pack->pmesh->mb_indcs;
@@ -119,7 +117,6 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
   radiation::Radiation* prad=pm->pmb_pack->prad;
   TurbulenceDriver* pturb=pm->pmb_pack->pturb;
   int nrad = 0, nhydro = 0, nmhd = 0, nforce = 3, nadm = 0, nz4c = 0;
-  int nrad_grey = 0;
   if (phydro != nullptr) {
     nhydro = phydro->nhydro + phydro->nscalars;
   }
@@ -128,8 +125,6 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
   }
   if (prad != nullptr) {
     nrad = prad->nfreq*prad->prgeo->nangles;
-    nrad_grey = prad->prgeo->nangles;
-    if (!prad->multi_freq) rst_multi_freq_from_grey = false;
   }
   if (pz4c != nullptr) {
     nz4c = pz4c->nz4c;
@@ -253,19 +248,11 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
   }
 
   if (data_size_ != data_size) {
-    if (!rst_multi_freq_from_grey) {
-      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-                << std::endl << "CC data size read from restart file not equal to size "
-                << "of Hydro, MHD, Rad, and/or Z4c arrays, restart file is broken."
-                << std::endl;
-      exit(EXIT_FAILURE);
-    } else if (data_size_*nrad_grey/nrad != data_size) {
-      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-                << std::endl << "Restart with Multi-Frequency Radiation: size read from restart file of "
-                << "gray radiation not equal to size of Rad arrays, restart file is broken."
-                << std::endl;
-      exit(EXIT_FAILURE);
-    } // endelse
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+              << std::endl << "CC data size read from restart file not equal to size "
+              << "of Hydro, MHD, Rad, and/or Z4c arrays, restart file is broken."
+              << std::endl;
+    exit(EXIT_FAILURE);
   }
 
   // read CC data into host array
@@ -468,8 +455,7 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
   }
 
   if (prad != nullptr) {
-    int nrad_use = (!rst_multi_freq_from_grey) ? nrad : nrad_grey;
-    Kokkos::realloc(ccin, nmb, nrad_use, nout3, nout2, nout1);
+    Kokkos::realloc(ccin, nmb, nrad, nout3, nout2, nout1);
     for (int m=0;  m<noutmbs_max; ++m) {
       // every rank has a MB to read, so read collectively
       if (m < noutmbs_min) {
@@ -501,17 +487,10 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
         }
         myoffset += data_size;
       }
-    } // endfor m
-
-    if (!rst_multi_freq_from_grey) {
-      Kokkos::deep_copy(Kokkos::subview(prad->i0, std::make_pair(0,nmb), Kokkos::ALL,
-                        Kokkos::ALL, Kokkos::ALL, Kokkos::ALL), ccin);
-    } else { // restart multi-frequency radiation using grey radiation rst file
-      Kokkos::deep_copy(Kokkos::subview(prad->i0, std::make_pair(0,nmb), std::make_pair(0,nrad_grey),
-                        Kokkos::ALL, Kokkos::ALL, Kokkos::ALL), ccin);
-    } // endelse (!rst_multi_freq_from_grey)
-
-    offset_myrank += nout1*nout2*nout3*nrad_use*sizeof(Real);   // radiation i0
+    }
+    Kokkos::deep_copy(Kokkos::subview(prad->i0, std::make_pair(0,nmb), Kokkos::ALL,
+                      Kokkos::ALL, Kokkos::ALL, Kokkos::ALL), ccin);
+    offset_myrank += nout1*nout2*nout3*nrad*sizeof(Real);   // radiation i0
     myoffset = offset_myrank;
   }
 
@@ -634,11 +613,6 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
                       Kokkos::ALL, Kokkos::ALL, Kokkos::ALL), ccin);
     offset_myrank += nout1*nout2*nout3*nadm*sizeof(Real);   // adm u_adm
     myoffset = offset_myrank;
-  }
-
-  // after all data is allocated
-  if ((prad != nullptr) && rst_multi_freq_from_grey) {
-    prad->IniBBRadiation();
   }
 
   // call problem generator again to re-initialize data, fn ptrs, as needed

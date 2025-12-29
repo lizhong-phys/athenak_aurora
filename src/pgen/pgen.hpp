@@ -42,6 +42,9 @@ class ProblemGenerator {
   // true if user history outputs are specified
   bool user_hist;
 
+  // true if use multi-frequency radiation restarting with grey-radiation rst file
+  bool rst_multi_freq_from_grey; 
+
   // vector of SphericalGrid objects for analysis
   std::vector<std::unique_ptr<SphericalGrid>> spherical_grids;
 

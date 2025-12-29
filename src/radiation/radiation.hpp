@@ -136,6 +136,7 @@ class Radiation {
   int num_iter_compton;
   int order_multifreq;   // reconstruction order used in intensity mapping; option: 0, 1, 2 (default)
   int limiter_multifreq; // reconstruction limiter used in intensity mapping; 0: no limiter, 1: minmod, 2: van Leer (default)
+  void IniBBRadiation(); // used when restart multi-frequency radiation using grey radiation rst file
 
   // Flags used in multi-frequency radiation
   bool update_fluid_energy;
