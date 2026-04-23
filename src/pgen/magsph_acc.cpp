@@ -318,7 +318,15 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
     // initialize gas profiles
     Real dens=dfloor, pgas=pfloor;
-    Real uu1=0.0, uu2=0.0, uu3=0.0;
+    Real uu1=0, uu2=0.0, uu3=0.0;
+    // initialize zero coordinate-frame velocity when r > 2
+    if (rv > 2) {
+      Real u0 = 1./sqrt(1.-2./rv);
+      Real u1=0.0, u2=0.0, u3=0.0;
+      uu1 = u1 - gupper[0][1]/gupper[0][0]*u0;
+      uu2 = u2 - gupper[0][2]/gupper[0][0]*u0;
+      uu3 = u3 - gupper[0][3]/gupper[0][0]*u0;
+    }
 
     // TOV star
     if (pp_dvce.use_tov) {
@@ -351,13 +359,12 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     if (rv < r_surf) {
       dens = rho_surf;
       pgas = rho_surf*tgas_surf;
+      // Keplerian speed is only valid when r > 2rg
       if (rv > 2.0) {
-        // Keplerian speed is only valid when r > 2rg
         Real u0 = 1./sqrt(1. - 2./rv - SQR(Omg_star*rv*sin(thv)));
         Real u1 = -Omg_star*x2v*u0;
         Real u2 =  Omg_star*x1v*u0;
         Real u3 = 0.0;
-        // convert velocity from coordinate frame to normal frame
         uu1 = u1 - gupper[0][1]/gupper[0][0] * u0;
         uu2 = u2 - gupper[0][2]/gupper[0][0] * u0;
         uu3 = u3 - gupper[0][3]/gupper[0][0] * u0;
@@ -374,13 +381,12 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     if (below_atm && (rv >= r_surf) && (rv <= rmax_atm_eqtr)) {
       dens = fmax(ComputeAtmosphere(x1v, x2v, x3v, Omg_star, r_surf, rho_surf, h_surf), dfloor);
       pgas = fmax(dens*tgas_surf, pfloor);
+      // Keplerian speed is only valid when r > 2rg
       if (rv > 2.0) {
-        // Keplerian speed is only valid when r > 2rg
         Real u0 = 1./sqrt(1. - 2./rv - SQR(Omg_star*rv*sin(thv)));
         Real u1 = -Omg_star*x2v*u0;
         Real u2 =  Omg_star*x1v*u0;
         Real u3 = 0.0;
-        // convert velocity from coordinate frame to normal frame
         uu1 = u1 - gupper[0][1]/gupper[0][0] * u0;
         uu2 = u2 - gupper[0][2]/gupper[0][0] * u0;
         uu3 = u3 - gupper[0][3]/gupper[0][0] * u0;
@@ -390,7 +396,6 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     // disk
     // TODO: implement disk initialization
 
-
     // set primitive values
     w0_(m,IDN,k,j,i) = dens;
     w0_(m,IEN,k,j,i) = pgas/gm1;
@@ -398,7 +403,6 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     w0_(m,IVY,k,j,i) = uu2;
     w0_(m,IVZ,k,j,i) = uu3;
   }); // end par_for "pgen_star_ini"
-
 
 
   // 8. INITIALIZE MAGNETIC FIELD
