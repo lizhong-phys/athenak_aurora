@@ -49,7 +49,7 @@ Coordinates::Coordinates(ParameterInput *pin, MeshBlockPack *ppack) :
       coord_data.ns_mask = pin->GetOrAddBoolean("coord","ns_mask",false);
       if (coord_data.ns_mask) {
         coord_data.bh_spin   = 0.0;
-        coord_data.bh_excise = false;
+        coord_data.bh_excise = pin->GetOrAddBoolean("coord","excise",false);
         coord_data.r_mask = pin->GetReal("problem", "r_mask");
       }
     } else {
@@ -58,15 +58,23 @@ Coordinates::Coordinates(ParameterInput *pin, MeshBlockPack *ppack) :
     }
 
     if (coord_data.bh_excise) {
-      // Set the density and pressure to which cells inside the excision radius will
-      // be reset to.  Primitive velocities will be set to zero.
-      coord_data.dexcise = pin->GetReal("coord","dexcise");
-      coord_data.pexcise = pin->GetReal("coord","pexcise");
-      coord_data.flux_excise_r = (pin->DoesBlockExist("radiation")) ?
-        1.0+sqrt(1.0-SQR(coord_data.bh_spin)) :
-        pin->GetOrAddReal("coord","flux_excise_r",1.0);
-      coord_data.rexcise =
-        (pin->DoesBlockExist("radiation")) ? 1.0+sqrt(1.0-SQR(coord_data.bh_spin)) : 1.0;
+
+      if (coord_data.ns_mask) {
+        coord_data.rexcise       = pin->GetOrAddReal("coord","ns_excise_r",2.0);
+        coord_data.flux_excise_r = pin->GetOrAddReal("coord","ns_excise_r",2.0);
+        coord_data.dexcise = pin->GetReal("problem","rho_surf");
+        coord_data.pexcise = pin->GetReal("problem","tgas_surf")*coord_data.dexcise;
+      } else {
+        // Set the density and pressure to which cells inside the excision radius will
+        // be reset to.  Primitive velocities will be set to zero.
+        coord_data.dexcise = pin->GetReal("coord","dexcise");
+        coord_data.pexcise = pin->GetReal("coord","pexcise");
+        coord_data.flux_excise_r = (pin->DoesBlockExist("radiation")) ?
+          1.0+sqrt(1.0-SQR(coord_data.bh_spin)) :
+          pin->GetOrAddReal("coord","flux_excise_r",1.0);
+        coord_data.rexcise =
+          (pin->DoesBlockExist("radiation")) ? 1.0+sqrt(1.0-SQR(coord_data.bh_spin)) : 1.0;
+      } // endelse
 
       coord_data.excision_scheme = ExcisionScheme::fixed;
       if (is_dynamical_relativistic) {

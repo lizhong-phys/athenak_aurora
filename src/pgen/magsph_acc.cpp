@@ -296,6 +296,10 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     Real &x3max = size.d_view(m).x3max;
     Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
 
+    // compute local metric
+    Real glower[4][4], gupper[4][4];
+    ComputeMetricAndInverse(x1v, x2v, x3v, false, 0.0, glower, gupper);
+
     // calculate Schwarzschild coordinates at the cell center
     Real rv, thv, phv;
     GetSchwarzschildCoordinates(x1v, x2v, x3v, &rv, &thv, &phv);
@@ -314,7 +318,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
     // initialize gas profiles
     Real dens=dfloor, pgas=pfloor;
-    Real uu1=0, uu2=0, uu3=0;
+    Real uu1=0.0, uu2=0.0, uu3=0.0;
 
     // TOV star
     if (pp_dvce.use_tov) {
@@ -343,13 +347,24 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       pgas = fmax(pgas, pfloor);
     } // endif (pp_dvce.use_tov)
 
-    // below atmosphere (r < r_surf)
+    // below the atmosphere (r < r_surf)
     if (rv < r_surf) {
       dens = rho_surf;
       pgas = rho_surf*tgas_surf;
-    } // endif mask zone
+      if (rv > 2.0) {
+        // Keplerian speed is only valid when r > 2rg
+        Real u0 = 1./sqrt(1. - 2./rv - SQR(Omg_star*rv*sin(thv)));
+        Real u1 = -Omg_star*x2v*u0;
+        Real u2 =  Omg_star*x1v*u0;
+        Real u3 = 0.0;
+        // convert velocity from coordinate frame to normal frame
+        uu1 = u1 - gupper[0][1]/gupper[0][0] * u0;
+        uu2 = u2 - gupper[0][2]/gupper[0][0] * u0;
+        uu3 = u3 - gupper[0][3]/gupper[0][0] * u0;
+      }
+    } // endif below the atmosphere
 
-    // atmosphere (r_surf <= r <= ~rmax_atm_eqtr)
+    // within the atmosphere (r_surf <= r <= ~rmax_atm_eqtr)
     Real rv6 = rv*rv*rv*rv*rv*rv;
     Real R_star6 = SQR(R_star*R_star*R_star);
     Real lmd = -(r_surf-2.)*r_surf;
@@ -357,28 +372,26 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     Real pw_idx = 0.5*lmd/h_surf;
     bool below_atm = (rv6*pow(pw_base, pw_idx) >= SQR(B_star)*R_star6/(rho_surf*sigma_max));
     if (below_atm && (rv >= r_surf) && (rv <= rmax_atm_eqtr)) {
-      dens = ComputeAtmosphere(x1v, x2v, x3v, Omg_star, r_surf, rho_surf, h_surf);
-      dens = fmax(dens, dfloor);
+      dens = fmax(ComputeAtmosphere(x1v, x2v, x3v, Omg_star, r_surf, rho_surf, h_surf), dfloor);
       pgas = fmax(dens*tgas_surf, pfloor);
-
-      // gas velocity in the normal frame
-      Real glower[4][4], gupper[4][4];
-      ComputeMetricAndInverse(x1v, x2v, x3v, false, 0.0, glower, gupper);
-
-      Real u0 = 1./sqrt(1. - 2./rv - SQR(Omg_star*rv*sin(thv)));
-      Real u1 = -Omg_star*x2v*u0;
-      Real u2 =  Omg_star*x1v*u0;
-      Real u3 = 0.0;
-
-      uu1 = u1 - gupper[0][1]/gupper[0][0] * u0;
-      uu2 = u2 - gupper[0][2]/gupper[0][0] * u0;
-      uu3 = u3 - gupper[0][3]/gupper[0][0] * u0;
-    } // endif atmosphere zone
+      if (rv > 2.0) {
+        // Keplerian speed is only valid when r > 2rg
+        Real u0 = 1./sqrt(1. - 2./rv - SQR(Omg_star*rv*sin(thv)));
+        Real u1 = -Omg_star*x2v*u0;
+        Real u2 =  Omg_star*x1v*u0;
+        Real u3 = 0.0;
+        // convert velocity from coordinate frame to normal frame
+        uu1 = u1 - gupper[0][1]/gupper[0][0] * u0;
+        uu2 = u2 - gupper[0][2]/gupper[0][0] * u0;
+        uu3 = u3 - gupper[0][3]/gupper[0][0] * u0;
+      }
+    } // endif within the atmosphere
 
     // disk
     // TODO: implement disk initialization
 
-    // Set primitive values
+
+    // set primitive values
     w0_(m,IDN,k,j,i) = dens;
     w0_(m,IEN,k,j,i) = pgas/gm1;
     w0_(m,IVX,k,j,i) = uu1;
@@ -657,7 +670,6 @@ static void CalculateTOV(const struct pgen_param pp, HostArray1D<Real> &r_host,
             << ", R* = " << r_host(n_pts-1) << std::endl;
 }
 
-
 // compute neutron star atmosphere
 KOKKOS_INLINE_FUNCTION
 Real ComputeAtmosphere(Real x1, Real x2, Real x3, Real Omega, Real r_surf, Real rho_surf, Real h_surf) {
@@ -673,14 +685,11 @@ Real ComputeAtmosphere(Real x1, Real x2, Real x3, Real Omega, Real r_surf, Real 
   return rho_surf*pow(part1/part2, pw_idx);
 }
 
-
-
 // convert CKS to Schwarzschild coordinates
 KOKKOS_INLINE_FUNCTION
 static void GetSchwarzschildCoordinates(Real x1, Real x2, Real x3,
                                         Real *pr, Real *ptheta, Real *pphi) {
   Real r = sqrt(SQR(x1) + SQR(x2) + SQR(x3));
-  r = fmax(r, 1.0);
   *pr = r;
   *ptheta = (fabs(x3/r) < 1.0) ? acos(x3/r) : acos(copysign(1.0, x3));
   *pphi = atan2(x2, x1);
@@ -743,10 +752,6 @@ Real A3dipole(struct pgen_param pp, Real x1, Real x2, Real x3) {
 
 
 
-
-
-
-
 void MySourceTerms(Mesh* pm, const Real bdt) {
 
   ReducedGravSrcTerm(pm, bdt);
@@ -791,7 +796,7 @@ void ReducedGravSrcTerm(Mesh* pm, const Real bdt) {
     // calculate Schwarzschild coordinates at the cell center
     Real rv, thv, phv;
     GetSchwarzschildCoordinates(x1v, x2v, x3v, &rv, &thv, &phv);
-    if ((rv < pp_dvce.r_mask) || (rv > pp_dvce.rmax_atm_eqtr)) return;
+    if ((rv < pp_dvce.r_surf) || (rv > pp_dvce.rmax_atm_eqtr)) return;
 
     // extract problem paramters
     const Real &R_star=pp_dvce.R_star, &B_star=pp_dvce.B_star, &Omg_star=pp_dvce.Omega_star;
@@ -885,10 +890,13 @@ void NeutronStarMask(Mesh* pm, const Real bdt) {
       Real glower[4][4], gupper[4][4];
       ComputeMetricAndInverse(x1v, x2v, x3v, false, 0.0, glower, gupper);
 
-      Real u0 = 1./sqrt(1. - 2./rv - SQR(Omg_star*rv*sin(thv)));
-      Real u1 = -Omg_star*x2v*u0;
-      Real u2 =  Omg_star*x1v*u0;
-      Real u3 = 0.0;
+      Real u0=1.0, u1=0.0, u2=0.0, u3=0.0;
+      if (rv > 2.0) {
+        u0 = 1./sqrt(1. - 2./rv - SQR(Omg_star*rv*sin(thv)));
+        u1 = -Omg_star*x2v*u0;
+        u2 =  Omg_star*x1v*u0;
+        u3 = 0.0;
+      }
 
       Real u_0 = glower[0][0]*u0 + glower[0][1]*u1 + glower[0][2]*u2 + glower[0][3]*u3;
       Real u_1 = glower[1][0]*u0 + glower[1][1]*u1 + glower[1][2]*u2 + glower[1][3]*u3;
@@ -908,11 +916,11 @@ void NeutronStarMask(Mesh* pm, const Real bdt) {
 
       Real wtot = dens + (gm1+1)/gm1*pgas + b_sq;
       Real ptot = pgas + 0.5*b_sq;
-      u0_(m,IDN,k,j,i) = dens * u0;
-      u0_(m,IM1,k,j,i) = wtot * u0 * u_1 - b0 * b_1;
-      u0_(m,IM2,k,j,i) = wtot * u0 * u_2 - b0 * b_2;
-      u0_(m,IM3,k,j,i) = wtot * u0 * u_3 - b0 * b_3;
-      u0_(m,IEN,k,j,i) = wtot * u0 * u_0 - b0 * b_0 + ptot + dens * u0;
+      u0_(m,IDN,k,j,i) = dens*u0;
+      u0_(m,IEN,k,j,i) = wtot*u0*u_0 - b0*b_0 + ptot + dens*u0;
+      u0_(m,IM1,k,j,i) = wtot*u0*u_1 - b0*b_1;
+      u0_(m,IM2,k,j,i) = wtot*u0*u_2 - b0*b_2;
+      u0_(m,IM3,k,j,i) = wtot*u0*u_3 - b0*b_3;
     } // endif
   }); // end par_for
 } // end NeutronStarMask
