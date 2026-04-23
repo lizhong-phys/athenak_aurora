@@ -28,6 +28,7 @@ IdealGRMHD::IdealGRMHD(MeshBlockPack *pp, ParameterInput *pin) :
   eos_data.use_e = true;  // ideal gas EOS always uses internal energy
   eos_data.use_t = false;
   eos_data.gamma_max = pin->GetOrAddReal("mhd","gamma_max",(FLT_MAX));  // gamma ceiling
+  eos_data.sigma_max = pin->GetOrAddReal("mhd","sigma_max",(FLT_MAX));  // magnetization ceiling
 }
 
 //----------------------------------------------------------------------------------------
@@ -53,6 +54,8 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
   auto &flat = pmy_pack->pcoord->coord_data.is_minkowski;
   auto &spin = pmy_pack->pcoord->coord_data.bh_spin;
   auto &use_excise = pmy_pack->pcoord->coord_data.bh_excise;
+  auto &use_nsmask = pmy_pack->pcoord->coord_data.ns_mask;
+  auto &r_mask_ = pmy_pack->pcoord->coord_data.r_mask;
   auto &excision_floor_ = pmy_pack->pcoord->excision_floor;
   auto &excision_flux_ = pmy_pack->pcoord->excision_flux;
   auto &dexcise_ = pmy_pack->pcoord->coord_data.dexcise;
@@ -133,6 +136,12 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
       }
     }
 
+    bool apply_sigma_max = false;
+    if (use_nsmask) {
+      Real r_sch = sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
+      if (r_sch >= r_mask_) apply_sigma_max = true;
+    }
+
     if (!(excised)) {
       // calculate SR conserved quantities
       MHDCons1D u_sr;
@@ -142,7 +151,7 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
       // call c2p function
       // (inline function in ideal_c2p_mhd.hpp file)
       SingleC2P_IdealSRMHD(u_sr, eos, s2, b2, rpar, w,
-                           dfloor_used, efloor_used, c2p_failure, iter_used);
+                           dfloor_used, efloor_used, c2p_failure, iter_used, apply_sigma_max);
 
       // apply velocity ceiling if necessary
       Real tmp = glower[1][1]*SQR(w.vx)

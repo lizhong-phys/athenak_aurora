@@ -24,7 +24,11 @@ Units::Units(ParameterInput *pin) :
   if (pin->GetOrAddBoolean("coord","general_rel",false)) {
     // Get input density scale and black hole mass in cgs units
     Real density_scale = pin->GetReal("units","density_cgs");        // density unit (cgs)
-    Real bhmass_cgs = pin->GetReal("units","bhmass_msun")*msun_cgs;  // BH mass (cgs)
+    // Real bhmass_cgs = pin->GetReal("units","bhmass_msun")*msun_cgs;  // BH mass (cgs)
+
+    Real bhmass_cgs = (pin->DoesParameterExist("coord", "ns_mask")) ?
+                      pin->GetReal("units","nsmass_msun") :
+                      pin->GetReal("units","bhmass_msun")*msun_cgs;  // BH mass (cgs)
 
     // (Re)set MLT units
     length_cgs_ = grav_constant_cgs*bhmass_cgs/SQR(speed_of_light_cgs);  // GM/c^2

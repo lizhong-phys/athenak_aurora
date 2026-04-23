@@ -317,6 +317,8 @@ void MeshBoundaryValuesCC::ConsToPrimCoarseBndry(const DvceArray5D<Real> &cons,
   auto &spin = pmy_pack->pcoord->coord_data.bh_spin;
   bool &is_sr = pmy_pack->pcoord->is_special_relativistic;
   bool &is_gr = pmy_pack->pcoord->is_general_relativistic;
+  auto &use_nsmask = pmy_pack->pcoord->coord_data.ns_mask;
+  auto &r_mask_ = pmy_pack->pcoord->coord_data.r_mask;
   auto &eos = pmy_pack->pmhd->peos->eos_data;
   int &nmhd  = pmy_pack->pmhd->nmhd;
   int &nscal = pmy_pack->pmhd->nscalars;
@@ -390,13 +392,19 @@ void MeshBoundaryValuesCC::ConsToPrimCoarseBndry(const DvceArray5D<Real> &cons,
           Real glower[4][4], gupper[4][4];
           ComputeMetricAndInverse(x1v, x2v, x3v, flat, spin, glower, gupper);
 
+          bool apply_sigma_max = false;
+          if (use_nsmask) {
+            Real r_sch = sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
+            if (r_sch >= r_mask_) apply_sigma_max = true;
+          }
+
           MHDCons1D u_sr;
           Real s2,b2,rpar;
           TransformToSRMHD(u,glower,gupper,s2,b2,rpar,u_sr);
           bool c2p_failure=false;
           int iter_used=0;
           SingleC2P_IdealSRMHD(u_sr, eos, s2, b2, rpar, w,
-                               dfloor_used, efloor_used, c2p_failure, iter_used);
+                               dfloor_used, efloor_used, c2p_failure, iter_used, apply_sigma_max);
 
           // apply velocity ceiling if necessary
           Real tmp = glower[1][1]*SQR(w.vx)
@@ -416,10 +424,10 @@ void MeshBoundaryValuesCC::ConsToPrimCoarseBndry(const DvceArray5D<Real> &cons,
           Real s2 = SQR(u.mx) + SQR(u.my) + SQR(u.mz);
           Real b2 = SQR(u.bx) + SQR(u.by) + SQR(u.bz);
           Real rpar = (u.bx*u.mx +  u.by*u.my +  u.bz*u.mz)/u.d;
-          bool c2p_failure=false;
+          bool c2p_failure=false; bool apply_sigma_max=false;
           int iter_used=0;
           SingleC2P_IdealSRMHD(u, eos, s2, b2, rpar, w,
-                               dfloor_used, efloor_used, c2p_failure, iter_used);
+                               dfloor_used, efloor_used, c2p_failure, iter_used, apply_sigma_max);
           // apply velocity ceiling if necessary
           Real lor = sqrt(1.0+SQR(w.vx)+SQR(w.vy)+SQR(w.vz));
           if (lor > eos.gamma_max) {

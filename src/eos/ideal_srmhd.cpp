@@ -24,6 +24,7 @@ IdealSRMHD::IdealSRMHD(MeshBlockPack *pp, ParameterInput *pin) :
   eos_data.use_e = true;  // ideal gas EOS always uses internal energy
   eos_data.use_t = false;
   eos_data.gamma_max = pin->GetOrAddReal("mhd","gamma_max",(FLT_MAX));  // gamma ceiling
+  eos_data.sigma_max = pin->GetOrAddReal("mhd","sigma_max",(FLT_MAX));  // magnetization ceiling
 }
 
 //----------------------------------------------------------------------------------------
@@ -107,9 +108,10 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
     HydPrim1D w;
     bool dfloor_used=false, efloor_used=false;
     bool vceiling_used=false, c2p_failure=false;
+    bool apply_sigma_max = false;
     int iter_used=0;
     SingleC2P_IdealSRMHD(u, eos, s2, b2, rpar, w,
-                         dfloor_used, efloor_used, c2p_failure, iter_used);
+                         dfloor_used, efloor_used, c2p_failure, iter_used, apply_sigma_max);
     // apply velocity ceiling if necessary
     Real lor = sqrt(1.0+SQR(w.vx)+SQR(w.vy)+SQR(w.vz));
     if (lor > eos.gamma_max) {

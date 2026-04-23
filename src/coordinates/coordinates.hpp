@@ -41,6 +41,8 @@ struct CoordData {
   Real flux_excise_r;              // reduce to first-order inside this radius
   ExcisionScheme excision_scheme;  // excision method
   Real excise_lapse;               // if excision_scheme = lapse, excise under this lapse
+  bool ns_mask;                    // flag to specify neutron star mask
+  Real r_mask;                     // neutron star mask radius
 };
 
 //----------------------------------------------------------------------------------------
