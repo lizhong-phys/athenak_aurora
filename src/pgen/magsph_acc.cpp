@@ -825,9 +825,9 @@ void ReducedGravSrcTerm(Mesh* pm, const Real bdt) {
       Real srcy = wtot*ut2 * (1./rv3 - SQR(Omg_star))*x2v;
       Real srcz = wtot*ut2 * (1./rv3)*x3v;
 
-      u0_(m,IM1,k,j,i) -= bdt*srcx;
-      u0_(m,IM2,k,j,i) -= bdt*srcy;
-      u0_(m,IM3,k,j,i) -= bdt*srcz;
+      u0_(m,IM1,k,j,i) += bdt*srcx;
+      u0_(m,IM2,k,j,i) += bdt*srcy;
+      u0_(m,IM3,k,j,i) += bdt*srcz;
     } // endif
   }); // end par_for
 } // end ReducedGravSrcTerm
