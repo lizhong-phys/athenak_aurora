@@ -130,6 +130,7 @@ namespace {
 
     // disk paramters
     bool add_torus;                            // enable torus initialization
+    bool thin_torus;                           // use Chakrabarti (thin) or Fishbone-Moncrief (thick)
     Real r_edge, r_peak, rho_max;              // fixed torus parameters
     Real l_peak;                               // specific ang. mom. at (r_peak, theta=pi/2)
     Real c_param;                              // l = c * lambda^n constant (from CalculateCN)
@@ -139,6 +140,9 @@ namespace {
     Real r_outer_edge;                         // outermost equatorial radius where log_h >= 0
     Real rho_min, rho_pow, pgas_min, pgas_pow; // background parameters
     Real pert_amp;                             // pressure perturbation amplitude (seeds MRI)
+
+    // testing paramters
+    bool test_hydro_balance;
 
     // tov star parameters
     bool use_tov;    // initialize with tov star
@@ -230,10 +234,14 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   pp.pfloor        = pin->GetOrAddReal("mhd", "pfloor",    1.0e-15);
   pp.sigma_max     = pin->GetOrAddReal("mhd", "sigma_max", 1000.0);
 
+  // testing parameters
+  pp.test_hydro_balance = pin->GetOrAddBoolean("problem", "test_hydro_balance", false);
+
   // disk paramters
-  pp.add_torus     = pin->GetOrAddBoolean("problem", "add_torus", false);
+  pp.add_torus = pin->GetOrAddBoolean("problem", "add_torus", false);
   if (pp.add_torus) {
     // torus
+    pp.thin_torus  = pin->GetOrAddBoolean("problem", "thin_torus", true);
     pp.r_edge      = pin->GetReal("problem", "r_edge");
     pp.r_peak      = pin->GetReal("problem", "r_peak");
     pp.rho_max     = pin->GetReal("problem", "rho_max");
@@ -283,7 +291,10 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   //    - Compute mask coefficients C1, C2 at R_m (Eq. 5)
   {
     const Real &rg=pp.rg, &r_core=pp.r_core;
-    const Real &B_star=pp.B_star, &R_star=pp.R_star;
+    const Real &R_star=pp.R_star;
+    Real B_star = pp.B_star;
+    if (pp.test_hydro_balance) B_star *= 1.0e-12; // weak magnetic field for hydro balance test
+    
     Real rg3 = rg*SQR(rg);
     Real R_star2 = SQR(R_star);
     Real r_core2 = SQR(r_core);
@@ -327,8 +338,14 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
   // Compute paramters for torus initialization
   if (pp.add_torus) {
-    CalculateCN(pp, &pp.c_param, &pp.n_param);
-    pp.l_peak = CalculateL(pp, pp.r_peak, 1.0);
+    if (pp.thin_torus) { // Chakrabarti torus
+      CalculateCN(pp, &pp.c_param, &pp.n_param);
+      pp.l_peak = CalculateL(pp, pp.r_peak, 1.0);
+    } else { // FM torus
+      Real r_peak = pp.r_peak;
+      pp.l_peak = r_peak*sqrt(r_peak) / (r_peak-3.0);
+    } // endelse
+    // common to both Chakrabarti and FM tori
     pp.log_h_edge = LogHAux(pp, pp.r_edge, 1.0);
     pp.log_h_peak = LogHAux(pp, pp.r_peak, 1.0) - pp.log_h_edge;
     pp.ptot_over_rho_peak = gm1/pp.gamma_adi * (exp(pp.log_h_peak)-1.0);
@@ -466,7 +483,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
     // torus (r > rmax_atm_eqtr)
     if ((pp_dvce.add_torus) && (rv > rmax_atm_eqtr)) {
-      // Determine if we are in the torus
+      // determine if we are in the torus
       Real log_h;
       bool in_torus = false;
       if ((rv >= pp_dvce.r_edge) && (rv <= pp_dvce.r_outer_edge)) {
@@ -474,6 +491,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
         if (log_h >= 0.0) in_torus = true;
       }
 
+      // initialize with background primitives
       Real rho_bg, pgas_bg;
       rho_bg  = pp_dvce.rho_min  * pow(rv, pp_dvce.rho_pow);
       pgas_bg = pp_dvce.pgas_min * pow(rv, pp_dvce.pgas_pow);
@@ -945,7 +963,7 @@ static Real CalculateL(struct pgen_param pgen, Real r, Real sin_theta) {
 } // end CalculateL
 
 //----------------------------------------------------------------------------------------
-// Function to calculate enthalpy in Chakrabarti torus
+// Function to calculate enthalpy in Chakrabarti or Fishbone-Moncrief torus torus
 // Inputs:
 //   r: radial Boyer-Lindquist coordinate
 //   sin_theta: sine of polar Boyer-Lindquist coordinate
@@ -953,33 +971,42 @@ static Real CalculateL(struct pgen_param pgen, Real r, Real sin_theta) {
 //   returned value: log(h)
 // Notes:
 //   enthalpy defined here as h = p_gas/rho
+//   references Fishbone & Moncrief 1976, ApJ 207 962 (FM)
+//   implements first half of (FM 3.6)
 //   references Chakrabarti, S. 1985, ApJ 288, 1
 
 KOKKOS_INLINE_FUNCTION
 static Real LogHAux(struct pgen_param pgen, Real r, Real sin_theta) {
   Real logh;
-  Real l = CalculateL(pgen, r, sin_theta);
-  Real u_t = CalculateCovariantUT(pgen, r, sin_theta, l);
-  Real l_edge = CalculateL(pgen, pgen.r_edge, 1.0);
-  Real u_t_edge = CalculateCovariantUT(pgen, pgen.r_edge, 1.0, l_edge);
-  Real h = u_t_edge/u_t;
-  if (pgen.n_param==1.0) {
-    h *= pow(l_edge/l, SQR(pgen.c_param)/(SQR(pgen.c_param)-1.0));
-  } else {
-    Real pow_c = 2.0/pgen.n_param;
-    Real pow_l = 2.0-2.0/pgen.n_param;
-    Real pow_abs = pgen.n_param/(2.0-2.0*pgen.n_param);
-    h *= (pow(fabs(1.0 - pow(pgen.c_param, pow_c)*pow(l   , pow_l)), pow_abs) *
-          pow(fabs(1.0 - pow(pgen.c_param, pow_c)*pow(l_edge, pow_l)), -1.0*pow_abs));
-  }
-
-  if (isfinite(h) && h >= 1.0) {
-    logh = log(h);
-  } else if (fabs(h-1.0) <= 1e-15) {
-    logh = 0.0;
-  } else {
-    logh = -1.0;
-  }
+  if (pgen.thin_torus) { // Chakrabarti torus
+    Real l = CalculateL(pgen, r, sin_theta);
+    Real u_t = CalculateCovariantUT(pgen, r, sin_theta, l);
+    Real l_edge = CalculateL(pgen, pgen.r_edge, 1.0);
+    Real u_t_edge = CalculateCovariantUT(pgen, pgen.r_edge, 1.0, l_edge);
+    Real h = u_t_edge/u_t;
+    if (pgen.n_param==1.0) {
+      h *= pow(l_edge/l, SQR(pgen.c_param)/(SQR(pgen.c_param)-1.0));
+    } else {
+      Real pow_c = 2.0/pgen.n_param;
+      Real pow_l = 2.0-2.0/pgen.n_param;
+      Real pow_abs = pgen.n_param/(2.0-2.0*pgen.n_param);
+      h *= (pow(fabs(1.0 - pow(pgen.c_param, pow_c)*pow(l,      pow_l)), pow_abs) *
+            pow(fabs(1.0 - pow(pgen.c_param, pow_c)*pow(l_edge, pow_l)), -1.0*pow_abs));
+    }
+    if (isfinite(h) && h >= 1.0) {
+      logh = log(h);
+    } else if (fabs(h-1.0) <= 1e-15) {
+      // prevent confusion from the truncation error
+      logh = 0.0;
+    } else {
+      logh = -1.0;
+    }
+  } else { // FM torus
+    Real exp_2nu     = 1.0 - 2.0/r;
+    Real exp_neg2chi = exp_2nu / SQR(r*sin_theta);
+    Real var_a       = sqrt(1.0 + 4.0*SQR(pgen.l_peak)*exp_neg2chi);
+    logh = 0.5*log((1.0 + var_a)/exp_2nu) - 0.5*var_a;
+  } // endelse
 
   return logh;
 }
@@ -1003,19 +1030,43 @@ static Real CalculateCovariantUT(struct pgen_param pgen, Real r, Real sin_theta,
   return u_t;
 } // end CalculateCovariantUT
 
+//----------------------------------------------------------------------------------------
+// Function to calculate BL 4-velocity (u^t, u^phi) on a circular equatorial orbit
+// inside a Chakrabarti or Fishbone-Moncrief torus, specialized to Schwarzschild
+// (spin = 0).  With a = 0 the BL metric is diagonal (g_{t phi} = 0), so the
+// orbit equations collapse to:
+//
+//   Chakrabarti:
+//     l     = CalculateL(r, sin_theta),  u_t = CalculateCovariantUT(r, sin_theta, l)
+//     u^t   = -u_t / (1 - 2/r)
+//     u^phi = -l u_t / (r^2 sin^2 theta)
+//
+//   Fishbone-Moncrief:
+//     u_phi_proj = sqrt(0.5*(-1 + sqrt(1 + 4 l_peak^2 exp_neg2chi)))  [sign by prograde]
+//     u^phi = u_phi_proj / (r sin_theta)
+//     u^t   = sqrt((1 + u_phi_proj^2) / (1 - 2/r))
+
 KOKKOS_INLINE_FUNCTION
 static void CalculateVelocityInTorus(struct pgen_param pgen, Real r, Real sin_theta, Real *pu0, Real *pu3) {
-  // Schwarzschild BL metric components on the orbit plane
-  Real g_00 = -(1.0 - 2.0/r);          // g_tt
-  Real g_33 = SQR(r) * SQR(sin_theta); // g_{phi phi}
+  Real g_00 = -(1.0 - 2.0/r);
+  Real g_33 = SQR(r) * SQR(sin_theta);
+  Real u0 = 0.0, u3 = 0.0;
+  if (pgen.thin_torus) { // Chakrabarti torus
+    Real l   = CalculateL(pgen, r, sin_theta);
+    Real u_t = CalculateCovariantUT(pgen, r, sin_theta, l);
+    u0 = u_t / g_00;          // u^t   = g^{tt} u_t,  g^{tt} = 1/g_tt when g_{t phi}=0
+    u3 = -l * u_t / g_33;     // u^phi = -l u_t / g_{phi phi}
+  } else { // FM torus
+    Real exp_neg2chi = -g_00 / g_33;         // = (1 - 2/r) / (r^2 sin^2 theta)
+    Real var_a       = sqrt(1.0 + 4.0*SQR(pgen.l_peak)*exp_neg2chi);
+    Real u_phi_proj  = sqrt(0.5*(var_a - 1.0));
 
-  // Chakrabarti profile: l and u_t at this point
-  Real l   = CalculateL(pgen, r, sin_theta);
-  Real u_t = CalculateCovariantUT(pgen, r, sin_theta, l);
+    u3 = u_phi_proj / (r * sin_theta);
+    u0 = sqrt((1.0 + SQR(u_phi_proj)) / (-g_00));
+  } // endelse
 
-  // Contravariant time and phi components
-  *pu0 = u_t / g_00;        // u^t   = g^{tt} u_t = u_t / g_tt
-  *pu3 = -l * u_t / g_33;   // u^phi = -l u_t / g_{phi phi}
+  *pu0 = u0;
+  *pu3 = u3;
   return;
 }
 
