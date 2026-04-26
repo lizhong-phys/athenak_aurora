@@ -41,8 +41,17 @@ struct CoordData {
   Real flux_excise_r;              // reduce to first-order inside this radius
   ExcisionScheme excision_scheme;  // excision method
   Real excise_lapse;               // if excision_scheme = lapse, excise under this lapse
+
+  // neutron star problem
   bool ns_mask;                    // flag to specify neutron star mask
   Real r_mask;                     // neutron star mask radius
+  Real r_surf;                     // radius of atmosphere bottom (r_surf <= r_mask)
+  Real rmax_atm_eqtr; 
+  Real h_surf;                     // atmosphere minimum scale height
+  Real tgas_surf;                  // atmosphere temperature
+  Real rho_surf;                   // density at atmosphere bottom
+  Real pmag_star;                  // magnetic pressure at R_star
+  Real Omg_star;                   // angular velocity of rotating neutron star
 };
 
 //----------------------------------------------------------------------------------------
