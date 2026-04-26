@@ -256,18 +256,18 @@ void Coordinates::CoordSrcTerms(const DvceArray5D<Real> &prim,
   auto &spin = coord_data.bh_spin;
 
   // neutron star problem
-  auto &use_nsmask = coord_data.ns_mask;
-  auto &r_surf_    = coord_data.r_surf;
-  auto &h_surf_    = coord_data.h_surf;
-  auto &tgas_surf_ = coord_data.tgas_surf;
-  auto &rho_surf_  = coord_data.rho_surf;
-  auto &Omg_star_  = coord_data.Omg_star;
-  auto &pmag_star_ = coord_data.pmag_star;
-  Real &rmax_atm_eqtr_ = coord_data.rmax_atm_eqtr;
-  Real pgas_surf  = rho_surf_*tgas_surf_;
-  Real emag_star  = 2*pmag_star_;
-  Real beta_min_   = eos.beta_min;
-  Real sigma_max_  = eos.sigma_max;
+  // auto &use_nsmask = coord_data.ns_mask;
+  // auto &r_surf_    = coord_data.r_surf;
+  // auto &h_surf_    = coord_data.h_surf;
+  // auto &tgas_surf_ = coord_data.tgas_surf;
+  // auto &rho_surf_  = coord_data.rho_surf;
+  // auto &Omg_star_  = coord_data.Omg_star;
+  // auto &pmag_star_ = coord_data.pmag_star;
+  // Real &rmax_atm_eqtr_ = coord_data.rmax_atm_eqtr;
+  // Real pgas_surf  = rho_surf_*tgas_surf_;
+  // Real emag_star  = 2*pmag_star_;
+  // Real beta_min_   = eos.beta_min;
+  // Real sigma_max_  = eos.sigma_max;
 
 
   Real gamma_prime = eos.gamma / (eos.gamma - 1.0);
@@ -384,21 +384,21 @@ void Coordinates::CoordSrcTerms(const DvceArray5D<Real> &prim,
     s_3 +=     dg_dx3[2][3] * tt[2][3];
     s_3 += 0.5*dg_dx3[3][3] * tt[3][3];
 
-    // turn off gravitational source term in atmosphere region
-    if (use_nsmask) {
-      Real rv  = sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
-      Real thv = (fabs(x3v/rv) < 1.0) ? acos(x3v/rv) : acos(copysign(1.0, x3v));
-      Real rv6 = rv*rv*rv*rv*rv*rv;
-      Real lmd = -(r_surf_-2.)*r_surf_;
-      Real pw_base = (1. - 2./rv - SQR(Omg_star_*rv*sin(thv))) / (1 - 2./r_surf_);
-      Real pw_idx = 0.5*lmd/h_surf_;
-      bool below_atm = (rv6*pow(pw_base, pw_idx) >= fmax(emag_star/(2*pgas_surf)*beta_min_, emag_star/(rho_surf_*sigma_max_)));
-      if (below_atm && (rv >= r_surf_) && (rv <= rmax_atm_eqtr_)) {
-        s_1 = 0;
-        s_2 = 0;
-        s_3 = 0;
-      } // inside atmosphere region
-    } // end neutron
+    // // turn off gravitational source term in atmosphere region
+    // if (use_nsmask) {
+    //   Real rv  = sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
+    //   Real thv = (fabs(x3v/rv) < 1.0) ? acos(x3v/rv) : acos(copysign(1.0, x3v));
+    //   Real rv6 = rv*rv*rv*rv*rv*rv;
+    //   Real lmd = -(r_surf_-2.)*r_surf_;
+    //   Real pw_base = (1. - 2./rv - SQR(Omg_star_*rv*sin(thv))) / (1 - 2./r_surf_);
+    //   Real pw_idx = 0.5*lmd/h_surf_;
+    //   bool below_atm = (rv6*pow(pw_base, pw_idx) >= fmax(emag_star/(2*pgas_surf)*beta_min_, emag_star/(rho_surf_*sigma_max_)));
+    //   if (below_atm && (rv >= r_surf_) && (rv <= rmax_atm_eqtr_)) {
+    //     s_1 = 0;
+    //     s_2 = 0;
+    //     s_3 = 0;
+    //   } // inside atmosphere region
+    // } // end neutron
 
     // Add source terms to conserved quantities
     cons(m,IM1,k,j,i) += dt * s_1;

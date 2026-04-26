@@ -46,7 +46,7 @@ struct CoordData {
   bool ns_mask;                    // flag to specify neutron star mask
   Real r_mask;                     // neutron star mask radius
   Real r_surf;                     // radius of atmosphere bottom (r_surf <= r_mask)
-  Real rmax_atm_eqtr; 
+  Real rmax_atm_eqtr;
   Real h_surf;                     // atmosphere minimum scale height
   Real tgas_surf;                  // atmosphere temperature
   Real rho_surf;                   // density at atmosphere bottom

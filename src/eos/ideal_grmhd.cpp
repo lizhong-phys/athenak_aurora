@@ -55,8 +55,11 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
   auto &flat = pmy_pack->pcoord->coord_data.is_minkowski;
   auto &spin = pmy_pack->pcoord->coord_data.bh_spin;
   auto &use_excise = pmy_pack->pcoord->coord_data.bh_excise;
+
   auto &use_nsmask = pmy_pack->pcoord->coord_data.ns_mask;
   auto &r_mask_ = pmy_pack->pcoord->coord_data.r_mask;
+  Real emag_star = 2*pmy_pack->pcoord->coord_data.pmag_star; 
+
   auto &excision_floor_ = pmy_pack->pcoord->excision_floor;
   auto &excision_flux_ = pmy_pack->pcoord->excision_flux;
   auto &dexcise_ = pmy_pack->pcoord->coord_data.dexcise;
@@ -138,9 +141,13 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
     }
 
     bool apply_sigma_max = false;
+    Real b2_fake = -1;
     if (use_nsmask) {
       Real r_sch = sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
-      if (r_sch >= r_mask_) apply_sigma_max = true;
+      if (r_sch >= r_mask_) {
+        apply_sigma_max = true;
+        b2_fake = emag_star/(r_sch*r_sch*r_sch*r_sch*r_sch*r_sch);
+      }
     }
 
     if (!(excised)) {
@@ -152,7 +159,7 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
       // call c2p function
       // (inline function in ideal_c2p_mhd.hpp file)
       SingleC2P_IdealSRMHD(u_sr, eos, s2, b2, rpar, w,
-                           dfloor_used, efloor_used, c2p_failure, iter_used, apply_sigma_max);
+                           dfloor_used, efloor_used, c2p_failure, iter_used, apply_sigma_max, b2_fake);
 
       // apply velocity ceiling if necessary
       Real tmp = glower[1][1]*SQR(w.vx)

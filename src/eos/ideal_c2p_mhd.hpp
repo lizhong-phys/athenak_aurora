@@ -133,13 +133,13 @@ Real Equation44(const Real mu, const Real b2, const Real rpar, const Real r, con
 KOKKOS_INLINE_FUNCTION
 void SingleC2P_IdealSRMHD(MHDCons1D &u, const EOS_Data &eos, Real s2, Real b2, Real rpar,
                           HydPrim1D &w, bool &dfloor_used, bool &efloor_used,
-                          bool &c2p_failure, int &max_iter, bool &apply_sigma_max) {
+                          bool &c2p_failure, int &max_iter, bool &apply_sigma_max, Real b2_fake) {
   // Parameters
   const int max_iterations = 25;
   const Real tol = 1.0e-12;
   const Real gm1 = eos.gamma - 1.0;
-  Real dfloor_local = (!apply_sigma_max) ? eos.dfloor : fmax(eos.dfloor, b2/eos.sigma_max);
-  Real pfloor_local = (!apply_sigma_max) ? eos.pfloor : fmax(eos.pfloor, b2/2*eos.beta_min);
+  Real dfloor_local = (!apply_sigma_max) ? eos.dfloor : fmax(eos.dfloor, b2_fake/eos.sigma_max);
+  Real pfloor_local = (!apply_sigma_max) ? eos.pfloor : fmax(eos.pfloor, b2_fake/2*eos.beta_min);
 
   // apply density floor, without changing momentum or energy
   if (u.d < dfloor_local) {

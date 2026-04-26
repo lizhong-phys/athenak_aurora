@@ -112,7 +112,7 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
     bool apply_sigma_max = false;
     int iter_used=0;
     SingleC2P_IdealSRMHD(u, eos, s2, b2, rpar, w,
-                         dfloor_used, efloor_used, c2p_failure, iter_used, apply_sigma_max);
+                         dfloor_used, efloor_used, c2p_failure, iter_used, apply_sigma_max, -1);
     // apply velocity ceiling if necessary
     Real lor = sqrt(1.0+SQR(w.vx)+SQR(w.vy)+SQR(w.vz));
     if (lor > eos.gamma_max) {
