@@ -1125,7 +1125,7 @@ static void TransformVector(Real a0_sks, Real a1_sks, Real a2_sks, Real a3_sks,
 
 void MySourceTerms(Mesh* pm, const Real bdt) {
 
-  // ReducedGravSrcTerm(pm, bdt);
+  ReducedGravSrcTerm(pm, bdt);
 
   NeutronStarMask(pm, bdt);
 
