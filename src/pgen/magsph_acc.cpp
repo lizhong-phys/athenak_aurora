@@ -102,6 +102,9 @@ namespace {
     Real B_star;        // magnetic field strength
     Real Omega_star;    // angular speed
 
+    Real r_mask;        // mask radius
+    Real r_excise;      // excision radius
+
     // unit parameters
     Real rg;            // gravitational radius
     Real rho_unit;      // density unit
@@ -111,7 +114,6 @@ namespace {
     Real rho_surf;      // density of atmosphere bottom
     Real tgas_surf;     // atmosphere temperature
     Real r_surf;        // radius of atmosphere bottom
-    Real r_mask;        // mask radius
     Real rmax_atm_pole; // radius of atmosphere top at pole
     Real rmax_atm_eqtr; // radius of atmosphere top at equator
     Real h_surf;        // minimum required scale height
@@ -212,7 +214,10 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   pp.R_star        = pin->GetOrAddReal("problem", "R_star",     5.804742809147471);
   pp.B_star        = pin->GetOrAddReal("problem", "B_star",     0.09409669397816478);
   pp.Omega_star    = pin->GetOrAddReal("problem", "Omega_star", 0.0);
+
+  // mask and excision
   pp.r_mask        = pin->GetOrAddReal("problem", "r_mask",     0.8*pp.R_star);
+  pp.r_excise      = pin->GetOrAddReal("coord", "ns_excise_r",  2.0);
 
   // unit parameters
   pp.rg            = pin->GetOrAddReal("units", "rg",          1.0);
@@ -455,7 +460,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       dens = rho_surf;
       pgas = rho_surf*tgas_surf;
       // Keplerian speed is only valid when r > 2rg
-      if (rv > 2.0) {
+      if (rv > pp_dvce.r_excise) {
         Real u0 = 1./sqrt(1. - 2./rv - SQR(Omg_star*rv*sin(thv)));
         Real u1 = -Omg_star*x2v*u0;
         Real u2 =  Omg_star*x1v*u0;
@@ -479,7 +484,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       pgas = fmax(pgas_atm, pfloor);
 
       // Keplerian speed is only valid when r > 2rg
-      if (rv > 2.0) {
+      if (rv > pp_dvce.r_excise) {
         Real u0 = 1./sqrt(1. - 2./rv - SQR(Omg_star*rv*sin(thv)));
         Real u1 = -Omg_star*x2v*u0;
         Real u2 =  Omg_star*x1v*u0;
@@ -1260,7 +1265,7 @@ void NeutronStarMask(Mesh* pm, const Real bdt) {
       ComputeMetricAndInverse(x1v, x2v, x3v, false, 0.0, glower, gupper);
 
       Real u0=1.0, u1=0.0, u2=0.0, u3=0.0;
-      if (rv > 2.0) {
+      if (rv > pp_dvce.r_excise) {
         u0 = 1./sqrt(1. - 2./rv - SQR(Omg_star*rv*sin(thv)));
         u1 = -Omg_star*x2v*u0;
         u2 =  Omg_star*x1v*u0;
