@@ -1125,7 +1125,7 @@ static void TransformVector(Real a0_sks, Real a1_sks, Real a2_sks, Real a3_sks,
 
 void MySourceTerms(Mesh* pm, const Real bdt) {
 
-  ReducedGravSrcTerm(pm, bdt);
+  // ReducedGravSrcTerm(pm, bdt);
 
   NeutronStarMask(pm, bdt);
 
@@ -1188,7 +1188,8 @@ void ReducedGravSrcTerm(Mesh* pm, const Real bdt) {
       Real dens = w0_(m,IDN,k,j,i);
       Real pgas = w0_(m,IEN,k,j,i)*gm1;
       Real ut2 = 1./(1. - 2./rv - SQR(Omg_star*rv*sin(thv)));
-      Real wtot = dens + pgas/gm1 + pgas + lmd*pgas/h_surf;
+      // Real wtot = dens + pgas/gm1 + pgas + lmd*pgas/h_surf;
+      Real wtot = lmd*pgas/h_surf;
 
       Real srcx = wtot*ut2 * (1./rv3 - SQR(Omg_star))*x1v;
       Real srcy = wtot*ut2 * (1./rv3 - SQR(Omg_star))*x2v;

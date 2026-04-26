@@ -121,6 +121,8 @@ void Coordinates::CoordSrcTerms(const DvceArray5D<Real> &prim, const EOS_Data &e
   auto &size = pmy_pack->pmb->mb_size;
   auto &flat = coord_data.is_minkowski;
   auto &spin = coord_data.bh_spin;
+  auto &use_nsmask = coord_data.ns_mask;
+  auto &r_mask_ = coord_data.r_mask;
 
   Real gamma_prime = eos.gamma / (eos.gamma - 1.0);
 
@@ -215,6 +217,13 @@ void Coordinates::CoordSrcTerms(const DvceArray5D<Real> &prim, const EOS_Data &e
     s_3 +=     dg_dx3[2][3] * tt[2][3];
     s_3 += 0.5*dg_dx3[3][3] * tt[3][3];
 
+    if (use_nsmask) {
+      // Real r_sch = sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
+      // if (r_sch >= r_mask_) && ;
+      s_1 = 0;
+      s_2 = 0;
+      s_3 = 0; 
+    }
     // Add source terms to conserved quantities
     cons(m,IM1,k,j,i) += dt * s_1;
     cons(m,IM2,k,j,i) += dt * s_2;
