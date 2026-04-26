@@ -63,7 +63,7 @@ namespace {
 
   // compute neutron star atmosphere
   KOKKOS_INLINE_FUNCTION
-  Real ComputeAtmosphere(Real x1, Real x2, Real x3, Real Omega, Real r_surf, Real rho_surf, Real h_surf);
+  Real ComputeAtmosphere(Real x1, Real x2, Real x3, Real Omega, Real r_surf, Real prof_surf, Real h_surf);
 
   // helper functions to transform coordinates
   KOKKOS_INLINE_FUNCTION
@@ -115,9 +115,10 @@ namespace {
     Real rmax_atm_pole; // radius of atmosphere top at pole
     Real rmax_atm_eqtr; // radius of atmosphere top at equator
     Real h_surf;        // minimum required scale height
+    Real frac_dens_smooth; // smoothing region (1, frac_dens_smooth)*rmax_atm_eqtr;
 
     // magnetosphere parameters
-    Real r_core;        // critial radius for interior dipole fields
+    Real r_core;        // critial radius for interior dipole fields (must be > 2rg)
     Real mu_dipole;     // dipole moment
     Real c1_dipole;     // coefficient c1 for smooth interior dipole fields
     Real c2_dipole;     // coefficient c2 for smooth interior dipole fields
@@ -125,6 +126,7 @@ namespace {
     // gas parameters
     Real gamma_adi;
     Real sigma_max;
+    Real beta_min;
     Real dfloor;
     Real pfloor;
 
@@ -218,12 +220,13 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   pp.mu            = pin->GetOrAddReal("units", "mu",          0.5991611743559018);
 
   // atmosphere parameters
-  pp.rho_surf      = pin->GetOrAddReal("problem", "rho_surf",      0.007927819363347719);
+  pp.rho_surf      = pin->GetOrAddReal("problem", "rho_surf",      25859.690449505222);
   pp.tgas_surf     = pin->GetOrAddReal("problem", "tgas_surf",     1.5328527189503498e-07);
   pp.r_surf        = pin->GetOrAddReal("problem", "r_surf",        0.8*pp.R_star);
   pp.rmax_atm_pole = pin->GetOrAddReal("problem", "rmax_atm_pole", 1.1*pp.R_star);
   pp.rmax_atm_eqtr = pin->GetOrAddReal("problem", "rmax_atm_eqtr", 1.1*pp.R_star);
   pp.h_surf        = pin->GetOrAddReal("problem", "h_surf",        5.0*0.03125);
+  pp.frac_dens_smooth = pin->GetOrAddReal("problem", "frac_dens_smooth", -1);
 
   // magnetosphere parameters
   pp.r_core        = pin->GetOrAddReal("problem", "r_core", 0.5*pp.R_star);
@@ -232,6 +235,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   pp.gamma_adi     = pin->GetOrAddReal("mhd", "gamma_adi", 5./3);
   pp.dfloor        = pin->GetOrAddReal("mhd", "dfloor",    1.0e-08);
   pp.pfloor        = pin->GetOrAddReal("mhd", "pfloor",    1.0e-15);
+  pp.beta_min      = pin->GetOrAddReal("mhd", "beta_min",  1.0e-03);
   pp.sigma_max     = pin->GetOrAddReal("mhd", "sigma_max", 1000.0);
 
   // testing parameters
@@ -294,7 +298,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     const Real &R_star=pp.R_star;
     Real B_star = pp.B_star;
     if (pp.test_hydro_balance) B_star *= 1.0e-12; // weak magnetic field for hydro balance test
-    
+
     Real rg3 = rg*SQR(rg);
     Real R_star2 = SQR(R_star);
     Real r_core2 = SQR(r_core);
@@ -396,13 +400,16 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     const Real &R_star = pp_dvce.R_star, &B_star = pp_dvce.B_star, &Omg_star = pp_dvce.Omega_star;
     const Real &r_surf = pp_dvce.r_surf, &h_surf = pp_dvce.h_surf;
     const Real &rho_surf = pp_dvce.rho_surf, &tgas_surf = pp_dvce.tgas_surf;
+    Real pgas_surf = rho_surf*tgas_surf;
     const Real &rmax_atm_eqtr = pp_dvce.rmax_atm_eqtr;
+    const Real &beta_min  = pp_dvce.beta_min;
     const Real &sigma_max = pp_dvce.sigma_max;
+    const Real &frac_dens_smooth = pp_dvce.frac_dens_smooth;
 
     // compute local floors
-    Real fac_reduce = (R_star/rv)*SQR(R_star/rv);
-    Real dfloor = fmax(pp_dvce.dfloor, SQR(B_star*fac_reduce)/sigma_max);
-    Real pfloor = pp_dvce.pfloor;
+    Real emag_star = SQR(B_star*R_star*R_star*R_star);
+    Real dfloor = fmax(pp_dvce.dfloor, emag_star/SQR(rv*rv*rv)/sigma_max);
+    Real pfloor = fmax(pp_dvce.pfloor, emag_star/SQR(rv*rv*rv)/2*beta_min);
 
     // initialize gas profiles
     Real dens=dfloor, pgas=pfloor;
@@ -461,14 +468,16 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
     // within the atmosphere (r_surf <= r <= ~rmax_atm_eqtr)
     Real rv6 = rv*rv*rv*rv*rv*rv;
-    Real R_star6 = SQR(R_star*R_star*R_star);
     Real lmd = -(r_surf-2.)*r_surf;
-    Real pw_base = (1. - 2./rv - SQR(Omg_star*rv*sin(thv))) / (1 - 2./r_surf);
     Real pw_idx = 0.5*lmd/h_surf;
-    bool below_atm = (rv6*pow(pw_base, pw_idx) >= SQR(B_star)*R_star6/(rho_surf*sigma_max));
+    Real pw_base = (1. - 2./rv - SQR(Omg_star*rv*sin(thv))) / (1 - 2./r_surf);
+    bool below_atm = (rv6*pow(pw_base, pw_idx) >= fmax(emag_star/(2*pgas_surf)*beta_min, emag_star/(rho_surf*sigma_max)));
     if (below_atm && (rv >= r_surf) && (rv <= rmax_atm_eqtr)) {
-      dens = fmax(ComputeAtmosphere(x1v, x2v, x3v, Omg_star, r_surf, rho_surf, h_surf), dfloor);
-      pgas = fmax(dens*tgas_surf, pfloor);
+      Real dens_atm = ComputeAtmosphere(x1v, x2v, x3v, Omg_star, r_surf, rho_surf,  h_surf);
+      Real pgas_atm = ComputeAtmosphere(x1v, x2v, x3v, Omg_star, r_surf, pgas_surf, h_surf);
+      dens = fmax(dens_atm, dfloor);
+      pgas = fmax(pgas_atm, pfloor);
+
       // Keplerian speed is only valid when r > 2rg
       if (rv > 2.0) {
         Real u0 = 1./sqrt(1. - 2./rv - SQR(Omg_star*rv*sin(thv)));
@@ -480,6 +489,23 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
         uu3 = u3 - gupper[0][3]/gupper[0][0] * u0;
       }
     } // endif within the atmosphere
+
+    // smooth density at atmosphere top
+    if ((frac_dens_smooth > 1) && (rv < rmax_atm_eqtr*frac_dens_smooth)) {
+      Real dens_atm = ComputeAtmosphere(x1v, x2v, x3v, Omg_star, r_surf, rho_surf, h_surf);
+      Real r0 = rmax_atm_eqtr;
+      Real r1 = rmax_atm_eqtr*frac_dens_smooth;
+      Real pw_base0 = (1. - 2./r0 - SQR(Omg_star*r0)) / (1 - 2./r_surf);
+      Real pw_base1 = (1. - 2./r1 - SQR(Omg_star*r1)) / (1 - 2./r_surf);
+      Real d_pseudo = 1./rv6*pow(pw_base, -pw_idx);
+      Real d0 = 1./(r0*r0*r0*r0*r0*r0) * pow(pw_base0, -pw_idx);
+      Real d1 = 1./(r1*r1*r1*r1*r1*r1) * pow(pw_base1, -pw_idx);
+      if ((d_pseudo > d0) && (d_pseudo < d1)) {
+        Real xi = (d_pseudo - d0) / (d1 - d0);
+        Real w_ = xi*xi*xi*(xi*(xi*6.0 - 15.0) + 10.0);
+        dens = pow(dens_atm, 1.0-w_) * pow(dfloor, w_);
+      }
+    } // endif smoothing atmosphere top
 
     // torus (r > rmax_atm_eqtr)
     if ((pp_dvce.add_torus) && (rv > rmax_atm_eqtr)) {
@@ -820,7 +846,7 @@ static void CalculateTOV(const struct pgen_param pp, HostArray1D<Real> &r_host,
 
 // compute neutron star atmosphere
 KOKKOS_INLINE_FUNCTION
-Real ComputeAtmosphere(Real x1, Real x2, Real x3, Real Omega, Real r_surf, Real rho_surf, Real h_surf) {
+Real ComputeAtmosphere(Real x1, Real x2, Real x3, Real Omega, Real r_surf, Real prof_surf, Real h_surf) {
   // coordinate convertion
   Real r, theta, phi;
   GetSchwarzschildCoordinates(x1, x2, x3, &r, &theta, &phi);
@@ -830,7 +856,7 @@ Real ComputeAtmosphere(Real x1, Real x2, Real x3, Real Omega, Real r_surf, Real 
   Real part2  = 1. - 2./r_surf;
   Real pw_idx = -r_surf/h_surf * (0.5*r_surf-1.0);
 
-  return rho_surf*pow(part1/part2, pw_idx);
+  return prof_surf*pow(part1/part2, pw_idx);
 }
 
 // convert CKS to Schwarzschild coordinates
@@ -1141,16 +1167,18 @@ void ReducedGravSrcTerm(Mesh* pm, const Real bdt) {
     // extract problem paramters
     const Real &R_star=pp_dvce.R_star, &B_star=pp_dvce.B_star, &Omg_star=pp_dvce.Omega_star;
     const Real &r_surf=pp_dvce.r_surf, &h_surf=pp_dvce.h_surf;
-    const Real &rho_surf=pp_dvce.rho_surf;
+    const Real &rho_surf=pp_dvce.rho_surf, &tgas_surf=pp_dvce.tgas_surf;
+    Real pgas_surf = rho_surf*tgas_surf;
     const Real &rmax_atm_eqtr=pp_dvce.rmax_atm_eqtr;
     const Real &sigma_max=pp_dvce.sigma_max;
+    const Real &beta_min=pp_dvce.beta_min;
     Real rv3 = rv*SQR(rv); Real rv6 = SQR(rv3);
-    Real R_star6 = SQR(R_star*R_star*R_star);
+    Real emag_star = SQR(B_star*R_star*R_star*R_star);
 
     Real lmd = -(r_surf-2.)*r_surf;
     Real pw_base = (1. - 2./rv - SQR(Omg_star*rv*sin(thv))) / (1 - 2./r_surf);
     Real pw_idx = 0.5*lmd/h_surf;
-    bool below_atm = (rv6*pow(pw_base, pw_idx) >= SQR(B_star)*R_star6/(rho_surf*sigma_max));
+    bool below_atm = (rv6*pow(pw_base, pw_idx) >= fmax(emag_star/(2*pgas_surf)*beta_min, emag_star/(rho_surf*sigma_max)));
     if (below_atm && (rv >= r_surf) && (rv <= rmax_atm_eqtr)) {
       Real dens = w0_(m,IDN,k,j,i);
       Real pgas = w0_(m,IEN,k,j,i)*gm1;
@@ -1211,11 +1239,12 @@ void NeutronStarMask(Mesh* pm, const Real bdt) {
     const Real &r_surf=pp_dvce.r_surf, &h_surf=pp_dvce.h_surf;
     const Real &rho_surf=pp_dvce.rho_surf, &tgas_surf=pp_dvce.tgas_surf;
     const Real &sigma_max=pp_dvce.sigma_max;
+    const Real &beta_min=pp_dvce.beta_min;
 
     // compute local floors
-    Real fac_reduce = (R_star/rv)*SQR(R_star/rv);
-    Real dfloor = fmax(pp_dvce.dfloor, SQR(B_star*fac_reduce)/sigma_max);
-    Real pfloor = pp_dvce.pfloor;
+    Real emag_star = SQR(B_star*R_star*R_star*R_star);
+    Real dfloor = fmax(pp_dvce.dfloor, emag_star/SQR(rv*rv*rv)/sigma_max);
+    Real pfloor = fmax(pp_dvce.pfloor, emag_star/SQR(rv*rv*rv)/2*beta_min);
 
     if (rv <= r_mask) {
       Real dens = (rv < r_surf) ? rho_surf :

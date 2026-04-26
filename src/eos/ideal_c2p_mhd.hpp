@@ -139,6 +139,7 @@ void SingleC2P_IdealSRMHD(MHDCons1D &u, const EOS_Data &eos, Real s2, Real b2, R
   const Real tol = 1.0e-12;
   const Real gm1 = eos.gamma - 1.0;
   Real dfloor_local = (!apply_sigma_max) ? eos.dfloor : fmax(eos.dfloor, b2/eos.sigma_max);
+  Real pfloor_local = (!apply_sigma_max) ? eos.pfloor : fmax(eos.pfloor, b2/2*eos.beta_min);
 
   // apply density floor, without changing momentum or energy
   if (u.d < dfloor_local) {
@@ -147,8 +148,8 @@ void SingleC2P_IdealSRMHD(MHDCons1D &u, const EOS_Data &eos, Real s2, Real b2, R
   }
 
   // apply energy floor
-  if (u.e < (eos.pfloor/gm1 + 0.5*b2)) {
-    u.e = eos.pfloor/gm1 + 0.5*b2;
+  if (u.e < (pfloor_local/gm1 + 0.5*b2)) {
+    u.e = pfloor_local/gm1 + 0.5*b2;
     efloor_used = true;
   }
 
@@ -246,7 +247,7 @@ void SingleC2P_IdealSRMHD(MHDCons1D &u, const EOS_Data &eos, Real s2, Real b2, R
   // of a C2P failure.
   if (max_iter==max_iterations) {
     w.d = dfloor_local;
-    w.e = eos.pfloor/gm1;
+    w.e = pfloor_local/gm1;
     w.vx = 0.0;
     w.vy = 0.0;
     w.vz = 0.0;
@@ -274,7 +275,7 @@ void SingleC2P_IdealSRMHD(MHDCons1D &u, const EOS_Data &eos, Real s2, Real b2, R
   Real lg_sfloor_local = log10(eos.sfloor1) + (log10(dens)-log10(eos.rho1)) * (log10(eos.sfloor2)-log10(eos.sfloor1))/(log10(eos.rho2)-log10(eos.rho1));
   Real sfloor_local = pow(10.0, lg_sfloor_local);
   sfloor_local = fmax(eos.sfloor, sfloor_local);
-  Real epsmin = fmax(eos.pfloor/(dens*gm1), sfloor_local*pow(dens, gm1)/gm1);
+  Real epsmin = fmax(pfloor_local/(dens*gm1), sfloor_local*pow(dens, gm1)/gm1);
   if (eps <= epsmin) {
     eps = epsmin;
     efloor_used = true;

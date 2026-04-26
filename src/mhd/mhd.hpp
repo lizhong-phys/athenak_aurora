@@ -134,6 +134,9 @@ class MHD {
   DvceArray4D<Real> e2x3, e1x3;
   Real dtnew;
 
+  // entropy fix for failed total energy equation
+  bool entropy_fix = false;
+
   // following used for time derivatives in computation of jcon
   bool wbcc_saved = false;
   DvceArray5D<Real> wsaved;
@@ -193,6 +196,9 @@ class MHD {
 
   // first-order flux correction
   void FOFC(Driver *d, int stage);
+
+  // call to reset entropy
+  void EntropyReset();
 
   DvceArray5D<Real> utest, bcctest;  // scratch arrays for FOFC
 
