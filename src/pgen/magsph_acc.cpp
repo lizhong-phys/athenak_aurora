@@ -1186,7 +1186,8 @@ void ReducedGravSrcTerm(Mesh* pm, const Real bdt) {
     bool below_atm = (rv6*pow(pw_base, pw_idx) >= fmax(emag_star/(2*pgas_surf)*beta_min, emag_star/(rho_surf*sigma_max)));
     if (below_atm && (rv >= r_surf) && (rv <= rmax_atm_eqtr)) {
       Real dens = w0_(m,IDN,k,j,i);
-      Real pgas = w0_(m,IEN,k,j,i)*gm1;
+      // Real pgas = w0_(m,IEN,k,j,i)*gm1;
+      Real pgas = dens*tgas_surf;
 
       Real ut2 = 1./(1. - 2./rv - SQR(Omg_star*rv*sin(thv)));
       Real wtot = dens + pgas/gm1 + pgas + lmd*pgas/h_surf;
@@ -1195,11 +1196,12 @@ void ReducedGravSrcTerm(Mesh* pm, const Real bdt) {
       Real srcy = wtot*ut2 * (1./rv3 - SQR(Omg_star))*x2v;
       Real srcz = wtot*ut2 * (1./rv3)*x3v;
 
+
+      u0_(m,IEN,k,j,i) = pgas/gm1;
+
       u0_(m,IM1,k,j,i) += bdt*srcx;
       u0_(m,IM2,k,j,i) += bdt*srcy;
       u0_(m,IM3,k,j,i) += bdt*srcz;
-
-      u0_(m,IEN,k,j,i) = dens*tgas_surf;
 
     } // endif
   }); // end par_for
