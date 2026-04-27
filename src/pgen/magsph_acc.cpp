@@ -1125,9 +1125,9 @@ static void TransformVector(Real a0_sks, Real a1_sks, Real a2_sks, Real a3_sks,
 
 void MySourceTerms(Mesh* pm, const Real bdt) {
 
-  ReducedGravSrcTerm(pm, bdt);
-
   NeutronStarMask(pm, bdt);
+
+  ReducedGravSrcTerm(pm, bdt);
 
   return;
 }
@@ -1186,8 +1186,7 @@ void ReducedGravSrcTerm(Mesh* pm, const Real bdt) {
     bool below_atm = (rv6*pow(pw_base, pw_idx) >= fmax(emag_star/(2*pgas_surf)*beta_min, emag_star/(rho_surf*sigma_max)));
     if (below_atm && (rv >= r_surf) && (rv <= rmax_atm_eqtr)) {
       Real dens = w0_(m,IDN,k,j,i);
-      // Real pgas = w0_(m,IEN,k,j,i)*gm1;
-      Real pgas = dens*tgas_surf;
+      Real pgas = w0_(m,IEN,k,j,i)*gm1;
 
       Real ut2 = 1./(1. - 2./rv - SQR(Omg_star*rv*sin(thv)));
       Real wtot = dens + pgas/gm1 + pgas + lmd*pgas/h_surf;
@@ -1196,13 +1195,9 @@ void ReducedGravSrcTerm(Mesh* pm, const Real bdt) {
       Real srcy = wtot*ut2 * (1./rv3 - SQR(Omg_star))*x2v;
       Real srcz = wtot*ut2 * (1./rv3)*x3v;
 
-
-      u0_(m,IEN,k,j,i) = pgas/gm1;
-
       u0_(m,IM1,k,j,i) += bdt*srcx;
       u0_(m,IM2,k,j,i) += bdt*srcy;
       u0_(m,IM3,k,j,i) += bdt*srcz;
-
     } // endif
   }); // end par_for
 } // end ReducedGravSrcTerm
@@ -1257,6 +1252,17 @@ void NeutronStarMask(Mesh* pm, const Real bdt) {
     Real dfloor = fmax(pp_dvce.dfloor, emag_star/SQR(rv*rv*rv)/sigma_max);
     Real pfloor = fmax(pp_dvce.pfloor, emag_star/SQR(rv*rv*rv)/2*beta_min);
 
+    // region flag
+    Real pgas_surf = rho_surf*tgas_surf;
+    const Real &rmax_atm_eqtr=pp_dvce.rmax_atm_eqtr;
+    Real rv3 = rv*SQR(rv); Real rv6 = SQR(rv3);
+
+    Real lmd = -(r_surf-2.)*r_surf;
+    Real pw_base = (1. - 2./rv - SQR(Omg_star*rv*sin(thv))) / (1 - 2./r_surf);
+    Real pw_idx = 0.5*lmd/h_surf;
+    bool below_atm = (rv6*pow(pw_base, pw_idx) >= fmax(emag_star/(2*pgas_surf)*beta_min, emag_star/(rho_surf*sigma_max)));
+
+    // extract problem paramters
     if (rv <= r_mask) {
       Real dens = (rv < r_surf) ? rho_surf :
                   ComputeAtmosphere(x1v, x2v, x3v, Omg_star, r_surf, rho_surf, h_surf);
@@ -1302,6 +1308,64 @@ void NeutronStarMask(Mesh* pm, const Real bdt) {
       u0_(m,IM2,k,j,i) = wtot*u0*u_2 - b0*b_2;
       u0_(m,IM3,k,j,i) = wtot*u0*u_3 - b0*b_3;
     } // endif
+
+
+    // isotherm atm
+    if (below_atm && (rv >= r_surf) && (rv <= rmax_atm_eqtr)) {
+      Real dens = w0_(m,IDN,k,j,i);
+      Real uu1  = w0_(m,IVX,k,j,i);
+      Real uu2  = w0_(m,IVY,k,j,i);
+      Real uu3  = w0_(m,IVZ,k,j,i);
+      Real pgas = dens*tgas_surf;
+      Real bx = bcc0_(m,IBX,k,j,i);
+      Real by = bcc0_(m,IBY,k,j,i);
+      Real bz = bcc0_(m,IBZ,k,j,i);
+
+      // gas velocity in the normal frame
+      Real glower[4][4], gupper[4][4];
+      ComputeMetricAndInverse(x1v, x2v, x3v, false, 0.0, glower, gupper);
+
+      Real q = glower[1][1]*uu1*uu1 +2.0*glower[1][2]*uu1*uu2 +2.0*glower[1][3]*uu1*uu3
+             + glower[2][2]*uu2*uu2 +2.0*glower[2][3]*uu2*uu3
+             + glower[3][3]*uu3*uu3;
+      Real alpha = sqrt(-1.0/gupper[0][0]);
+      Real gamma = sqrt(1.0 + q);
+      Real u0 = gamma / alpha;
+      Real u1 = uu1 - alpha * gamma * gupper[0][1];
+      Real u2 = uu2 - alpha * gamma * gupper[0][2];
+      Real u3 = uu3 - alpha * gamma * gupper[0][3];
+
+      Real u_0 = glower[0][0]*u0 + glower[0][1]*u1 + glower[0][2]*u2 + glower[0][3]*u3;
+      Real u_1 = glower[1][0]*u0 + glower[1][1]*u1 + glower[1][2]*u2 + glower[1][3]*u3;
+      Real u_2 = glower[2][0]*u0 + glower[2][1]*u1 + glower[2][2]*u2 + glower[2][3]*u3;
+      Real u_3 = glower[3][0]*u0 + glower[3][1]*u1 + glower[3][2]*u2 + glower[3][3]*u3;
+
+      Real b0 = u_1*bx + u_2*by + u_3*bz;
+      Real b1 = (bx + b0*u1) / u0;
+      Real b2 = (by + b0*u2) / u0;
+      Real b3 = (bz + b0*u3) / u0;
+
+      Real b_0 = glower[0][0]*b0 + glower[0][1]*b1 + glower[0][2]*b2 + glower[0][3]*b3;
+      Real b_1 = glower[1][0]*b0 + glower[1][1]*b1 + glower[1][2]*b2 + glower[1][3]*b3;
+      Real b_2 = glower[2][0]*b0 + glower[2][1]*b1 + glower[2][2]*b2 + glower[2][3]*b3;
+      Real b_3 = glower[3][0]*b0 + glower[3][1]*b1 + glower[3][2]*b2 + glower[3][3]*b3;
+      Real b_sq = b0*b_0 + b1*b_1 + b2*b_2 + b3*b_3;
+
+      Real wtot = dens + (gm1+1)/gm1*pgas + b_sq;
+      Real ptot = pgas + 0.5*b_sq;
+      u0_(m,IDN,k,j,i) = dens*u0;
+      u0_(m,IEN,k,j,i) = wtot*u0*u_0 - b0*b_0 + ptot + dens*u0;
+      u0_(m,IM1,k,j,i) = wtot*u0*u_1 - b0*b_1;
+      u0_(m,IM2,k,j,i) = wtot*u0*u_2 - b0*b_2;
+      u0_(m,IM3,k,j,i) = wtot*u0*u_3 - b0*b_3;
+
+
+
+    } // endif isotherm atm
+
+
+
+
   }); // end par_for
 } // end NeutronStarMask
 
