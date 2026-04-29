@@ -335,15 +335,6 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     Real dens=dfloor, pgas=pfloor;
     Real uu1=0, uu2=0.0, uu3=0.0;
 
-    // below the atmosphere (r < R_star)
-    if (rv <= R_star) {
-      dens = rho_surf;
-      pgas = rho_surf*tgas_surf;
-      Real u0 = 1./sqrt(1. - SQR(Omg_star*rv*sin(thv)));
-      uu1 = -Omg_star*x2v*u0;
-      uu2 =  Omg_star*x1v*u0;
-    } // endif below the atmosphere
-
     // torus (r > rmax_atm_eqtr)
     if (pp_dvce.add_torus) {
       // determine if we are in the torus
@@ -394,6 +385,15 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
         max_ptot = fmax(pgas, max_ptot);
       } // endif (in_torus)
     } // endif torus
+
+    // below the atmosphere (r < R_star)
+    if (rv <= R_star) {
+      dens = rho_surf;
+      pgas = rho_surf*tgas_surf;
+      Real u0 = 1./sqrt(1. - SQR(Omg_star*rv*sin(thv)));
+      uu1 = -Omg_star*x2v*u0;
+      uu2 =  Omg_star*x1v*u0;
+    } // endif below the atmosphere
 
     // set primitive values
     w0_(m,IDN,k,j,i) = dens;
@@ -993,7 +993,7 @@ void NeutronStarMask(Mesh* pm, const Real bdt) {
       Real by = bcc0_(m,IBY,k,j,i);
       Real bz = bcc0_(m,IBZ,k,j,i);
 
-      Real u0 = 1./sqrt(1. - SQR(Omg_star)*(SQR(x1v)+SQR(x2v)));
+      Real u0 = 1./sqrt(1. - SQR(Omg_star*rv*sin(thv)));
       Real u1 = -Omg_star*x2v*u0;
       Real u2 =  Omg_star*x1v*u0;
       Real u3 = 0.0;
@@ -1011,6 +1011,7 @@ void NeutronStarMask(Mesh* pm, const Real bdt) {
       u0_(m,IM1,k,j,i) = wtot*u0*u1 - b0*b1;
       u0_(m,IM2,k,j,i) = wtot*u0*u2 - b0*b2;
       u0_(m,IM3,k,j,i) = wtot*u0*u3 - b0*b3;
+
     } // endif
 
   }); // end par_for

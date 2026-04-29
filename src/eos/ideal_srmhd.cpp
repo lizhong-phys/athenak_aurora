@@ -63,6 +63,12 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
   auto eos = eos_data;
   auto &fofc_ = pmy_pack->pmhd->fofc;
 
+  // flags and variables for entropy fix
+  auto &entropy_fix_ = pmy_pack->pmhd->entropy_fix;
+  int entropyIdx = (entropy_fix_) ? nmhd+nscal-1 : -1;
+  auto &sigma_cut_ = pmy_pack->pmhd->sigma_cut_efix;
+  auto &beta_cut_  = pmy_pack->pmhd->beta_cut_efix;
+
   const int ni   = (iu - il + 1);
   const int nji  = (ju - jl + 1)*ni;
   const int nkji = (ku - kl + 1)*nji;
@@ -104,6 +110,14 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
     Real b2 = SQR(u.bx) + SQR(u.by) + SQR(u.bz);
     Real rpar = (u.bx*u.mx +  u.by*u.my +  u.bz*u.mz)/u.d;
 
+    // Save the old state for backup
+    HydPrim1D w_old;
+    w_old.d  = prim(m,IDN,k,j,i);
+    w_old.vx = prim(m,IVX,k,j,i);
+    w_old.vy = prim(m,IVY,k,j,i);
+    w_old.vz = prim(m,IVZ,k,j,i);
+    w_old.e  = prim(m,IEN,k,j,i);
+
     // call c2p function
     // (inline function in ideal_c2p_mhd.hpp file)
     HydPrim1D w;
@@ -113,6 +127,56 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
     int iter_used=0;
     SingleC2P_IdealSRMHD(u, eos, s2, b2, rpar, w,
                          dfloor_used, efloor_used, c2p_failure, iter_used, apply_sigma_max, -1);
+
+    // compute quantities for criteria fix
+    Real sigma_cold=0.0, beta=0.0;
+    if (!c2p_failure) {
+      Real u0 = sqrt(1.0 + SQR(w.vx) + SQR(w.vy) + SQR(w.vz));
+
+      Real b0 = u.bx*w.vx + u.by*w.vy + u.bz*w.vz;
+      Real b1 = (u.bx + b0 * w.vx) / u0;
+      Real b2 = (u.by + b0 * w.vy) / u0;
+      Real b3 = (u.bz + b0 * w.vz) / u0;
+      Real b_sq = -SQR(b0) + SQR(b1) + SQR(b2) + SQR(b3);
+
+      sigma_cold = b_sq/w.d;
+      beta = (eos.gamma-1)*w.e/(0.5*b_sq);
+    }
+
+
+    // apply entropy fix
+    if (entropy_fix_) {
+      if ((c2p_failure) || (sigma_cold > sigma_cut_) || (beta < beta_cut_)) {
+        // compute the entropy fix
+        bool dfloor_used_in_fix=false, efloor_used_in_fix=false;
+        bool c2p_failure_in_fix=c2p_failure;
+        int iter_used_in_fix=0;
+        HydPrim1D w_fix;
+        w_fix.d  = w.d;
+        w_fix.vx = w.vx;
+        w_fix.vy = w.vy;
+        w_fix.vz = w.vz;
+        w_fix.e  = w.e;
+        Real &s_tot = cons(m,entropyIdx,k,j,i);
+        SingleC2P_IdealSRMHD_EntropyFix(u, s_tot, eos, s2, b2, rpar, w_fix, w_old,
+                                        dfloor_used_in_fix, efloor_used_in_fix,
+                                        c2p_failure_in_fix, iter_used_in_fix);
+        // entropy fix
+        if (!c2p_failure_in_fix) {
+          // successful entropy-fixed c2p
+          w.d  = w_fix.d;
+          w.e  = w_fix.e;
+          w.vx = w_fix.vx;
+          w.vy = w_fix.vy;
+          w.vz = w_fix.vz;
+          dfloor_used = dfloor_used_in_fix;
+          efloor_used = efloor_used_in_fix;
+          c2p_failure = c2p_failure_in_fix;
+          iter_used_in_fix = iter_used;
+        }
+      } // endif
+    }  // endif entropy_fix_
+
     // apply velocity ceiling if necessary
     Real lor = sqrt(1.0+SQR(w.vx)+SQR(w.vy)+SQR(w.vz));
     if (lor > eos.gamma_max) {

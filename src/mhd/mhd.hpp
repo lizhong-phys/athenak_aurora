@@ -136,6 +136,8 @@ class MHD {
 
   // entropy fix for failed total energy equation
   bool entropy_fix = false;
+  Real sigma_cut_efix = 1e10;
+  Real beta_cut_efix  = 1e-10; 
 
   // following used for time derivatives in computation of jcon
   bool wbcc_saved = false;

@@ -121,11 +121,13 @@ MHD::MHD(MeshBlockPack *ppack, ParameterInput *pin) :
 
   // evolve entropy equation
   if (pin->DoesParameterExist("mhd","entropy_fix")) {
-    if (pmy_pack->pcoord->is_general_relativistic) {
-      entropy_fix = pin->GetBoolean("mhd","entropy_fix");
+    if (pmy_pack->pcoord->is_general_relativistic || pmy_pack->pcoord->is_special_relativistic) {
+      entropy_fix = pin->GetBoolean("mhd", "entropy_fix");
+      sigma_cut_efix = pin->GetOrAddReal("mhd", "sigma_cut_efix", 1.0e+01);
+      beta_cut_efix  = pin->GetOrAddReal("mhd", "beta_cut_efix",  1.0e-02);
     } else {
       std::cout <<"### FATAL ERROR in "<< __FILE__ <<" at line "<< __LINE__ << std::endl
-                <<"<mhd> entropy fix only works in general relativity"<< std::endl;
+                <<"<mhd> entropy fix only works in relativity"<< std::endl;
       std::exit(EXIT_FAILURE);
     }
     // add an extra scalar if entropy fix is enabled

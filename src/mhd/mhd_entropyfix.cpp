@@ -34,6 +34,7 @@ void MHD::EntropyReset() {
   auto &spin = coord.bh_spin;
   auto &u0_ = u0;
   auto &w0_ = w0;
+  bool &is_general_relativistic = pmy_pack->pcoord->is_general_relativistic;
   int entropyIdx = nmhd+nscalars-1;
   Real gm1 = peos->eos_data.gamma-1;
 
@@ -58,26 +59,29 @@ void MHD::EntropyReset() {
     Real &x3max = size.d_view(m).x3max;
     Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
 
-    // compute metric and inverse
-    Real glower[4][4], gupper[4][4];
-    ComputeMetricAndInverse(x1v, x2v, x3v, flat, spin, glower, gupper);
-    Real alpha = sqrt(-1.0/gupper[0][0]);
-
     // compute total entropy
     Real &wdn = w0_(m,IDN,k,j,i);
     Real &wvx = w0_(m,IVX,k,j,i);
     Real &wvy = w0_(m,IVY,k,j,i);
     Real &wvz = w0_(m,IVZ,k,j,i);
     Real &wen = w0_(m,IEN,k,j,i);
-    Real q = glower[1][1]*wvx*wvx + 2.0*glower[1][2]*wvx*wvy + 2.0*glower[1][3]*wvx*wvz
-           + glower[2][2]*wvy*wvy + 2.0*glower[2][3]*wvy*wvz
-           + glower[3][3]*wvz*wvz;
-    Real gamma = sqrt(1.0 + q);
-    Real u0 = gamma/alpha;
+    
+    Real u0 = sqrt(1.0+SQR(wvx)+SQR(wvy)+SQR(wvz));
+
+    if (is_general_relativistic) {
+      Real glower[4][4], gupper[4][4];
+      ComputeMetricAndInverse(x1v, x2v, x3v, flat, spin, glower, gupper);
+      Real alpha = sqrt(-1.0/gupper[0][0]);
+      Real q = glower[1][1]*wvx*wvx + 2.0*glower[1][2]*wvx*wvy + 2.0*glower[1][3]*wvx*wvz
+             + glower[2][2]*wvy*wvy + 2.0*glower[2][3]*wvy*wvz
+             + glower[3][3]*wvz*wvz;
+      Real gamma = sqrt(1.0 + q);
+      u0 = gamma/alpha;
+    }
 
     // assign total entropy to the first scalar
-    u0_(m,entropyIdx,k,j,i) = gm1*wen / pow(wdn,gm1) * u0;
-        
+    u0_(m,entropyIdx,k,j,i) = (gm1*wen) / pow(wdn,gm1) * u0;
+
     // what to do with coarse_u0 ???
   });
 
