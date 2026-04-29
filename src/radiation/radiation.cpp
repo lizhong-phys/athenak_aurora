@@ -43,9 +43,9 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
     na("na",1,1,1,1,1,1),
     norm_to_tet("norm_to_tet",1,1,1,1,1,1) {
   // Check for general relativity
-  if (!(pmy_pack->pcoord->is_general_relativistic)) {
+  if (!(pmy_pack->pcoord->is_general_relativistic) && !(pmy_pack->pcoord->is_special_relativistic)) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-      << std::endl << "Radiation requires general relativity" << std::endl;
+      << std::endl << "Radiation requires relativity" << std::endl;
     std::exit(EXIT_FAILURE);
   }
 

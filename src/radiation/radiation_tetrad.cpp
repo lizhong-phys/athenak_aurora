@@ -40,8 +40,8 @@ void Radiation::SetOrthonormalTetrad() {
   auto nh_c_ = nh_c;
 
   auto &coord = pmy_pack->pcoord->coord_data;
-  bool &flat = coord.is_minkowski;
-  Real &spin = coord.bh_spin;
+  bool flat = (pmy_pack->pcoord->is_general_relativistic) ? coord.is_minkowski : false;
+  Real spin = (pmy_pack->pcoord->is_general_relativistic) ? coord.bh_spin : 0.0;
 
   // define tetrad frame
   for (int n=0; n<=nang1; ++n) {

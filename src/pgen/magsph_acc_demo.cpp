@@ -877,9 +877,9 @@ static void TransformVector(Real a0_sks, Real a1_sks, Real a2_sks, Real a3_sks,
 
 void MySourceTerms(Mesh* pm, const Real bdt) {
 
-  NeutronStarMask(pm, bdt);
-
-  GravSrcTerm(pm, bdt);
+  // NeutronStarMask(pm, bdt);
+  //
+  // GravSrcTerm(pm, bdt);
 
   return;
 }

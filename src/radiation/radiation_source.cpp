@@ -62,8 +62,8 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
 
   // Extract coordinate/excision data
   auto &coord = pmy_pack->pcoord->coord_data;
-  bool &flat = coord.is_minkowski;
-  Real &spin = coord.bh_spin;
+  bool flat = (pmy_pack->pcoord->is_general_relativistic) ? coord.is_minkowski : false;
+  Real spin = (pmy_pack->pcoord->is_general_relativistic) ? coord.bh_spin : 0.0;
   bool &excise = pmy_pack->pcoord->coord_data.bh_excise;
   auto &rad_mask_ = pmy_pack->pcoord->excision_floor;
   auto &excision_flux_ = pmy_pack->pcoord->excision_flux;
