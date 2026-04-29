@@ -94,6 +94,7 @@ TaskStatus MHD::SaveMHDState(Driver *pdrive, int stage) {
     Kokkos::deep_copy(DevExeSpace(), wsaved, w0);
     Kokkos::deep_copy(DevExeSpace(), bccsaved, bcc0);
   }
+  printf("SaveMHDState \n");
   return TaskStatus::complete;
 }
 
@@ -152,6 +153,7 @@ TaskStatus MHD::InitRecv(Driver *pdrive, int stage) {
       if (tstat != TaskStatus::complete) return tstat;
     }
   }
+  printf("InitRecv \n");
 
   return tstat;
 }
@@ -163,12 +165,15 @@ TaskStatus MHD::InitRecv(Driver *pdrive, int stage) {
 TaskStatus MHD::CopyCons(Driver *pdrive, int stage) {
   if (stage == 1) {
     if (entropy_fix) EntropyReset();
-    
+
     Kokkos::deep_copy(DevExeSpace(), u1, u0);
     Kokkos::deep_copy(DevExeSpace(), b1.x1f, b0.x1f);
     Kokkos::deep_copy(DevExeSpace(), b1.x2f, b0.x2f);
     Kokkos::deep_copy(DevExeSpace(), b1.x3f, b0.x3f);
   }
+
+  printf("CopyCons \n");
+
   return TaskStatus::complete;
 }
 
@@ -216,6 +221,7 @@ TaskStatus MHD::Fluxes(Driver *pdrive, int stage) {
       FOFC(pdrive, stage);
     }
   }
+  printf("Fluxes \n");
 
   return TaskStatus::complete;
 }
@@ -231,6 +237,9 @@ TaskStatus MHD::SendFlux(Driver *pdrive, int stage) {
   if (pmy_pack->pmesh->multilevel)  {
     tstat = pbval_u->PackAndSendFluxCC(uflx);
   }
+  printf("SendFlux \n");
+
+
   return tstat;
 }
 
@@ -245,6 +254,10 @@ TaskStatus MHD::RecvFlux(Driver *pdrive, int stage) {
   if (pmy_pack->pmesh->multilevel) {
     tstat = pbval_u->RecvAndUnpackFluxCC(uflx);
   }
+
+  printf("RecvFlux \n");
+
+
   return tstat;
 }
 
@@ -276,6 +289,9 @@ TaskStatus MHD::MHDSrcTerms(Driver *pdrive, int stage) {
     (pmy_pack->pmesh->pgen->user_srcs_func)(pmy_pack->pmesh, beta_dt);
   }
 
+  printf("MHDSrcTerms \n");
+
+
   return TaskStatus::complete;
 }
 
@@ -292,6 +308,10 @@ TaskStatus MHD::SendU_OA(Driver *pdrive, int stage) {
       tstat = porb_u->PackAndSendCC(u0);
     }
   }
+
+  printf("SendU_OA \n");
+
+
   return tstat;
 }
 
@@ -308,6 +328,10 @@ TaskStatus MHD::RecvU_OA(Driver *pdrive, int stage) {
       tstat = porb_u->RecvAndUnpackCC(u0, recon_method);
     }
   }
+
+  printf("RecvU_OA \n");
+
+
   return tstat;
 }
 
@@ -320,6 +344,10 @@ TaskStatus MHD::RestrictU(Driver *pdrive, int stage) {
   if (pmy_pack->pmesh->multilevel) {
     pmy_pack->pmesh->pmr->RestrictCC(u0, coarse_u0);
   }
+
+  printf("RestrictU \n");
+
+
   return TaskStatus::complete;
 }
 
@@ -329,6 +357,10 @@ TaskStatus MHD::RestrictU(Driver *pdrive, int stage) {
 
 TaskStatus MHD::SendU(Driver *pdrive, int stage) {
   TaskStatus tstat = pbval_u->PackAndSendCC(u0, coarse_u0);
+
+  printf("SendU \n");
+
+
   return tstat;
 }
 
@@ -338,6 +370,10 @@ TaskStatus MHD::SendU(Driver *pdrive, int stage) {
 
 TaskStatus MHD::RecvU(Driver *pdrive, int stage) {
   TaskStatus tstat = pbval_u->RecvAndUnpackCC(u0, coarse_u0);
+
+  printf("RecvU \n");
+
+
   return tstat;
 }
 
@@ -353,6 +389,10 @@ TaskStatus MHD::SendU_Shr(Driver *pdrive, int stage) {
       tstat = psbox_u->PackAndSendCC(u0, recon_method);
     }
   }
+
+  printf("SendU_Shr \n");
+
+
   return tstat;
 }
 
@@ -369,6 +409,11 @@ TaskStatus MHD::RecvU_Shr(Driver *pdrive, int stage) {
       tstat = psbox_u->RecvAndUnpackCC(u0);
     }
   }
+
+
+  printf("RecvU_Shr \n");
+
+
   return tstat;
 }
 
@@ -383,6 +428,10 @@ TaskStatus MHD::EFieldSrc(Driver *pdrive, int stage) {
       psbox_b->SourceTermsFC(b0, efld);
     }
   }
+
+  printf("EFieldSrc \n");
+
+
   return TaskStatus::complete;
 }
 
@@ -396,6 +445,10 @@ TaskStatus MHD::EFieldSrc(Driver *pdrive, int stage) {
 TaskStatus MHD::SendE(Driver *pdrive, int stage) {
   TaskStatus tstat = TaskStatus::complete;
   tstat = pbval_b->PackAndSendFluxFC(efld);
+
+  printf("SendE \n");
+
+
   return tstat;
 }
 
@@ -407,6 +460,11 @@ TaskStatus MHD::SendE(Driver *pdrive, int stage) {
 TaskStatus MHD::RecvE(Driver *pdrive, int stage) {
   TaskStatus tstat = TaskStatus::complete;
   tstat = pbval_b->RecvAndUnpackFluxFC(efld);
+
+
+  printf("RecvE \n");
+
+
   return tstat;
 }
 
@@ -423,6 +481,10 @@ TaskStatus MHD::SendB_OA(Driver *pdrive, int stage) {
       tstat = porb_b->PackAndSendFC(b0);
     }
   }
+
+  printf("SendB_OA \n");
+
+
   return tstat;
 }
 
@@ -439,6 +501,11 @@ TaskStatus MHD::RecvB_OA(Driver *pdrive, int stage) {
       tstat = porb_b->RecvAndUnpackFC(b0, recon_method);
     }
   }
+
+
+  printf("RecvB_OA \n");
+
+
   return tstat;
 }
 
@@ -448,6 +515,11 @@ TaskStatus MHD::RecvB_OA(Driver *pdrive, int stage) {
 
 TaskStatus MHD::SendB(Driver *pdrive, int stage) {
   TaskStatus tstat = pbval_b->PackAndSendFC(b0, coarse_b0);
+
+
+  printf("SendB \n");
+
+
   return tstat;
 }
 
@@ -457,6 +529,10 @@ TaskStatus MHD::SendB(Driver *pdrive, int stage) {
 
 TaskStatus MHD::RecvB(Driver *pdrive, int stage) {
   TaskStatus tstat = pbval_b->RecvAndUnpackFC(b0, coarse_b0);
+
+  printf("RecvB \n");
+
+
   return tstat;
 }
 
@@ -472,6 +548,10 @@ TaskStatus MHD::SendB_Shr(Driver *pdrive, int stage) {
       tstat = psbox_b->PackAndSendFC(b0, recon_method);
     }
   }
+
+  printf("SendB_Shr \n");
+
+
   return tstat;
 }
 
@@ -488,6 +568,10 @@ TaskStatus MHD::RecvB_Shr(Driver *pdrive, int stage) {
       tstat = psbox_b->RecvAndUnpackFC(b0);
     }
   }
+
+  printf("RecvB_Shr \n");
+
+
   return tstat;
 }
 
@@ -507,6 +591,9 @@ TaskStatus MHD::ApplyPhysicalBCs(Driver *pdrive, int stage) {
   if (pmy_pack->pmesh->pgen->user_bcs) {
     (pmy_pack->pmesh->pgen->user_bcs_func)(pmy_pack->pmesh);
   }
+
+
+  printf("ApplyPhysicalBCs \n");
 
   return TaskStatus::complete;
 }
@@ -530,6 +617,10 @@ TaskStatus MHD::Prolongate(Driver *pdrive, int stage) {
       pbval_b->ProlongateFC(b0, coarse_b0);
     }
   }
+
+
+  printf("Prolongate \n");
+
   return TaskStatus::complete;
 }
 
@@ -544,6 +635,10 @@ TaskStatus MHD::ConToPrim(Driver *pdrive, int stage) {
   int n2m1 = (indcs.nx2 > 1)? (indcs.nx2 + 2*ng - 1) : 0;
   int n3m1 = (indcs.nx3 > 1)? (indcs.nx3 + 2*ng - 1) : 0;
   peos->ConsToPrim(u0, b0, w0, bcc0, false, 0, n1m1, 0, n2m1, 0, n3m1);
+
+  printf("ConToPrim \n");
+
+
   return TaskStatus::complete;
 }
 
@@ -604,6 +699,8 @@ TaskStatus MHD::ClearSend(Driver *pdrive, int stage) {
     }
   }
 
+  printf("ClearSend \n");
+
   return TaskStatus::complete;
 }
 
@@ -663,6 +760,7 @@ TaskStatus MHD::ClearRecv(Driver *pdrive, int stage) {
       if (tstat != TaskStatus::complete) return tstat;
     }
   }
+  printf("ClearRecv \n");
 
   return TaskStatus::complete;
 }
@@ -676,6 +774,9 @@ TaskStatus MHD::RestrictB(Driver *pdrive, int stage) {
   if (pmy_pack->pmesh->multilevel) {
     pmy_pack->pmesh->pmr->RestrictFC(b0, coarse_b0);
   }
+
+  printf("RestrictB \n"); 
+
   return TaskStatus::complete;
 }
 
