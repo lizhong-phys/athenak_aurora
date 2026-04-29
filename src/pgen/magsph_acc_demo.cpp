@@ -53,18 +53,6 @@
 // Prototypes for helper functions used internally to this pgen
 namespace {
 
-  // helper functions to compute radial profiles of TOV star
-  static void TOVEquations(const Real r, const Real mass, const Real press, const struct pgen_param pp, Real &dmass, Real &dpress);
-  static void CalculateTOV(const struct pgen_param pp, HostArray1D<Real> &r_host, HostArray1D<Real> &rho_host, HostArray1D<Real> &press_host, HostArray1D<Real> &mass_host);
-
-  // compute magnetosphere parameters
-  // KOKKOS_INLINE_FUNCTION
-  // Real ComputeMagParam(Real x1, Real x2, Real x3, Real Omega, Real r_surf, Real rho_surf, Real h_surf);
-
-  // compute neutron star atmosphere
-  KOKKOS_INLINE_FUNCTION
-  Real ComputeAtmosphere(Real x1, Real x2, Real x3, Real Omega, Real r_surf, Real prof_surf, Real h_surf);
-
   // helper functions to transform coordinates
   KOKKOS_INLINE_FUNCTION
   static void GetSchwarzschildCoordinates(Real x1, Real x2, Real x3, Real *pr, Real *ptheta, Real *pphi);
@@ -103,7 +91,6 @@ namespace {
     Real Omega_star;    // angular speed
 
     Real r_mask;        // mask radius
-    Real r_excise;      // excision radius
 
     // unit parameters
     Real rg;            // gravitational radius
@@ -114,10 +101,6 @@ namespace {
     Real rho_surf;      // density of atmosphere bottom
     Real tgas_surf;     // atmosphere temperature
     Real r_surf;        // radius of atmosphere bottom
-    Real rmax_atm_pole; // radius of atmosphere top at pole
-    Real rmax_atm_eqtr; // radius of atmosphere top at equator
-    Real h_surf;        // minimum required scale height
-    Real frac_dens_smooth; // smoothing region (1, frac_dens_smooth)*rmax_atm_eqtr;
 
     // magnetosphere parameters
     Real r_core;        // critial radius for interior dipole fields (must be > 2rg)
@@ -145,15 +128,6 @@ namespace {
     Real rho_min, rho_pow, pgas_min, pgas_pow; // background parameters
     Real pert_amp;                             // pressure perturbation amplitude (seeds MRI)
 
-    // testing paramters
-    bool test_hydro_balance;
-
-    // tov star parameters
-    bool use_tov;    // initialize with tov star
-    Real rho_c;      // central density
-    Real K_const;    // polytropic coefficient
-    Real gamma_poly; // polytropic index
-    int  n_pts;      // number of radial points for TOV integration
   };
 
   pgen_param pp;
@@ -162,7 +136,7 @@ namespace {
 
 // Prototypes for user-defined source functions
 void MySourceTerms(Mesh* pm, const Real bdt);
-void ReducedGravSrcTerm(Mesh* pm, const Real bdt);
+void GravSrcTerm(Mesh* pm, const Real bdt);
 void NeutronStarMask(Mesh* pm, const Real bdt);
 
 // Prototypes for user-defined BCs and history functions
@@ -179,9 +153,9 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   //    - Verify GR is enabled in <coord> block
   //    - Verify MHD is being used (pmbp->pmhd != nullptr)
   MeshBlockPack *pmbp = pmy_mesh_->pmb_pack;
-  if (!pmbp->pcoord->is_general_relativistic) {
+  if ((!pmbp->pcoord->is_general_relativistic) && (!pmbp->pcoord->is_special_relativistic)) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
-              << "magnetospheric_accretion problem can only be run with GR defined in <coord> block"
+              << "magnetospheric_accretion problem can only be run with relativity defined in <coord> block"
               << std::endl;
     exit(EXIT_FAILURE);
   }
@@ -217,7 +191,6 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
   // mask and excision
   pp.r_mask        = pin->GetOrAddReal("problem", "r_mask",     0.8*pp.R_star);
-  pp.r_excise      = pin->GetOrAddReal("coord", "ns_excise_r",  2.0);
 
   // unit parameters
   pp.rg            = pin->GetOrAddReal("units", "rg",          1.0);
@@ -228,10 +201,6 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   pp.rho_surf      = pin->GetOrAddReal("problem", "rho_surf",      25859.690449505222);
   pp.tgas_surf     = pin->GetOrAddReal("problem", "tgas_surf",     1.5328527189503498e-07);
   pp.r_surf        = pin->GetOrAddReal("problem", "r_surf",        0.8*pp.R_star);
-  pp.rmax_atm_pole = pin->GetOrAddReal("problem", "rmax_atm_pole", 1.1*pp.R_star);
-  pp.rmax_atm_eqtr = pin->GetOrAddReal("problem", "rmax_atm_eqtr", 1.1*pp.R_star);
-  pp.h_surf        = pin->GetOrAddReal("problem", "h_surf",        5.0*0.03125);
-  pp.frac_dens_smooth = pin->GetOrAddReal("problem", "frac_dens_smooth", -1);
 
   // magnetosphere parameters
   pp.r_core        = pin->GetOrAddReal("problem", "r_core", 0.5*pp.R_star);
@@ -242,9 +211,6 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   pp.pfloor        = pin->GetOrAddReal("mhd", "pfloor",    1.0e-15);
   pp.beta_min      = pin->GetOrAddReal("mhd", "beta_min",  1.0e-03);
   pp.sigma_max     = pin->GetOrAddReal("mhd", "sigma_max", 1000.0);
-
-  // testing parameters
-  pp.test_hydro_balance = pin->GetOrAddBoolean("problem", "test_hydro_balance", false);
 
   // disk paramters
   pp.add_torus = pin->GetOrAddBoolean("problem", "add_torus", false);
@@ -264,63 +230,20 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     // TODO: add reading B-field parameters
   }
 
-  // tov star parameters
-  pp.use_tov       = pin->GetOrAddBoolean("problem", "use_tov",    false);
-  pp.rho_c         = pin->GetOrAddReal(   "problem", "rho_c",      3.710025734387253e+17);
-  pp.K_const       = pin->GetOrAddReal(   "problem", "K_const",    7.166065217868681e-13);
-  pp.gamma_poly    = pin->GetOrAddReal(   "problem", "gamma_poly", 5./3);
-  pp.n_pts         = pin->GetOrAddInteger("problem", "n_pts",      2000);
-
-
-  // 4. LOAD TOV STELLAR PROFILE
-  //    - Compute TOV solution inline (RK4) or read from external table
-  //    - Store rho(r), P(r), m(r) arrays accessible inside Kokkos kernels
-  HostArray1D<Real> r_host, rho_host, press_host, mass_host;
-  DvceArray1D<Real> r_tov, rho_tov, press_tov;
-  if (pp.use_tov) {
-    int &n_pts = pp.n_pts;
-    Kokkos::realloc(r_host,     n_pts);
-    Kokkos::realloc(rho_host,   n_pts);
-    Kokkos::realloc(press_host, n_pts);
-    Kokkos::realloc(mass_host,  n_pts);
-    CalculateTOV(pp, r_host, rho_host, press_host, mass_host);
-
-    Kokkos::realloc(r_tov,     n_pts);
-    Kokkos::realloc(rho_tov,   n_pts);
-    Kokkos::realloc(press_tov, n_pts);
-    Kokkos::deep_copy(r_tov,     r_host);
-    Kokkos::deep_copy(rho_tov,   rho_host);
-    Kokkos::deep_copy(press_tov, press_host);
-  }
-
-
   // 5. COMPUTE MAGNETIC FIELD PARAMETERS
   //    - Compute magnetic moment mu from B* and R* (Eq. 2)
   //    - Evaluate A(R_m) and A'(R_m) from exterior potential (Eq. 6)
   //    - Compute mask coefficients C1, C2 at R_m (Eq. 5)
   {
-    const Real &rg=pp.rg, &r_core=pp.r_core;
-    const Real &R_star=pp.R_star;
-    Real B_star = pp.B_star;
-    if (pp.test_hydro_balance) B_star *= 1.0e-12; // weak magnetic field for hydro balance test
+    const Real &R_star=pp.R_star, &B_star=pp.B_star, &r_core=pp.r_core;
 
-    Real rg3 = rg*SQR(rg);
-    Real R_star2 = SQR(R_star);
-    Real r_core2 = SQR(r_core);
-
-    pp.mu_dipole = -4./3*rg3*B_star / (log(1.-2./R_star) + 2./R_star + 2./R_star2);
-    Real coeff_a  = r_core2*log(1.-2./r_core) + 2*r_core + 2;
-    Real coeff_ap = 2*r_core*log(1.-2./r_core) + 4./(r_core-2) + 4;
-    pp.c1_dipole = -3./8*pp.mu_dipole/rg * (4*coeff_a-r_core*coeff_ap) / (2*r_core2);
-    pp.c2_dipole = -3./8*pp.mu_dipole/rg * (r_core*coeff_ap-2*coeff_a) / (2*SQR(r_core2));
+    pp.mu_dipole =  0.5*B_star*R_star*R_star*R_star;
+    pp.c1_dipole =  2.5*pp.mu_dipole/(r_core*r_core*r_core);
+    pp.c2_dipole = -1.5*pp.mu_dipole/(r_core*r_core*r_core*r_core*r_core);
   }
 
   // 6. RETURN EARLY IF RESTART
   if (restart) return;
-
-
-
-
 
 
   // 7. INITIALIZE PRIMITIVE VARIABLES
@@ -393,23 +316,15 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     Real &x3max = size.d_view(m).x3max;
     Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
 
-    // compute local metric
-    Real glower[4][4], gupper[4][4];
-    ComputeMetricAndInverse(x1v, x2v, x3v, false, 0.0, glower, gupper);
-
     // calculate Schwarzschild coordinates at the cell center
     Real rv, thv, phv;
     GetSchwarzschildCoordinates(x1v, x2v, x3v, &rv, &thv, &phv);
 
     // extract problem parameters
     const Real &R_star = pp_dvce.R_star, &B_star = pp_dvce.B_star, &Omg_star = pp_dvce.Omega_star;
-    const Real &r_surf = pp_dvce.r_surf, &h_surf = pp_dvce.h_surf;
-    const Real &rho_surf = pp_dvce.rho_surf, &tgas_surf = pp_dvce.tgas_surf;
-    Real pgas_surf = rho_surf*tgas_surf;
-    const Real &rmax_atm_eqtr = pp_dvce.rmax_atm_eqtr;
+    const Real &r_surf = pp_dvce.r_surf, &rho_surf = pp_dvce.rho_surf, &tgas_surf = pp_dvce.tgas_surf;
     const Real &beta_min  = pp_dvce.beta_min;
     const Real &sigma_max = pp_dvce.sigma_max;
-    const Real &frac_dens_smooth = pp_dvce.frac_dens_smooth;
 
     // compute local floors
     Real emag_star = SQR(B_star*R_star*R_star*R_star);
@@ -419,101 +334,18 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     // initialize gas profiles
     Real dens=dfloor, pgas=pfloor;
     Real uu1=0, uu2=0.0, uu3=0.0;
-    // initialize zero coordinate-frame velocity when r > 2
-    if (rv > 2) {
-      Real u0 = 1./sqrt(1.-2./rv);
-      Real u1=0.0, u2=0.0, u3=0.0;
-      uu1 = u1 - gupper[0][1]/gupper[0][0]*u0;
-      uu2 = u2 - gupper[0][2]/gupper[0][0]*u0;
-      uu3 = u3 - gupper[0][3]/gupper[0][0]*u0;
-    }
 
-    // TOV star
-    if (pp_dvce.use_tov) {
-      const int &n_pts = pp_dvce.n_pts;
-      Real r0_tov = r_tov(0);
-      Real r1_tov = r_tov(n_pts-1);
-
-      if (rv <= r0_tov) {
-        // inside innermost point, use central values
-        dens = rho_tov(0);
-        pgas = press_tov(0);
-      } else if (rv >= r1_tov) {
-        // outside stellar surface, use floor values
-        dens = dfloor;
-        pgas = pfloor;
-      } else {
-        // linear interpolation
-        Real dr_tov = (r1_tov - r0_tov) / (n_pts - 1);
-        int idx = static_cast<int>((rv - r0_tov) / dr_tov);
-        idx = (idx < 0) ? 0 : ((idx >= n_pts-1) ? n_pts-2 : idx);
-        Real frac = (rv - r_tov(idx)) / (r_tov(idx+1) - r_tov(idx));
-        dens = (1.0 - frac) * rho_tov(idx)   + frac * rho_tov(idx+1);
-        pgas = (1.0 - frac) * press_tov(idx) + frac * press_tov(idx+1);
-      }
-      dens = fmax(dens, dfloor);
-      pgas = fmax(pgas, pfloor);
-    } // endif (pp_dvce.use_tov)
-
-    // below the atmosphere (r < r_surf)
-    if (rv < r_surf) {
+    // below the atmosphere (r < R_star)
+    if (rv <= R_star) {
       dens = rho_surf;
       pgas = rho_surf*tgas_surf;
-      // Keplerian speed is only valid when r > 2rg
-      if (rv > pp_dvce.r_excise) {
-        Real u0 = 1./sqrt(1. - 2./rv - SQR(Omg_star*rv*sin(thv)));
-        Real u1 = -Omg_star*x2v*u0;
-        Real u2 =  Omg_star*x1v*u0;
-        Real u3 = 0.0;
-        uu1 = u1 - gupper[0][1]/gupper[0][0] * u0;
-        uu2 = u2 - gupper[0][2]/gupper[0][0] * u0;
-        uu3 = u3 - gupper[0][3]/gupper[0][0] * u0;
-      }
+      Real u0 = 1./sqrt(1. - SQR(Omg_star*rv*sin(thv)));
+      uu1 = -Omg_star*x2v*u0;
+      uu2 =  Omg_star*x1v*u0;
     } // endif below the atmosphere
 
-    // within the atmosphere (r_surf <= r <= ~rmax_atm_eqtr)
-    Real rv6 = rv*rv*rv*rv*rv*rv;
-    Real lmd = -(r_surf-2.)*r_surf;
-    Real pw_idx = 0.5*lmd/h_surf;
-    Real pw_base = (1. - 2./rv - SQR(Omg_star*rv*sin(thv))) / (1 - 2./r_surf);
-    bool below_atm = (rv6*pow(pw_base, pw_idx) >= fmax(emag_star/(2*pgas_surf)*beta_min, emag_star/(rho_surf*sigma_max)));
-    if (below_atm && (rv >= r_surf) && (rv <= rmax_atm_eqtr)) {
-      Real dens_atm = ComputeAtmosphere(x1v, x2v, x3v, Omg_star, r_surf, rho_surf,  h_surf);
-      Real pgas_atm = ComputeAtmosphere(x1v, x2v, x3v, Omg_star, r_surf, pgas_surf, h_surf);
-      dens = fmax(dens_atm, dfloor);
-      pgas = fmax(pgas_atm, pfloor);
-
-      // Keplerian speed is only valid when r > 2rg
-      if (rv > pp_dvce.r_excise) {
-        Real u0 = 1./sqrt(1. - 2./rv - SQR(Omg_star*rv*sin(thv)));
-        Real u1 = -Omg_star*x2v*u0;
-        Real u2 =  Omg_star*x1v*u0;
-        Real u3 = 0.0;
-        uu1 = u1 - gupper[0][1]/gupper[0][0] * u0;
-        uu2 = u2 - gupper[0][2]/gupper[0][0] * u0;
-        uu3 = u3 - gupper[0][3]/gupper[0][0] * u0;
-      }
-    } // endif within the atmosphere
-
-    // smooth density at atmosphere top
-    if ((frac_dens_smooth > 1) && (rv < rmax_atm_eqtr*frac_dens_smooth)) {
-      Real dens_atm = ComputeAtmosphere(x1v, x2v, x3v, Omg_star, r_surf, rho_surf, h_surf);
-      Real r0 = rmax_atm_eqtr;
-      Real r1 = rmax_atm_eqtr*frac_dens_smooth;
-      Real pw_base0 = (1. - 2./r0 - SQR(Omg_star*r0)) / (1 - 2./r_surf);
-      Real pw_base1 = (1. - 2./r1 - SQR(Omg_star*r1)) / (1 - 2./r_surf);
-      Real d_pseudo = 1./rv6*pow(pw_base, -pw_idx);
-      Real d0 = 1./(r0*r0*r0*r0*r0*r0) * pow(pw_base0, -pw_idx);
-      Real d1 = 1./(r1*r1*r1*r1*r1*r1) * pow(pw_base1, -pw_idx);
-      if ((d_pseudo > d0) && (d_pseudo < d1)) {
-        Real xi = (d_pseudo - d0) / (d1 - d0);
-        Real w_ = xi*xi*xi*(xi*(xi*6.0 - 15.0) + 10.0);
-        dens = pow(dens_atm, 1.0-w_) * pow(dfloor, w_);
-      }
-    } // endif smoothing atmosphere top
-
     // torus (r > rmax_atm_eqtr)
-    if ((pp_dvce.add_torus) && (rv > rmax_atm_eqtr)) {
+    if (pp_dvce.add_torus) {
       // determine if we are in the torus
       Real log_h;
       bool in_torus = false;
@@ -532,6 +364,10 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       Real perturbation = 0.0;
       // Overwrite primitives inside torus
       if (in_torus) {
+        // compute Schwarzschild metric
+        Real glower[4][4], gupper[4][4];
+        ComputeMetricAndInverse(x1v, x2v, x3v, false, 0.0, glower, gupper);
+
         // Calculate perturbation
         auto rand_gen = rand_pool64.get_state(); // get random number state this thread
         perturbation = 2.0*pp_dvce.pert_amp*(rand_gen.frand() - 0.5);
@@ -781,88 +617,6 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
 namespace {
 //----------------------------------------------------------------------------------------
-// Helper function to compute TOV star profiles
-static void TOVEquations(const Real r, const Real mass, const Real press,
-                         const struct pgen_param pp,
-                         Real &dmass, Real &dpress) {
-
-  if (press <= pp.pfloor) {
-    dmass = 0.0; dpress = 0.0;
-    return;
-  }
-
-  Real rho = pow(press/pp.K_const, 1.0/pp.gamma_poly);
-  Real eps = rho + press/(pp.gamma_poly-1.0);
-  dmass  = 4.0*M_PI * SQR(r) * eps;
-  dpress = -(eps+press)/pp.M_star * (mass+4.0*M_PI*r*SQR(r)*press) / (r*(r-2.0*mass/pp.M_star));
-}
-
-static void CalculateTOV(const struct pgen_param pp, HostArray1D<Real> &r_host,
-                         HostArray1D<Real> &rho_host, HostArray1D<Real> &press_host,
-                         HostArray1D<Real> &mass_host) {
-  int  n_pts   = pp.n_pts;   Real R_star = pp.R_star;
-  Real dfloor  = pp.dfloor;  Real pfloor = pp.pfloor;
-  Real K_const = pp.K_const; Real rho_c  = pp.rho_c; Real gamma_poly = pp.gamma_poly;
-
-  Real r0 = fmin(1.0e-6, 1e-2*R_star/n_pts);
-  Real dr = (R_star - r0) / (n_pts - 1);
-
-  // Initial conditions
-  Real press_c  = K_const * pow(rho_c, gamma_poly);
-  Real eps_c = rho_c + press_c / (gamma_poly-1.0);
-  r_host(0)     = r0;
-  mass_host(0)  = (4.0/3.0) * M_PI * r0*SQR(r0) * eps_c;
-  press_host(0) = press_c;
-  rho_host(0)   = rho_c;
-
-  for (int i=0; i < n_pts-1; i++) {
-    Real r_ = r_host(i);
-    Real m_ = mass_host(i);
-    Real p_ = press_host(i);
-
-    // RK4 integration
-    Real dm1, dp1, dm2, dp2, dm3, dp3, dm4, dp4;
-    TOVEquations(r_,        m_,            p_,            pp, dm1, dp1);
-    TOVEquations(r_+0.5*dr, m_+0.5*dr*dm1, p_+0.5*dr*dp1, pp, dm2, dp2);
-    TOVEquations(r_+0.5*dr, m_+0.5*dr*dm2, p_+0.5*dr*dp2, pp, dm3, dp3);
-    TOVEquations(r_+dr,     m_+dr*dm3,     p_+dr*dp3,     pp, dm4, dp4);
-
-    r_host(i+1)     = r_ + dr;
-    mass_host(i+1)  = m_ + (dr/6.0) * (dm1 + 2.0*dm2 + 2.0*dm3 + dm4);
-    press_host(i+1) = fmax(p_ + (dr/6.0) * (dp1 + 2.0*dp2 + 2.0*dp3 + dp4), pfloor);
-    rho_host(i+1)   = pow(press_host(i+1)/K_const, 1.0/gamma_poly);
-
-    // stop if pressure vanishes
-    if (press_host(i+1) <= pfloor) {
-      for (int j=i+2; j < n_pts; j++) {
-        r_host(j)     = r_host(i+1) + (j-i-1)*dr;
-        mass_host(j)  = mass_host(i+1);
-        press_host(j) = pfloor;
-        rho_host(j)   = dfloor;
-      }
-      break;
-    }
-  } // endfor i
-
-  // diagnostic output
-  std::cout << "TOV integration complete: M(R*) = " << mass_host(n_pts-1)
-            << ", R* = " << r_host(n_pts-1) << std::endl;
-}
-
-// compute neutron star atmosphere
-KOKKOS_INLINE_FUNCTION
-Real ComputeAtmosphere(Real x1, Real x2, Real x3, Real Omega, Real r_surf, Real prof_surf, Real h_surf) {
-  // coordinate convertion
-  Real r, theta, phi;
-  GetSchwarzschildCoordinates(x1, x2, x3, &r, &theta, &phi);
-
-  // compute density profile
-  Real part1  = 1. - 2./r - SQR(Omega*r*sin(theta));
-  Real part2  = 1. - 2./r_surf;
-  Real pw_idx = -r_surf/h_surf * (0.5*r_surf-1.0);
-
-  return prof_surf*pow(part1/part2, pw_idx);
-}
 
 // convert CKS to Schwarzschild coordinates
 KOKKOS_INLINE_FUNCTION
@@ -889,8 +643,7 @@ Real A1dipole(struct pgen_param pp, Real x1, Real x2, Real x3) {
 
   // calculate vector potential
   Real r2 = SQR(r);
-  Real aphi_rcomp = (r > r_core) ? -3./8*mu_dipole/rg * (r2*log(1.-2./r) + 2.*r + 2.)
-                                 : c1_dipole*r2 + c2_dipole*SQR(r2);
+  Real aphi_rcomp = (r > r_core) ? -mu_dipole/r : c1_dipole*r2 + c2_dipole*SQR(r2);
   Real aphi = SQR(sin(theta)) * aphi_rcomp;
   return aphi * (-x2 / (SQR(x1)+SQR(x2)));
 }
@@ -908,8 +661,7 @@ Real A2dipole(struct pgen_param pp, Real x1, Real x2, Real x3) {
 
   // calculate vector potential
   Real r2 = SQR(r);
-  Real aphi_rcomp = (r > pp.r_core) ? -3./8*mu_dipole/rg * (r2*log(1.-2./r) + 2.*r + 2.)
-                                    : c1_dipole*r2 + c2_dipole*SQR(r2);
+  Real aphi_rcomp = (r > r_core) ? -mu_dipole/r : c1_dipole*r2 + c2_dipole*SQR(r2);
   Real aphi = SQR(sin(theta)) * aphi_rcomp;
   return aphi * (x1 / (SQR(x1)+SQR(x2)));
 }
@@ -1127,13 +879,12 @@ void MySourceTerms(Mesh* pm, const Real bdt) {
 
   NeutronStarMask(pm, bdt);
 
-  // ReducedGravSrcTerm(pm, bdt);
+  GravSrcTerm(pm, bdt);
 
   return;
 }
 
-
-void ReducedGravSrcTerm(Mesh* pm, const Real bdt) {
+void GravSrcTerm(Mesh* pm, const Real bdt) {
   // capture variables for kernel
   MeshBlockPack *pmbp = pm->pmb_pack;
   auto &indcs = pm->mb_indcs;
@@ -1167,40 +918,32 @@ void ReducedGravSrcTerm(Mesh* pm, const Real bdt) {
     // calculate Schwarzschild coordinates at the cell center
     Real rv, thv, phv;
     GetSchwarzschildCoordinates(x1v, x2v, x3v, &rv, &thv, &phv);
-    if ((rv < pp_dvce.r_surf) || (rv > pp_dvce.rmax_atm_eqtr)) return;
-
-    // extract problem paramters
-    const Real &R_star=pp_dvce.R_star, &B_star=pp_dvce.B_star, &Omg_star=pp_dvce.Omega_star;
-    const Real &r_surf=pp_dvce.r_surf, &h_surf=pp_dvce.h_surf;
-    const Real &rho_surf=pp_dvce.rho_surf, &tgas_surf=pp_dvce.tgas_surf;
-    Real pgas_surf = rho_surf*tgas_surf;
-    const Real &rmax_atm_eqtr=pp_dvce.rmax_atm_eqtr;
-    const Real &sigma_max=pp_dvce.sigma_max;
-    const Real &beta_min=pp_dvce.beta_min;
-    Real rv3 = rv*SQR(rv); Real rv6 = SQR(rv3);
-    Real emag_star = SQR(B_star*R_star*R_star*R_star);
-
-    Real lmd = -(r_surf-2.)*r_surf;
-    Real pw_base = (1. - 2./rv - SQR(Omg_star*rv*sin(thv))) / (1 - 2./r_surf);
-    Real pw_idx = 0.5*lmd/h_surf;
-    bool below_atm = (rv6*pow(pw_base, pw_idx) >= fmax(emag_star/(2*pgas_surf)*beta_min, emag_star/(rho_surf*sigma_max)));
-    if (below_atm && (rv >= r_surf) && (rv <= rmax_atm_eqtr)) {
+    if (rv > pp_dvce.R_star) {
       Real dens = w0_(m,IDN,k,j,i);
       Real pgas = w0_(m,IEN,k,j,i)*gm1;
+      Real uu1  = w0_(m,IVX,k,j,i);
+      Real uu2  = w0_(m,IVY,k,j,i);
+      Real uu3  = w0_(m,IVZ,k,j,i);
+      Real uu0  = sqrt(1.0+SQR(uu1)+SQR(uu2)+SQR(uu3));
 
-      Real ut2 = 1./(1. - 2./rv - SQR(Omg_star*rv*sin(thv)));
-      Real wtot = dens + pgas/gm1 + pgas + lmd*pgas/h_surf;
+      Real wg = dens + pgas/gm1 + pgas;
+      Real rho_grav = uu0*uu0*wg;
+      Real rv3 = rv*rv*rv;
 
-      Real srcx = wtot*ut2 * (1./rv3 - SQR(Omg_star))*x1v;
-      Real srcy = wtot*ut2 * (1./rv3 - SQR(Omg_star))*x2v;
-      Real srcz = wtot*ut2 * (1./rv3)*x3v;
+      Real src_mx = -rho_grav * x1v/rv3;
+      Real src_my = -rho_grav * x2v/rv3;
+      Real src_mz = -rho_grav * x3v/rv3;
+      Real src_e  = -rho_grav * (x1v*uu1 + x2v*uu2 + x3v*uu3)/(uu0*rv3);
 
-      u0_(m,IM1,k,j,i) += bdt*srcx;
-      u0_(m,IM2,k,j,i) += bdt*srcy;
-      u0_(m,IM3,k,j,i) += bdt*srcz;
-    } // endif
+      u0_(m,IM1,k,j,i) += bdt * src_mx;
+      u0_(m,IM2,k,j,i) += bdt * src_my;
+      u0_(m,IM3,k,j,i) += bdt * src_mz;
+      u0_(m,IEN,k,j,i) += bdt * src_e;
+    } // endif r > R_star
+
   }); // end par_for
 } // end ReducedGravSrcTerm
+
 
 
 void NeutronStarMask(Mesh* pm, const Real bdt) {
@@ -1235,136 +978,40 @@ void NeutronStarMask(Mesh* pm, const Real bdt) {
     Real &x3max = size.d_view(m).x3max;
     Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
 
-    // calculate Schwarzschild coordinates at the cell center
     Real rv, thv, phv;
     GetSchwarzschildCoordinates(x1v, x2v, x3v, &rv, &thv, &phv);
 
     // extract problem parameters
-    const Real &r_mask=pp_dvce.r_mask;
-    const Real &R_star=pp_dvce.R_star, &B_star=pp_dvce.B_star, &Omg_star=pp_dvce.Omega_star;
-    const Real &r_surf=pp_dvce.r_surf, &h_surf=pp_dvce.h_surf;
+    const Real &R_star=pp_dvce.R_star, &Omg_star=pp_dvce.Omega_star;
     const Real &rho_surf=pp_dvce.rho_surf, &tgas_surf=pp_dvce.tgas_surf;
-    const Real &sigma_max=pp_dvce.sigma_max;
-    const Real &beta_min=pp_dvce.beta_min;
-
-    // compute local floors
-    Real emag_star = SQR(B_star*R_star*R_star*R_star);
-    Real dfloor = fmax(pp_dvce.dfloor, emag_star/SQR(rv*rv*rv)/sigma_max);
-    Real pfloor = fmax(pp_dvce.pfloor, emag_star/SQR(rv*rv*rv)/2*beta_min);
-
-    // region flag
-    Real pgas_surf = rho_surf*tgas_surf;
-    const Real &rmax_atm_eqtr=pp_dvce.rmax_atm_eqtr;
-    Real rv3 = rv*SQR(rv); Real rv6 = SQR(rv3);
-
-    Real lmd = -(r_surf-2.)*r_surf;
-    Real pw_base = (1. - 2./rv - SQR(Omg_star*rv*sin(thv))) / (1 - 2./r_surf);
-    Real pw_idx = 0.5*lmd/h_surf;
-    bool below_atm = (rv6*pow(pw_base, pw_idx) >= fmax(emag_star/(2*pgas_surf)*beta_min, emag_star/(rho_surf*sigma_max)));
 
     // extract problem paramters
-    if (rv <= r_mask) {
-      Real dens = (rv < r_surf) ? rho_surf :
-                  ComputeAtmosphere(x1v, x2v, x3v, Omg_star, r_surf, rho_surf, h_surf);
-      dens = fmax(dens, dfloor);
-      Real pgas = fmax(dens*tgas_surf, pfloor);
-      Real bx = bcc0_(m,IBX,k,j,i);
-      Real by = bcc0_(m,IBY,k,j,i);
-      Real bz = bcc0_(m,IBZ,k,j,i);
-
-      // gas velocity in the normal frame
-      Real glower[4][4], gupper[4][4];
-      ComputeMetricAndInverse(x1v, x2v, x3v, false, 0.0, glower, gupper);
-
-      Real u0=1.0, u1=0.0, u2=0.0, u3=0.0;
-      if (rv > pp_dvce.r_excise) {
-        u0 = 1./sqrt(1. - 2./rv - SQR(Omg_star*rv*sin(thv)));
-        u1 = -Omg_star*x2v*u0;
-        u2 =  Omg_star*x1v*u0;
-        u3 = 0.0;
-      }
-
-      Real u_0 = glower[0][0]*u0 + glower[0][1]*u1 + glower[0][2]*u2 + glower[0][3]*u3;
-      Real u_1 = glower[1][0]*u0 + glower[1][1]*u1 + glower[1][2]*u2 + glower[1][3]*u3;
-      Real u_2 = glower[2][0]*u0 + glower[2][1]*u1 + glower[2][2]*u2 + glower[2][3]*u3;
-      Real u_3 = glower[3][0]*u0 + glower[3][1]*u1 + glower[3][2]*u2 + glower[3][3]*u3;
-
-      Real b0 = u_1*bx + u_2*by + u_3*bz;
-      Real b1 = (bx + b0*u1) / u0;
-      Real b2 = (by + b0*u2) / u0;
-      Real b3 = (bz + b0*u3) / u0;
-
-      Real b_0 = glower[0][0]*b0 + glower[0][1]*b1 + glower[0][2]*b2 + glower[0][3]*b3;
-      Real b_1 = glower[1][0]*b0 + glower[1][1]*b1 + glower[1][2]*b2 + glower[1][3]*b3;
-      Real b_2 = glower[2][0]*b0 + glower[2][1]*b1 + glower[2][2]*b2 + glower[2][3]*b3;
-      Real b_3 = glower[3][0]*b0 + glower[3][1]*b1 + glower[3][2]*b2 + glower[3][3]*b3;
-      Real b_sq = b0*b_0 + b1*b_1 + b2*b_2 + b3*b_3;
-
-      Real wtot = dens + (gm1+1)/gm1*pgas + b_sq;
-      Real ptot = pgas + 0.5*b_sq;
-      u0_(m,IDN,k,j,i) = dens*u0;
-      u0_(m,IEN,k,j,i) = wtot*u0*u_0 - b0*b_0 + ptot + dens*u0;
-      u0_(m,IM1,k,j,i) = wtot*u0*u_1 - b0*b_1;
-      u0_(m,IM2,k,j,i) = wtot*u0*u_2 - b0*b_2;
-      u0_(m,IM3,k,j,i) = wtot*u0*u_3 - b0*b_3;
-    } // endif
-
-
-    // isotherm atm
-    if (below_atm && (rv >= r_surf) && (rv <= rmax_atm_eqtr)) {
-      Real dens = w0_(m,IDN,k,j,i);
-      Real uu1  = w0_(m,IVX,k,j,i);
-      Real uu2  = w0_(m,IVY,k,j,i);
-      Real uu3  = w0_(m,IVZ,k,j,i);
+    if (rv <= R_star) {
+      Real dens = rho_surf;
       Real pgas = dens*tgas_surf;
       Real bx = bcc0_(m,IBX,k,j,i);
       Real by = bcc0_(m,IBY,k,j,i);
       Real bz = bcc0_(m,IBZ,k,j,i);
 
-      // gas velocity in the normal frame
-      Real glower[4][4], gupper[4][4];
-      ComputeMetricAndInverse(x1v, x2v, x3v, false, 0.0, glower, gupper);
+      Real u0 = 1./sqrt(1. - SQR(Omg_star)*(SQR(x1v)+SQR(x2v)));
+      Real u1 = -Omg_star*x2v*u0;
+      Real u2 =  Omg_star*x1v*u0;
+      Real u3 = 0.0;
 
-      Real q = glower[1][1]*uu1*uu1 +2.0*glower[1][2]*uu1*uu2 +2.0*glower[1][3]*uu1*uu3
-             + glower[2][2]*uu2*uu2 +2.0*glower[2][3]*uu2*uu3
-             + glower[3][3]*uu3*uu3;
-      Real alpha = sqrt(-1.0/gupper[0][0]);
-      Real gamma = sqrt(1.0 + q);
-      Real u0 = gamma / alpha;
-      Real u1 = uu1 - alpha * gamma * gupper[0][1];
-      Real u2 = uu2 - alpha * gamma * gupper[0][2];
-      Real u3 = uu3 - alpha * gamma * gupper[0][3];
-
-      Real u_0 = glower[0][0]*u0 + glower[0][1]*u1 + glower[0][2]*u2 + glower[0][3]*u3;
-      Real u_1 = glower[1][0]*u0 + glower[1][1]*u1 + glower[1][2]*u2 + glower[1][3]*u3;
-      Real u_2 = glower[2][0]*u0 + glower[2][1]*u1 + glower[2][2]*u2 + glower[2][3]*u3;
-      Real u_3 = glower[3][0]*u0 + glower[3][1]*u1 + glower[3][2]*u2 + glower[3][3]*u3;
-
-      Real b0 = u_1*bx + u_2*by + u_3*bz;
+      Real b0 = u1*bx + u2*by + u3*bz;
       Real b1 = (bx + b0*u1) / u0;
       Real b2 = (by + b0*u2) / u0;
       Real b3 = (bz + b0*u3) / u0;
-
-      Real b_0 = glower[0][0]*b0 + glower[0][1]*b1 + glower[0][2]*b2 + glower[0][3]*b3;
-      Real b_1 = glower[1][0]*b0 + glower[1][1]*b1 + glower[1][2]*b2 + glower[1][3]*b3;
-      Real b_2 = glower[2][0]*b0 + glower[2][1]*b1 + glower[2][2]*b2 + glower[2][3]*b3;
-      Real b_3 = glower[3][0]*b0 + glower[3][1]*b1 + glower[3][2]*b2 + glower[3][3]*b3;
-      Real b_sq = b0*b_0 + b1*b_1 + b2*b_2 + b3*b_3;
+      Real b_sq = -SQR(b0) + SQR(b1) + SQR(b2) + SQR(b3);
 
       Real wtot = dens + (gm1+1)/gm1*pgas + b_sq;
       Real ptot = pgas + 0.5*b_sq;
       u0_(m,IDN,k,j,i) = dens*u0;
-      u0_(m,IEN,k,j,i) = wtot*u0*u_0 - b0*b_0 + ptot + dens*u0;
-      u0_(m,IM1,k,j,i) = wtot*u0*u_1 - b0*b_1;
-      u0_(m,IM2,k,j,i) = wtot*u0*u_2 - b0*b_2;
-      u0_(m,IM3,k,j,i) = wtot*u0*u_3 - b0*b_3;
-
-
-
-    } // endif isotherm atm
-
-
-
+      u0_(m,IEN,k,j,i) = wtot*u0*u0 - b0*b0 - ptot - dens*u0;
+      u0_(m,IM1,k,j,i) = wtot*u0*u1 - b0*b1;
+      u0_(m,IM2,k,j,i) = wtot*u0*u2 - b0*b2;
+      u0_(m,IM3,k,j,i) = wtot*u0*u3 - b0*b3;
+    } // endif
 
   }); // end par_for
 } // end NeutronStarMask
