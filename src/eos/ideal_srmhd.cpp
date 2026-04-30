@@ -69,6 +69,8 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
   int entropyIdx = (entropy_fix_) ? nmhd+nscal-1 : -1;
   auto &sigma_cut_ = pmy_pack->pmhd->sigma_cut_efix;
   auto &beta_cut_  = pmy_pack->pmhd->beta_cut_efix;
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  int &is = indcs.is, &js = indcs.js, &ks = indcs.ks;
   auto &size = pmy_pack->pmb->mb_size;
 
   const int ni   = (iu - il + 1);
@@ -127,7 +129,7 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
     bool vceiling_used=false, c2p_failure=false;
     int iter_used=0;
 
-    // bool apply_sigma_max = false;
+    bool apply_sigma_max = false;
     // Real b2_fake = -1;
     // if (use_nsmask) {
     //   Real r_sch = sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
@@ -201,7 +203,17 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
           c2p_failure = c2p_failure_in_fix;
           iter_used_in_fix = iter_used;
         }
-      } // endif
+
+        // otherwise old state
+        if ((c2p_failure) && (c2p_failure_in_fix)) {
+          w.d  = w_old.d;
+          w.e  = w_old.e;
+          w.vx = w_old.vx;
+          w.vy = w_old.vy;
+          w.vz = w_old.vz;
+        }
+
+      } // endif perform fix
     }  // endif entropy_fix_
 
     // apply velocity ceiling if necessary
