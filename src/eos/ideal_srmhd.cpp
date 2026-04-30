@@ -97,9 +97,9 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
     // use input CC fields if only testing floors with FOFC
     // printf("k,j,i=%d,%d,%d \n",k,j,i);
     if (only_testfloors) {
-      u.bx = bcc(m,IBX,k,j,i);
-      u.by = bcc(m,IBY,k,j,i);
-      u.bz = bcc(m,IBZ,k,j,i);
+      // u.bx = bcc(m,IBX,k,j,i);
+      // u.by = bcc(m,IBY,k,j,i);
+      // u.bz = bcc(m,IBZ,k,j,i);
     // else use simple linear average of face-centered fields
     } else {
       u.bx = 0.5*(b.x1f(m,k,j,i) + b.x1f(m,k,j,i+1));
