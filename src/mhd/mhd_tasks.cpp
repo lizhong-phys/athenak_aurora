@@ -209,6 +209,8 @@ TaskStatus MHD::Fluxes(Driver *pdrive, int stage) {
     CalculateFluxes<MHD_RSolver::hlle_gr>(pdrive, stage);
   }
 
+  printf("   rsolver pass \n");
+
   // Add viscous, resistive, heat-flux, etc fluxes
   if (pvisc != nullptr) {
     pvisc->IsotropicViscousFlux(w0, pvisc->nu_iso, peos->eos_data, uflx);
@@ -220,11 +222,18 @@ TaskStatus MHD::Fluxes(Driver *pdrive, int stage) {
     pcond->AddHeatFlux(w0, peos->eos_data, uflx);
   }
 
+  printf("   add terms pass \n");
+
   // call FOFC if necessary
+  printf("   fofc begin \n");
+
   if (use_fofc) {
+    printf("   normal \n");
     FOFC(pdrive, stage);
   } else if (pmy_pack->pcoord->is_general_relativistic) {
+    printf("   gr \n");
     if (pmy_pack->pcoord->coord_data.bh_excise) {
+      printf("   excise \n");
       FOFC(pdrive, stage);
     }
   }
