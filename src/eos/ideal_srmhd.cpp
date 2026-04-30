@@ -74,7 +74,6 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
   const int nkji = (ku - kl + 1)*nji;
   const int nmkji = nmb*nkji;
 
-  printf("   before loop \n");
   int nfloord_=0, nfloore_=0, nceilv_=0, nfail_=0, maxit_=0;
   Kokkos::parallel_reduce("srmhd_c2p",Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
   KOKKOS_LAMBDA(const int &idx, int &sumd, int &sume, int &sumv, int &sumf, int &max_it) {
@@ -95,7 +94,6 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
 
     // load cell-centered fields into conserved state
     // use input CC fields if only testing floors with FOFC
-    // printf("k,j,i=%d,%d,%d \n",k,j,i);
     if (only_testfloors) {
       u.bx = bcc(m,IBX,k,j,i);
       u.by = bcc(m,IBY,k,j,i);
@@ -106,7 +104,6 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
       u.by = 0.5*(b.x2f(m,k,j,i) + b.x2f(m,k,j+1,i));
       u.bz = 0.5*(b.x3f(m,k,j,i) + b.x3f(m,k+1,j,i));
     }
-    // printf("       after bxyz \n");
 
     // Compute (S^i S_i) (eqn C2)
     Real s2 = SQR(u.mx) + SQR(u.my) + SQR(u.mz);
@@ -191,13 +188,11 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
     }
 
     // set FOFC flag and quit loop if this function called only to check floors
-    // printf("       before fofc_ \n");
     if (only_testfloors) {
       if (dfloor_used || efloor_used || vceiling_used || c2p_failure) {
         fofc_(m,k,j,i) = true;
         sumd++;  // use dfloor as counter for when either is true
       }
-      // printf("       after fofc_ \n");
     } else {
       if (dfloor_used) {sumd++;}
       if (efloor_used) {sume++;}
@@ -249,7 +244,6 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
 
   // store appropriate counters
   if (only_testfloors) {
-    printf("   after loop \n");
     pmy_pack->pmesh->ecounter.nfofc += nfloord_;
   } else {
     pmy_pack->pmesh->ecounter.neos_dfloor += nfloord_;
@@ -258,7 +252,6 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
     pmy_pack->pmesh->ecounter.neos_fail   += nfail_;
     pmy_pack->pmesh->ecounter.maxit_c2p = maxit_;
   }
-  // printf("   after counters \n");
 
   return;
 }
