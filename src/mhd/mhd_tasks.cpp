@@ -90,12 +90,10 @@ void MHD::AssembleMHDTasks(std::map<std::string, std::shared_ptr<TaskList>> tl) 
 //! for example to compute jcon in GRMHD.
 
 TaskStatus MHD::SaveMHDState(Driver *pdrive, int stage) {
-  printf("SaveMHDState 1 \n");
   if (wbcc_saved) {
     Kokkos::deep_copy(DevExeSpace(), wsaved, w0);
     Kokkos::deep_copy(DevExeSpace(), bccsaved, bcc0);
   }
-  printf("SaveMHDState 2 \n");
   return TaskStatus::complete;
 }
 
@@ -107,7 +105,6 @@ TaskStatus MHD::SaveMHDState(Driver *pdrive, int stage) {
 //! face-centered fields AND their fluxes (with SMR/AMR).
 
 TaskStatus MHD::InitRecv(Driver *pdrive, int stage) {
-  printf("InitRecv 1 \n");
   // post receives for U
   TaskStatus tstat = pbval_u->InitRecv(nmhd+nscalars);
   if (tstat != TaskStatus::complete) return tstat;
@@ -155,7 +152,6 @@ TaskStatus MHD::InitRecv(Driver *pdrive, int stage) {
       if (tstat != TaskStatus::complete) return tstat;
     }
   }
-  printf("InitRecv 2 \n");
 
   return tstat;
 }
@@ -165,20 +161,14 @@ TaskStatus MHD::InitRecv(Driver *pdrive, int stage) {
 //! \brief Simple task list function that copies u0 --> u1, and b0 --> b1 in first stage
 
 TaskStatus MHD::CopyCons(Driver *pdrive, int stage) {
-  printf("CopyCons 1 \n");
-
   if (stage == 1) {
     if (entropy_fix) EntropyReset();
-    printf("  Entropy Reset pass \n");
 
     Kokkos::deep_copy(DevExeSpace(), u1, u0);
     Kokkos::deep_copy(DevExeSpace(), b1.x1f, b0.x1f);
     Kokkos::deep_copy(DevExeSpace(), b1.x2f, b0.x2f);
     Kokkos::deep_copy(DevExeSpace(), b1.x3f, b0.x3f);
-    printf("  Copy Conserv pass \n");
   }
-
-  printf("CopyCons 2 \n");
 
   return TaskStatus::complete;
 }
@@ -189,7 +179,6 @@ TaskStatus MHD::CopyCons(Driver *pdrive, int stage) {
 //! of conserved variables
 
 TaskStatus MHD::Fluxes(Driver *pdrive, int stage) {
-  printf("Fluxes 1 \n");
   // select which calculate_flux function to call based on rsolver_method
   if (rsolver_method == MHD_RSolver::advect) {
     CalculateFluxes<MHD_RSolver::advect>(pdrive, stage);
@@ -209,8 +198,6 @@ TaskStatus MHD::Fluxes(Driver *pdrive, int stage) {
     CalculateFluxes<MHD_RSolver::hlle_gr>(pdrive, stage);
   }
 
-  printf("   rsolver pass \n");
-
   // Add viscous, resistive, heat-flux, etc fluxes
   if (pvisc != nullptr) {
     pvisc->IsotropicViscousFlux(w0, pvisc->nu_iso, peos->eos_data, uflx);
@@ -222,22 +209,14 @@ TaskStatus MHD::Fluxes(Driver *pdrive, int stage) {
     pcond->AddHeatFlux(w0, peos->eos_data, uflx);
   }
 
-  printf("   add terms pass \n");
-
   // call FOFC if necessary
-  printf("   fofc begin \n");
-
   if (use_fofc) {
-    printf("   normal \n");
     FOFC(pdrive, stage);
   } else if (pmy_pack->pcoord->is_general_relativistic) {
-    printf("   gr \n");
     if (pmy_pack->pcoord->coord_data.bh_excise) {
-      printf("   excise \n");
       FOFC(pdrive, stage);
     }
   }
-  printf("Fluxes 2 \n");
 
   return TaskStatus::complete;
 }
@@ -248,14 +227,11 @@ TaskStatus MHD::Fluxes(Driver *pdrive, int stage) {
 //! conserved variables at fine/coarse boundaries
 
 TaskStatus MHD::SendFlux(Driver *pdrive, int stage) {
-  printf("SendFlux 1 \n");
   TaskStatus tstat = TaskStatus::complete;
   // Only execute BoundaryValues function with SMR/SMR
   if (pmy_pack->pmesh->multilevel)  {
     tstat = pbval_u->PackAndSendFluxCC(uflx);
   }
-  printf("SendFlux 2 \n");
-
 
   return tstat;
 }
@@ -266,15 +242,11 @@ TaskStatus MHD::SendFlux(Driver *pdrive, int stage) {
 //! conserved variables at fine/coarse boundaries
 
 TaskStatus MHD::RecvFlux(Driver *pdrive, int stage) {
-  printf("RecvFlux 1 \n");
   TaskStatus tstat = TaskStatus::complete;
   // Only execute BoundaryValues function with SMR/SMR
   if (pmy_pack->pmesh->multilevel) {
     tstat = pbval_u->RecvAndUnpackFluxCC(uflx);
   }
-
-  printf("RecvFlux 2 \n");
-
 
   return tstat;
 }
@@ -286,7 +258,6 @@ TaskStatus MHD::RecvFlux(Driver *pdrive, int stage) {
 //! variables (u0) have already been partially updated when this fn called.
 
 TaskStatus MHD::MHDSrcTerms(Driver *pdrive, int stage) {
-  printf("MHDSrcTerms 1 \n");
   Real beta_dt = (pdrive->beta[stage-1])*(pmy_pack->pmesh->dt);
 
   // Add physics source terms (must be computed from primitives)
@@ -308,9 +279,6 @@ TaskStatus MHD::MHDSrcTerms(Driver *pdrive, int stage) {
     (pmy_pack->pmesh->pgen->user_srcs_func)(pmy_pack->pmesh, beta_dt);
   }
 
-  printf("MHDSrcTerms 2 \n");
-
-
   return TaskStatus::complete;
 }
 
@@ -319,7 +287,6 @@ TaskStatus MHD::MHDSrcTerms(Driver *pdrive, int stage) {
 //! \brief Wrapper task list function to pack/send data for orbital advection
 
 TaskStatus MHD::SendU_OA(Driver *pdrive, int stage) {
-  printf("SendU_OA 1 \n");
   TaskStatus tstat = TaskStatus::complete;
   if (porb_u != nullptr) {
     // only execute when (last stage) AND (3D OR 2d_r_phi)
@@ -329,9 +296,6 @@ TaskStatus MHD::SendU_OA(Driver *pdrive, int stage) {
     }
   }
 
-  printf("SendU_OA 2 \n");
-
-
   return tstat;
 }
 
@@ -340,7 +304,6 @@ TaskStatus MHD::SendU_OA(Driver *pdrive, int stage) {
 //! \brief Wrapper task list function to recv/unpack data for orbital advection
 
 TaskStatus MHD::RecvU_OA(Driver *pdrive, int stage) {
-  printf("RecvU_OA 1 \n");
   TaskStatus tstat = TaskStatus::complete;
   if (porb_u != nullptr) {
     // only execute when (last stage) AND (3D OR 2d_r_phi)
@@ -350,9 +313,6 @@ TaskStatus MHD::RecvU_OA(Driver *pdrive, int stage) {
     }
   }
 
-  printf("RecvU_OA 2 \n");
-
-
   return tstat;
 }
 
@@ -361,14 +321,10 @@ TaskStatus MHD::RecvU_OA(Driver *pdrive, int stage) {
 //! \brief Wrapper task list function to restrict conserved vars
 
 TaskStatus MHD::RestrictU(Driver *pdrive, int stage) {
-  printf("RestrictU 1 \n");
   // Only execute Mesh function with SMR/AMR
   if (pmy_pack->pmesh->multilevel) {
     pmy_pack->pmesh->pmr->RestrictCC(u0, coarse_u0);
   }
-
-  printf("RestrictU 2 \n");
-
 
   return TaskStatus::complete;
 }
@@ -378,11 +334,7 @@ TaskStatus MHD::RestrictU(Driver *pdrive, int stage) {
 //! \brief Wrapper task list function to pack/send cell-centered conserved variables
 
 TaskStatus MHD::SendU(Driver *pdrive, int stage) {
-  printf("SendU 1 \n");
   TaskStatus tstat = pbval_u->PackAndSendCC(u0, coarse_u0);
-
-  printf("SendU 2 \n");
-
 
   return tstat;
 }
@@ -392,11 +344,7 @@ TaskStatus MHD::SendU(Driver *pdrive, int stage) {
 //! \brief Wrapper task list function to receive/unpack cell-centered conserved variables
 
 TaskStatus MHD::RecvU(Driver *pdrive, int stage) {
-  printf("RecvU 1 \n");
   TaskStatus tstat = pbval_u->RecvAndUnpackCC(u0, coarse_u0);
-
-  printf("RecvU 2 \n");
-
 
   return tstat;
 }
@@ -406,7 +354,6 @@ TaskStatus MHD::RecvU(Driver *pdrive, int stage) {
 //! \brief Wrapper task list function to pack/send data for shearing box boundaries
 
 TaskStatus MHD::SendU_Shr(Driver *pdrive, int stage) {
-  printf("SendU_Shr 1 \n");
   TaskStatus tstat = TaskStatus::complete;
   if (psbox_u != nullptr) {
     // only execute when (3D OR 2d_r_phi)
@@ -414,9 +361,6 @@ TaskStatus MHD::SendU_Shr(Driver *pdrive, int stage) {
       tstat = psbox_u->PackAndSendCC(u0, recon_method);
     }
   }
-
-  printf("SendU_Shr 2 \n");
-
 
   return tstat;
 }
@@ -427,7 +371,6 @@ TaskStatus MHD::SendU_Shr(Driver *pdrive, int stage) {
 //! Orbital remap is performed in this step.
 
 TaskStatus MHD::RecvU_Shr(Driver *pdrive, int stage) {
-  printf("RecvU_Shr 1 \n");
   TaskStatus tstat = TaskStatus::complete;
   if (psbox_u != nullptr) {
     // only execute when (3D OR 2d_r_phi)
@@ -435,10 +378,6 @@ TaskStatus MHD::RecvU_Shr(Driver *pdrive, int stage) {
       tstat = psbox_u->RecvAndUnpackCC(u0);
     }
   }
-
-
-  printf("RecvU_Shr 2 \n");
-
 
   return tstat;
 }
@@ -448,16 +387,12 @@ TaskStatus MHD::RecvU_Shr(Driver *pdrive, int stage) {
 //! \brief Wrapper task list function to apply source terms to electric field
 
 TaskStatus MHD::EFieldSrc(Driver *pdrive, int stage) {
-  printf("EFieldSrc 1 \n");
   if (psbox_b != nullptr) {
     // only execute when (2D)
     if (pmy_pack->pmesh->two_d) {
       psbox_b->SourceTermsFC(b0, efld);
     }
   }
-
-  printf("EFieldSrc 2 \n");
-
 
   return TaskStatus::complete;
 }
@@ -470,12 +405,8 @@ TaskStatus MHD::EFieldSrc(Driver *pdrive, int stage) {
 //! MeshBlocks), and at fine/coarse boundaries with SMR/AMR using restricted values of E.
 
 TaskStatus MHD::SendE(Driver *pdrive, int stage) {
-  printf("SendE 1 \n");
   TaskStatus tstat = TaskStatus::complete;
   tstat = pbval_b->PackAndSendFluxFC(efld);
-
-  printf("SendE 2 \n");
-
 
   return tstat;
 }
@@ -486,13 +417,8 @@ TaskStatus MHD::SendE(Driver *pdrive, int stage) {
 //! (i.e. edge-centered electric field E) at MeshBlock boundaries
 
 TaskStatus MHD::RecvE(Driver *pdrive, int stage) {
-  printf("RecvE 1 \n");
   TaskStatus tstat = TaskStatus::complete;
   tstat = pbval_b->RecvAndUnpackFluxFC(efld);
-
-
-  printf("RecvE 2 \n");
-
 
   return tstat;
 }
@@ -502,7 +428,6 @@ TaskStatus MHD::RecvE(Driver *pdrive, int stage) {
 //! \brief Wrapper task list function to pack/send data for orbital advection
 
 TaskStatus MHD::SendB_OA(Driver *pdrive, int stage) {
-  printf("SendB_OA 1 \n");
   TaskStatus tstat = TaskStatus::complete;
   if (porb_b != nullptr) {
     // only execute when (last stage) AND (3D OR 2d_r_phi)
@@ -512,9 +437,6 @@ TaskStatus MHD::SendB_OA(Driver *pdrive, int stage) {
     }
   }
 
-  printf("SendB_OA 2 \n");
-
-
   return tstat;
 }
 
@@ -523,7 +445,6 @@ TaskStatus MHD::SendB_OA(Driver *pdrive, int stage) {
 //! \brief Wrapper task list function to recv/unpack data for orbital advection
 
 TaskStatus MHD::RecvB_OA(Driver *pdrive, int stage) {
-  printf("RecvB_OA 1 \n");
   TaskStatus tstat = TaskStatus::complete;
   if (porb_b != nullptr) {
     // only execute when (last stage) AND (3D OR 2d_r_phi)
@@ -533,10 +454,6 @@ TaskStatus MHD::RecvB_OA(Driver *pdrive, int stage) {
     }
   }
 
-
-  printf("RecvB_OA 2 \n");
-
-
   return tstat;
 }
 
@@ -545,12 +462,7 @@ TaskStatus MHD::RecvB_OA(Driver *pdrive, int stage) {
 //! \brief Wrapper task list function to pack/send face-centered magnetic fields
 
 TaskStatus MHD::SendB(Driver *pdrive, int stage) {
-  printf("SendB 1 \n");
   TaskStatus tstat = pbval_b->PackAndSendFC(b0, coarse_b0);
-
-
-  printf("SendB 2 \n");
-
 
   return tstat;
 }
@@ -560,11 +472,7 @@ TaskStatus MHD::SendB(Driver *pdrive, int stage) {
 //! \brief Wrapper task list function to recv/unpack face-centered magnetic fields
 
 TaskStatus MHD::RecvB(Driver *pdrive, int stage) {
-  printf("RecvB 1 \n");
   TaskStatus tstat = pbval_b->RecvAndUnpackFC(b0, coarse_b0);
-
-  printf("RecvB 2 \n");
-
 
   return tstat;
 }
@@ -574,7 +482,6 @@ TaskStatus MHD::RecvB(Driver *pdrive, int stage) {
 //! \brief Wrapper task list function to pack/send data for shearing box boundaries
 
 TaskStatus MHD::SendB_Shr(Driver *pdrive, int stage) {
-  printf("SendB_Shr 1 \n");
   TaskStatus tstat = TaskStatus::complete;
   if (psbox_b != nullptr) {
     // only execute when (3D OR 2d_r_phi)
@@ -582,9 +489,6 @@ TaskStatus MHD::SendB_Shr(Driver *pdrive, int stage) {
       tstat = psbox_b->PackAndSendFC(b0, recon_method);
     }
   }
-
-  printf("SendB_Shr 2 \n");
-
 
   return tstat;
 }
@@ -595,7 +499,6 @@ TaskStatus MHD::SendB_Shr(Driver *pdrive, int stage) {
 //! Orbital remap is performed in this step.
 
 TaskStatus MHD::RecvB_Shr(Driver *pdrive, int stage) {
-  printf("RecvB_Shr 1 \n");
   TaskStatus tstat = TaskStatus::complete;
   if (psbox_b != nullptr) {
     // only execute when (3D OR 2d_r_phi)
@@ -603,9 +506,6 @@ TaskStatus MHD::RecvB_Shr(Driver *pdrive, int stage) {
       tstat = psbox_b->RecvAndUnpackFC(b0);
     }
   }
-
-  printf("RecvB_Shr 2 \n");
-
 
   return tstat;
 }
@@ -615,7 +515,6 @@ TaskStatus MHD::RecvB_Shr(Driver *pdrive, int stage) {
 //! \brief Wrapper task list function to call funtions that set physical and user BCs
 
 TaskStatus MHD::ApplyPhysicalBCs(Driver *pdrive, int stage) {
-  printf("ApplyPhysicalBCs 1 \n");
   // do not apply BCs if domain is strictly periodic
   if (pmy_pack->pmesh->strictly_periodic) return TaskStatus::complete;
 
@@ -628,9 +527,6 @@ TaskStatus MHD::ApplyPhysicalBCs(Driver *pdrive, int stage) {
     (pmy_pack->pmesh->pgen->user_bcs_func)(pmy_pack->pmesh);
   }
 
-
-  printf("ApplyPhysicalBCs 2 \n");
-
   return TaskStatus::complete;
 }
 
@@ -640,7 +536,6 @@ TaskStatus MHD::ApplyPhysicalBCs(Driver *pdrive, int stage) {
 //! at fine/coarse bundaries with SMR/AMR
 
 TaskStatus MHD::Prolongate(Driver *pdrive, int stage) {
-  printf("Prolongate 1 \n");
   if (pmy_pack->pmesh->multilevel) {  // only prolongate with SMR/AMR
     pbval_u->FillCoarseInBndryCC(u0, coarse_u0);
     pbval_b->FillCoarseInBndryFC(b0, coarse_b0);
@@ -655,9 +550,6 @@ TaskStatus MHD::Prolongate(Driver *pdrive, int stage) {
     }
   }
 
-
-  printf("Prolongate 2 \n");
-
   return TaskStatus::complete;
 }
 
@@ -666,16 +558,12 @@ TaskStatus MHD::Prolongate(Driver *pdrive, int stage) {
 //! \brief Wrapper task list function to call ConsToPrim over entire mesh (including gz)
 
 TaskStatus MHD::ConToPrim(Driver *pdrive, int stage) {
-  printf("ConToPrim 1 \n");
   auto &indcs = pmy_pack->pmesh->mb_indcs;
   int &ng = indcs.ng;
   int n1m1 = indcs.nx1 + 2*ng - 1;
   int n2m1 = (indcs.nx2 > 1)? (indcs.nx2 + 2*ng - 1) : 0;
   int n3m1 = (indcs.nx3 > 1)? (indcs.nx3 + 2*ng - 1) : 0;
   peos->ConsToPrim(u0, b0, w0, bcc0, false, 0, n1m1, 0, n2m1, 0, n3m1);
-
-  printf("ConToPrim 2 \n");
-
 
   return TaskStatus::complete;
 }
@@ -690,7 +578,6 @@ TaskStatus MHD::ConToPrim(Driver *pdrive, int stage) {
 //! If stage=(-4):              clears                                 U_Shr, B_Shr
 
 TaskStatus MHD::ClearSend(Driver *pdrive, int stage) {
-  printf("ClearSend 1 \n");
   TaskStatus tstat;
   if ((stage >= 0) || (stage == -1)) {
     // check sends of U complete
@@ -738,8 +625,6 @@ TaskStatus MHD::ClearSend(Driver *pdrive, int stage) {
     }
   }
 
-  printf("ClearSend 2 \n");
-
   return TaskStatus::complete;
 }
 
@@ -753,7 +638,6 @@ TaskStatus MHD::ClearSend(Driver *pdrive, int stage) {
 //! If stage=(-4):              clears                                 U_Shr, B_Shr
 
 TaskStatus MHD::ClearRecv(Driver *pdrive, int stage) {
-  printf("ClearRecv 1 \n");
   TaskStatus tstat;
   if ((stage >= 0) || (stage == -1)) {
     // check receives of U complete
@@ -800,7 +684,6 @@ TaskStatus MHD::ClearRecv(Driver *pdrive, int stage) {
       if (tstat != TaskStatus::complete) return tstat;
     }
   }
-  printf("ClearRecv 2 \n");
 
   return TaskStatus::complete;
 }
@@ -810,13 +693,11 @@ TaskStatus MHD::ClearRecv(Driver *pdrive, int stage) {
 //! \brief Wrapper function that restricts face-centered variables (magnetic field)
 
 TaskStatus MHD::RestrictB(Driver *pdrive, int stage) {
-  printf("RestrictB 1 \n");
   // Only execute Mesh function with SMR/AMR
   if (pmy_pack->pmesh->multilevel) {
     pmy_pack->pmesh->pmr->RestrictFC(b0, coarse_b0);
   }
 
-  printf("RestrictB 2 \n");
 
   return TaskStatus::complete;
 }
