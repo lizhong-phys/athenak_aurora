@@ -157,8 +157,8 @@ MHD::MHD(MeshBlockPack *ppack, ParameterInput *pin) :
     Kokkos::realloc(b0.x2f, nmb, ncells3, ncells2+1, ncells1);
     Kokkos::realloc(b0.x3f, nmb, ncells3+1, ncells2, ncells1);
 
-    printf("u0: nmb=%d nvars=%d ncells3=%d ncells2=%d ncells1=%d \n", nmb, (nmhd+nscalars), ncells3, ncells2, ncells1);
-    printf("bcc0: nmb=%d nvars=%d ncells3=%d ncells2=%d ncells1=%d \n", nmb, 3, ncells3, ncells2, ncells1);
+    // printf("u0: nmb=%d nvars=%d ncells3=%d ncells2=%d ncells1=%d \n", nmb, (nmhd+nscalars), ncells3, ncells2, ncells1);
+    // printf("bcc0: nmb=%d nvars=%d ncells3=%d ncells2=%d ncells1=%d \n", nmb, 3, ncells3, ncells2, ncells1);
 
   }
 
@@ -354,11 +354,11 @@ MHD::MHD(MeshBlockPack *ppack, ParameterInput *pin) :
 
       // allocate array of flags used with FOFC
       if (use_fofc) {
-        int nvars = (pmy_pack->pcoord->is_dynamical_relativistic) ? nmhd+nscalars : nmhd;
+        int nvars = (pmy_pack->pcoord->is_dynamical_relativistic) ? (nmhd+nscalars) : nmhd;
         Kokkos::realloc(fofc,    nmb, ncells3, ncells2, ncells1);
-        printf("nvars=%d, nmhd=%d, nscalars=%d \n", nvars, nmhd, nscalars); 
-        printf("utest: nmb=%d nvars=%d ncells3=%d ncells2=%d ncells1=%d \n", nmb, nvars, ncells3, ncells2, ncells1);
-        printf("bcctest: nmb=%d nvars=%d ncells3=%d ncells2=%d ncells1=%d \n", nmb, 3, ncells3, ncells2, ncells1);
+        printf("nvars=%d, nmhd=%d, nscalars=%d \n", nvars, nmhd, nscalars);
+        // printf("utest: nmb=%d nvars=%d ncells3=%d ncells2=%d ncells1=%d \n", nmb, nvars, ncells3, ncells2, ncells1);
+        // printf("bcctest: nmb=%d nvars=%d ncells3=%d ncells2=%d ncells1=%d \n", nmb, 3, ncells3, ncells2, ncells1);
         Kokkos::realloc(utest,   nmb, nvars, ncells3, ncells2, ncells1);
         Kokkos::realloc(bcctest, nmb, 3,    ncells3, ncells2, ncells1);
         Kokkos::deep_copy(fofc, false);
