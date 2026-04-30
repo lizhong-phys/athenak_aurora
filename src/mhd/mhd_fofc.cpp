@@ -50,6 +50,7 @@ void MHD::FOFC(Driver *pdriver, int stage) {
   auto &e2x3_ = e2x3;
   auto &e1x3_ = e1x3;
 
+  printf("    FOFC start ...");
   if (use_fofc) {
     Real &gam0 = pdriver->gam0[stage-1];
     Real &gam1 = pdriver->gam1[stage-1];
@@ -107,6 +108,8 @@ void MHD::FOFC(Driver *pdriver, int stage) {
       }
     });
 
+    printf("    after FOFC-newu ...");
+
     // Test whether conversion to primitives requires floors
     // Note b0 and w0 passed to function, but not used/changed.
     peos->ConsToPrim(utest_, b0, w0, bcctest_, true, il, iu, jl, ju, kl, ku);
@@ -130,6 +133,7 @@ void MHD::FOFC(Driver *pdriver, int stage) {
 
   // Replace fluxes with first-order LLF fluxes at i,j,k faces for any cell where FOFC
   // and/or excision is used (if GR+excising)
+  printf("    before FOFC-flx ...");
   par_for("FOFC-flx", DevExeSpace(), 0, nmb-1, kl, ku, jl, ju, il, iu,
   KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
     // Check for FOFC flag
@@ -304,9 +308,11 @@ void MHD::FOFC(Driver *pdriver, int stage) {
       }
     }
   });
+  printf("    after FOFC-flx1 ...");
 
   // Replace fluxes with first-order LLF fluxes at i+1,j+1,k+1 faces for any cell where
   // FOFC and/or excision is used (if GR+excising)
+  printf("    before FOFC-flx2 ...");
   par_for("FOFC-flx", DevExeSpace(), 0, nmb-1, kl, ku, jl, ju, il, iu,
   KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
     // Check for FOFC flag
@@ -481,11 +487,13 @@ void MHD::FOFC(Driver *pdriver, int stage) {
       }
     }
   });
+  printf("    after FOFC-flx2 ...");
 
   // reset FOFC flag (do not reset excision flag)
   if (use_fofc_) {
     Kokkos::deep_copy(fofc, false);
   }
+  printf("    FOFC end ..."); 
 
   return;
 }
