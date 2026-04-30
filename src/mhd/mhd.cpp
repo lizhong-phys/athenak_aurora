@@ -356,7 +356,14 @@ MHD::MHD(MeshBlockPack *ppack, ParameterInput *pin) :
       if (use_fofc) {
         int nvars = (pmy_pack->pcoord->is_dynamical_relativistic) ? (nmhd+nscalars) : nmhd;
         Kokkos::realloc(fofc,    nmb, ncells3, ncells2, ncells1);
+        if (pmy_pack->pcoord->is_dynamical_relativistic) printf("is_dynamical_relativistic \n");
+        else printf("is_not_dynamical_relativistic \n");
         printf("nvars=%d, nmhd=%d, nscalars=%d \n", nvars, nmhd, nscalars);
+        if (pmy_pack->pcoord->is_special_relativistic) {
+          int nvars_tst = (pmy_pack->pcoord->is_dynamical_relativistic) ? (nmhd+nscalars) : nmhd;
+          int nvars_tst2 = (nmhd+nscalars);
+          printf("  test: nvars_tst=%d, nvars_tst2=%d \n", nvars_tst, nvars_tst2);
+        }
         // printf("utest: nmb=%d nvars=%d ncells3=%d ncells2=%d ncells1=%d \n", nmb, nvars, ncells3, ncells2, ncells1);
         // printf("bcctest: nmb=%d nvars=%d ncells3=%d ncells2=%d ncells1=%d \n", nmb, 3, ncells3, ncells2, ncells1);
         Kokkos::realloc(utest,   nmb, nvars, ncells3, ncells2, ncells1);
