@@ -12,6 +12,7 @@
 #include "mhd/mhd.hpp"
 #include "eos.hpp"
 #include "eos/ideal_c2p_mhd.hpp"
+#include "coordinates/cell_locations.hpp"
 
 //----------------------------------------------------------------------------------------
 // ctor: also calls EOS base class constructor
@@ -68,6 +69,7 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
   int entropyIdx = (entropy_fix_) ? nmhd+nscal-1 : -1;
   auto &sigma_cut_ = pmy_pack->pmhd->sigma_cut_efix;
   auto &beta_cut_  = pmy_pack->pmhd->beta_cut_efix;
+  auto &size = pmy_pack->pmb->mb_size;
 
   const int ni   = (iu - il + 1);
   const int nji  = (ju - jl + 1)*ni;
@@ -123,8 +125,18 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
     HydPrim1D w;
     bool dfloor_used=false, efloor_used=false;
     bool vceiling_used=false, c2p_failure=false;
-    bool apply_sigma_max = false;
     int iter_used=0;
+
+    // bool apply_sigma_max = false;
+    // Real b2_fake = -1;
+    // if (use_nsmask) {
+    //   Real r_sch = sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
+    //   if (r_sch >= r_mask_) {
+    //     apply_sigma_max = true;
+    //     b2_fake = emag_star/(r_sch*r_sch*r_sch*r_sch*r_sch*r_sch);
+    //   }
+    // }
+
     SingleC2P_IdealSRMHD(u, eos, s2, b2, rpar, w,
                          dfloor_used, efloor_used, c2p_failure, iter_used, apply_sigma_max, -1);
 
@@ -146,7 +158,22 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
 
     // apply entropy fix
     if (entropy_fix_) {
-      if ((c2p_failure) || (sigma_cold > sigma_cut_) || (beta < beta_cut_)) {
+      Real &x1min = size.d_view(m).x1min;
+      Real &x1max = size.d_view(m).x1max;
+      Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+
+      Real &x2min = size.d_view(m).x2min;
+      Real &x2max = size.d_view(m).x2max;
+      Real x2v = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+
+      Real &x3min = size.d_view(m).x3min;
+      Real &x3max = size.d_view(m).x3max;
+      Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+
+      Real rv = sqrt(SQR(x1v)+SQR(x2v)+SQR(x3v));
+
+
+      if ((c2p_failure) || (sigma_cold > sigma_cut_) || (beta < beta_cut_) || (rv <= 1.034*5.804742809147471)) {
         // compute the entropy fix
         bool dfloor_used_in_fix=false, efloor_used_in_fix=false;
         bool c2p_failure_in_fix=c2p_failure;

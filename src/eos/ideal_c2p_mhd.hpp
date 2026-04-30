@@ -642,6 +642,8 @@ void SingleC2P_IdealSRMHD_EntropyFix(MHDCons1D &u, Real& s_tot, const EOS_Data &
     efloor_used = true;
   }
 
+  // 3.5 ?
+
   // Step 4: Save primitive variables
   w.d  = rho_;
   w.e  = pgas_/gm1;
