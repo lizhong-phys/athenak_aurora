@@ -74,7 +74,7 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
   const int nkji = (ku - kl + 1)*nji;
   const int nmkji = nmb*nkji;
 
-  // printf("   before loop \n");
+  if (only_testfloors) printf("   before loop \n");
   int nfloord_=0, nfloore_=0, nceilv_=0, nfail_=0, maxit_=0;
   Kokkos::parallel_reduce("srmhd_c2p",Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
   KOKKOS_LAMBDA(const int &idx, int &sumd, int &sume, int &sumv, int &sumf, int &max_it) {
@@ -97,9 +97,9 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
     // use input CC fields if only testing floors with FOFC
     // printf("k,j,i=%d,%d,%d \n",k,j,i);
     if (only_testfloors) {
-      // u.bx = bcc(m,IBX,k,j,i);
-      // u.by = bcc(m,IBY,k,j,i);
-      // u.bz = bcc(m,IBZ,k,j,i);
+      u.bx = bcc(m,IBX,k,j,i);
+      u.by = bcc(m,IBY,k,j,i);
+      u.bz = bcc(m,IBZ,k,j,i);
     // else use simple linear average of face-centered fields
     } else {
       u.bx = 0.5*(b.x1f(m,k,j,i) + b.x1f(m,k,j,i+1));
@@ -248,8 +248,8 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
      Kokkos::Sum<int>(nfail_), Kokkos::Max<int>(maxit_));
 
   // store appropriate counters
-  // printf("   after loop \n");
   if (only_testfloors) {
+    printf("   after loop \n");
     pmy_pack->pmesh->ecounter.nfofc += nfloord_;
   } else {
     pmy_pack->pmesh->ecounter.neos_dfloor += nfloord_;
