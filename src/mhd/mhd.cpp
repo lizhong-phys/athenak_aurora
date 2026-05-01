@@ -134,6 +134,7 @@ MHD::MHD(MeshBlockPack *ppack, ParameterInput *pin) :
     // and use the last scalar for total entropy
     if (entropy_fix) nscalars += 1;
   }
+  printf("nscalars=%d \n", nscalars);
 
   // (3) read time-evolution option [already error checked in driver constructor]
   // Then initialize memory and algorithms for reconstruction and Riemann solvers
@@ -350,8 +351,8 @@ MHD::MHD(MeshBlockPack *ppack, ParameterInput *pin) :
 
       // allocate array of flags used with FOFC
       if (use_fofc) {
-        // int nvars = (pmy_pack->pcoord->is_dynamical_relativistic) ? (nmhd+nscalars) : nmhd;
-        int nvars = (nmhd+nscalars);
+        int nvars = (pmy_pack->pcoord->is_dynamical_relativistic) ? (nmhd+nscalars) : nmhd;
+        // int nvars = (nmhd+nscalars);
         Kokkos::realloc(fofc,    nmb, ncells3, ncells2, ncells1);
         Kokkos::realloc(utest,   nmb, nvars, ncells3, ncells2, ncells1);
         Kokkos::realloc(bcctest, nmb, 3,    ncells3, ncells2, ncells1);
