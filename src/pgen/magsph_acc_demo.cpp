@@ -128,6 +128,9 @@ namespace {
     Real rho_min, rho_pow, pgas_min, pgas_pow; // background parameters
     Real pert_amp;                             // pressure perturbation amplitude (seeds MRI)
 
+    // testing paramters
+    bool test_hydro_balance;
+
   };
 
   pgen_param pp;
@@ -212,6 +215,9 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   pp.beta_min      = pin->GetOrAddReal("mhd", "beta_min",  1.0e-03);
   pp.sigma_max     = pin->GetOrAddReal("mhd", "sigma_max", 1000.0);
 
+  // testing parameters
+  pp.test_hydro_balance = pin->GetOrAddBoolean("problem", "test_hydro_balance", false);
+
   // disk paramters
   pp.add_torus = pin->GetOrAddBoolean("problem", "add_torus", false);
   if (pp.add_torus) {
@@ -235,8 +241,9 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   //    - Evaluate A(R_m) and A'(R_m) from exterior potential (Eq. 6)
   //    - Compute mask coefficients C1, C2 at R_m (Eq. 5)
   {
-    const Real &R_star=pp.R_star, &B_star=pp.B_star, &r_core=pp.r_core;
-
+    const Real &R_star=pp.R_star, &r_core=pp.r_core;
+    Real B_star = pp.B_star;
+    if (pp.test_hydro_balance) B_star *= 1.0e-12; // weak magnetic field for hydro balance test
     pp.mu_dipole =  0.5*B_star*R_star*R_star*R_star;
     pp.c1_dipole =  2.5*pp.mu_dipole/(r_core*r_core*r_core);
     pp.c2_dipole = -1.5*pp.mu_dipole/(r_core*r_core*r_core*r_core*r_core);
@@ -388,11 +395,17 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
     // below the atmosphere (r < R_star)
     if (rv <= R_star) {
-      dens = rho_surf;
-      pgas = rho_surf*tgas_surf;
-      Real u0 = 1./sqrt(1. - SQR(Omg_star*rv*sin(thv)));
-      uu1 = -Omg_star*x2v*u0;
-      uu2 =  Omg_star*x1v*u0;
+
+      if (rv <= r_surf) {
+        dens = rho_surf;
+        pgas = rho_surf*tgas_surf;
+        Real u0 = 1./sqrt(1. - SQR(Omg_star*rv*sin(thv)));
+        uu1 = -Omg_star*x2v*u0;
+        uu2 =  Omg_star*x1v*u0;
+      } else {
+
+      }
+
     } // endif below the atmosphere
 
     // set primitive values
