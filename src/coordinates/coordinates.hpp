@@ -50,6 +50,8 @@ struct CoordData {
   Real h_surf;                     // atmosphere minimum scale height
   Real tgas_surf;                  // atmosphere temperature
   Real rho_surf;                   // density at atmosphere bottom
+  Real R_star;
+  Real B_star; 
   Real pmag_star;                  // magnetic pressure at R_star
   Real Omg_star;                   // angular velocity of rotating neutron star
 };

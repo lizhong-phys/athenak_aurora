@@ -40,6 +40,24 @@ Coordinates::Coordinates(ParameterInput *pin, MeshBlockPack *ppack) :
     std::exit(EXIT_FAILURE);
   }
 
+  // NS mask
+  if (is_special_relativistic) {
+    coord_data.ns_mask = pin->GetOrAddBoolean("coord","ns_mask",false);
+    if (coord_data.ns_mask) {
+      // ns param
+      // coord_data.r_mask    = pin->GetReal("problem", "r_mask");
+      // coord_data.r_surf    = pin->GetReal("problem", "r_surf");
+      // coord_data.h_surf    = pin->GetReal("problem", "h_surf");
+      coord_data.tgas_surf = pin->GetReal("problem", "tgas_surf");
+      coord_data.rho_surf  = pin->GetReal("problem", "rho_surf");
+      coord_data.Omg_star  = pin->GetReal("problem", "Omega_star");
+      coord_data.B_star    = pin->GetReal("problem", "B_star");
+      coord_data.R_star    = pin->GetReal("problem", "R_star");
+      Real &B_star=coord_data.B_star, &R_star=coord_data.R_star; 
+      coord_data.pmag_star = 0.5*SQR(B_star*R_star*R_star*R_star);
+    }
+  } // endif
+
   // Read properties of metric and excision from input file for GR.
   if (is_general_relativistic || is_dynamical_relativistic) {
     coord_data.is_minkowski = pin->GetOrAddBoolean("coord","minkowski",false);

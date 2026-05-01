@@ -64,6 +64,11 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
   auto eos = eos_data;
   auto &fofc_ = pmy_pack->pmhd->fofc;
 
+  // flags for ns problem
+  auto &use_nsmask = pmy_pack->pcoord->coord_data.ns_mask;
+  auto &R_star = pmy_pack->pcoord->coord_data.R_star;
+  Real emag_star = 2*pmy_pack->pcoord->coord_data.pmag_star;
+
   // flags and variables for entropy fix
   auto &entropy_fix_ = pmy_pack->pmhd->entropy_fix;
   int entropyIdx = (entropy_fix_) ? nmhd+nscal-1 : -1;
@@ -130,17 +135,30 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
     int iter_used=0;
 
     bool apply_sigma_max = false;
-    // Real b2_fake = -1;
-    // if (use_nsmask) {
-    //   Real r_sch = sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
-    //   if (r_sch >= r_mask_) {
-    //     apply_sigma_max = true;
-    //     b2_fake = emag_star/(r_sch*r_sch*r_sch*r_sch*r_sch*r_sch);
-    //   }
-    // }
+    Real b2_fake = -1;
+    if (use_nsmask) {
+      Real &x1min = size.d_view(m).x1min;
+      Real &x1max = size.d_view(m).x1max;
+      Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+
+      Real &x2min = size.d_view(m).x2min;
+      Real &x2max = size.d_view(m).x2max;
+      Real x2v = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+
+      Real &x3min = size.d_view(m).x3min;
+      Real &x3max = size.d_view(m).x3max;
+      Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+
+      Real r_sch = sqrt(SQR(x1v)+SQR(x2v)+SQR(x3v));
+
+      if (r_sch >= R_star) {
+        apply_sigma_max = true;
+        b2_fake = emag_star/(r_sch*r_sch*r_sch*r_sch*r_sch*r_sch);
+      }
+    }
 
     SingleC2P_IdealSRMHD(u, eos, s2, b2, rpar, w,
-                         dfloor_used, efloor_used, c2p_failure, iter_used, apply_sigma_max, -1);
+                         dfloor_used, efloor_used, c2p_failure, iter_used, apply_sigma_max, b2_fake);
 
     // compute quantities for criteria fix
     Real sigma_cold=0.0, beta=0.0;
