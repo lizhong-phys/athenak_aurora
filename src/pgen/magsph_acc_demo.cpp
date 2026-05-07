@@ -101,6 +101,8 @@ namespace {
     Real rho_surf;      // density of atmosphere bottom
     Real tgas_surf;     // atmosphere temperature
     Real r_surf;        // radius of atmosphere bottom
+    Real rmax_atm_pole; // radius of atmosphere top at pole
+    Real h_surf;        // minimum required scale height
 
     // magnetosphere parameters
     Real r_core;        // critial radius for interior dipole fields (must be > 2rg)
@@ -141,6 +143,7 @@ namespace {
 void MySourceTerms(Mesh* pm, const Real bdt);
 void GravSrcTerm(Mesh* pm, const Real bdt);
 void NeutronStarMask(Mesh* pm, const Real bdt);
+void SurfaceDamper(Mesh* pm, const Real bdt);
 
 // Prototypes for user-defined BCs and history functions
 void NoInflowBC(Mesh *pm);
@@ -204,6 +207,8 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   pp.rho_surf      = pin->GetOrAddReal("problem", "rho_surf",      25859.690449505222);
   pp.tgas_surf     = pin->GetOrAddReal("problem", "tgas_surf",     1.5328527189503498e-07);
   pp.r_surf        = pin->GetOrAddReal("problem", "r_surf",        0.8*pp.R_star);
+  pp.rmax_atm_pole = pin->GetOrAddReal("problem", "rmax_atm_pole", 1.1*pp.R_star);
+  pp.h_surf        = pin->GetOrAddReal("problem", "h_surf",        5.0*0.03125);
 
   // magnetosphere parameters
   pp.r_core        = pin->GetOrAddReal("problem", "r_core", 0.5*pp.R_star);
@@ -212,7 +217,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   pp.gamma_adi     = pin->GetOrAddReal("mhd", "gamma_adi", 5./3);
   pp.dfloor        = pin->GetOrAddReal("mhd", "dfloor",    1.0e-08);
   pp.pfloor        = pin->GetOrAddReal("mhd", "pfloor",    1.0e-15);
-  pp.beta_min      = pin->GetOrAddReal("mhd", "beta_min",  1.0e-03);
+  pp.beta_min      = pin->GetOrAddReal("mhd", "beta_min",  1.0e-05);
   pp.sigma_max     = pin->GetOrAddReal("mhd", "sigma_max", 1000.0);
 
   // testing parameters
@@ -330,6 +335,8 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     // extract problem parameters
     const Real &R_star = pp_dvce.R_star, &B_star = pp_dvce.B_star, &Omg_star = pp_dvce.Omega_star;
     const Real &r_surf = pp_dvce.r_surf, &rho_surf = pp_dvce.rho_surf, &tgas_surf = pp_dvce.tgas_surf;
+    const Real &rmax_atm_pole = pp_dvce.rmax_atm_pole, &h_surf = pp_dvce.h_surf;
+
     const Real &beta_min  = pp_dvce.beta_min;
     const Real &sigma_max = pp_dvce.sigma_max;
 
@@ -394,19 +401,27 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     } // endif torus
 
     // below the atmosphere (r < R_star)
-    if (rv <= R_star) {
+    if (rv < r_surf) {
+      dens = rho_surf;
+      pgas = rho_surf*tgas_surf;
+      // if (rv <= r_surf) {
+      //   dens = rho_surf;
+      //   pgas = rho_surf*tgas_surf;
+      //   Real u0 = 1./sqrt(1. - SQR(Omg_star*rv*sin(thv)));
+      //   uu1 = -Omg_star*x2v*u0;
+      //   uu2 =  Omg_star*x1v*u0;
+      // } else {
+      //   dens = rho_surf;
+      //   pgas = rho_surf*tgas_surf;
+      // }
+    } else if (rv <= rmax_atm_pole) {
+      dens = rho_surf * exp(-(rv-r_surf)/h_surf);
+      pgas = dens * tgas_surf;
+    } // end atmosphere
 
-      if (rv <= r_surf) {
-        dens = rho_surf;
-        pgas = rho_surf*tgas_surf;
-        Real u0 = 1./sqrt(1. - SQR(Omg_star*rv*sin(thv)));
-        uu1 = -Omg_star*x2v*u0;
-        uu2 =  Omg_star*x1v*u0;
-      } else {
-
-      }
-
-    } // endif below the atmosphere
+    // apply floors
+    dens = fmax(dens, dfloor);
+    pgas = fmax(pgas, pfloor);
 
     // set primitive values
     w0_(m,IDN,k,j,i) = dens;
@@ -656,7 +671,7 @@ Real A1dipole(struct pgen_param pp, Real x1, Real x2, Real x3) {
 
   // calculate vector potential
   Real r2 = SQR(r);
-  Real aphi_rcomp = (r > r_core) ? -mu_dipole/r : c1_dipole*r2 + c2_dipole*SQR(r2);
+  Real aphi_rcomp = (r > r_core) ? mu_dipole/r : c1_dipole*r2 + c2_dipole*SQR(r2);
   Real aphi = SQR(sin(theta)) * aphi_rcomp;
   return aphi * (-x2 / (SQR(x1)+SQR(x2)));
 }
@@ -674,7 +689,7 @@ Real A2dipole(struct pgen_param pp, Real x1, Real x2, Real x3) {
 
   // calculate vector potential
   Real r2 = SQR(r);
-  Real aphi_rcomp = (r > r_core) ? -mu_dipole/r : c1_dipole*r2 + c2_dipole*SQR(r2);
+  Real aphi_rcomp = (r > r_core) ? mu_dipole/r : c1_dipole*r2 + c2_dipole*SQR(r2);
   Real aphi = SQR(sin(theta)) * aphi_rcomp;
   return aphi * (x1 / (SQR(x1)+SQR(x2)));
 }
@@ -892,6 +907,8 @@ void MySourceTerms(Mesh* pm, const Real bdt) {
 
   NeutronStarMask(pm, bdt);
 
+  SurfaceDamper(pm, bdt);
+
   GravSrcTerm(pm, bdt);
 
   return;
@@ -931,7 +948,7 @@ void GravSrcTerm(Mesh* pm, const Real bdt) {
     // calculate Schwarzschild coordinates at the cell center
     Real rv, thv, phv;
     GetSchwarzschildCoordinates(x1v, x2v, x3v, &rv, &thv, &phv);
-    if (rv > pp_dvce.R_star) {
+    if (rv > pp_dvce.rmax_atm_pole) {
       Real dens = w0_(m,IDN,k,j,i);
       Real pgas = w0_(m,IEN,k,j,i)*gm1;
       Real uu1  = w0_(m,IVX,k,j,i);
@@ -946,13 +963,32 @@ void GravSrcTerm(Mesh* pm, const Real bdt) {
       Real src_mx = -rho_grav * x1v/rv3;
       Real src_my = -rho_grav * x2v/rv3;
       Real src_mz = -rho_grav * x3v/rv3;
-      Real src_e  = -rho_grav * (x1v*uu1 + x2v*uu2 + x3v*uu3)/(uu0*rv3);
+      Real src_e  = -wg * (x1v*uu1 + x2v*uu2 + x3v*uu3)/(uu0*rv3);
 
       u0_(m,IM1,k,j,i) += bdt * src_mx;
       u0_(m,IM2,k,j,i) += bdt * src_my;
       u0_(m,IM3,k,j,i) += bdt * src_mz;
       u0_(m,IEN,k,j,i) += bdt * src_e;
-    } // endif r > R_star
+    }
+
+    if ((rv >= pp_dvce.r_surf) && (rv <= pp_dvce.rmax_atm_pole)) {
+      Real dens = w0_(m,IDN,k,j,i);
+      Real pgas = w0_(m,IEN,k,j,i)*gm1;
+      Real uu1  = w0_(m,IVX,k,j,i);
+      Real uu2  = w0_(m,IVY,k,j,i);
+      Real uu3  = w0_(m,IVZ,k,j,i);
+      Real uu0  = sqrt(1.0+SQR(uu1)+SQR(uu2)+SQR(uu3));
+
+      Real src_mx = -uu0*uu0 * pgas/pp_dvce.h_surf * x1v/rv;
+      Real src_my = -uu0*uu0 * pgas/pp_dvce.h_surf * x2v/rv;
+      Real src_mz = -uu0*uu0 * pgas/pp_dvce.h_surf * x3v/rv;
+      Real src_e  = -pgas/pp_dvce.h_surf * (x1v*uu1 + x2v*uu2 + x3v*uu3)/(uu0*rv);
+
+      u0_(m,IM1,k,j,i) += bdt * src_mx;
+      u0_(m,IM2,k,j,i) += bdt * src_my;
+      u0_(m,IM3,k,j,i) += bdt * src_mz;
+      u0_(m,IEN,k,j,i) += bdt * src_e;
+    } // endelse
 
   }); // end par_for
 } // end ReducedGravSrcTerm
@@ -999,7 +1035,7 @@ void NeutronStarMask(Mesh* pm, const Real bdt) {
     const Real &rho_surf=pp_dvce.rho_surf, &tgas_surf=pp_dvce.tgas_surf;
 
     // extract problem paramters
-    if (rv <= R_star) {
+    if (rv < pp_dvce.r_surf) {
       Real dens = rho_surf;
       Real pgas = dens*tgas_surf;
       Real bx = bcc0_(m,IBX,k,j,i);
@@ -1025,10 +1061,201 @@ void NeutronStarMask(Mesh* pm, const Real bdt) {
       u0_(m,IM2,k,j,i) = wtot*u0*u2 - b0*b2;
       u0_(m,IM3,k,j,i) = wtot*u0*u3 - b0*b3;
 
+      w0_(m,IDN,k,j,i) = dens;
+      w0_(m,IEN,k,j,i) = pgas/gm1;
+      w0_(m,IVX,k,j,i) = u1;
+      w0_(m,IVY,k,j,i) = u2;
+      w0_(m,IVZ,k,j,i) = u3;
+
     } // endif
 
   }); // end par_for
 } // end NeutronStarMask
+
+
+
+
+void SurfaceDamper(Mesh* pm, const Real bdt) {
+  // capture variables for kernel
+  MeshBlockPack *pmbp = pm->pmb_pack;
+  auto &indcs = pm->mb_indcs;
+  int is = indcs.is, js = indcs.js, ks = indcs.ks;
+  int ie = indcs.ie, je = indcs.je, ke = indcs.ke;
+  int nmb = pmbp->nmb_thispack;
+  auto &size = pmbp->pmb->mb_size;
+
+  // MHD variables
+  DvceArray5D<Real> u0_, w0_, bcc0_;
+  u0_   = pmbp->pmhd->u0;
+  w0_   = pmbp->pmhd->w0;
+  bcc0_ = pmbp->pmhd->bcc0;
+  auto &b0 = pmbp->pmhd->b0;
+
+  // capture problem parameters
+  Real gm1 = pp.gamma_adi - 1.0;
+  auto pp_dvce = pp;
+
+  // Buffer geometry: r_buf_in <= r <= r_top.
+  // ramp = 0 at r_buf_in (no damping), ramp = 1 at r_top (full damp/reset).
+  const Real r_top     = pp_dvce.rmax_atm_pole;
+  const Real r_buf_in  = 0.9 * r_top;
+  const Real inv_buf_w = 1.0 / (r_top - r_buf_in);
+
+  par_for("damp_v_perp", DevExeSpace(), 0,nmb-1,ks,ke,js,je,is,ie,
+  KOKKOS_LAMBDA(int m,int k,int j,int i) {
+    Real &x1min = size.d_view(m).x1min;
+    Real &x1max = size.d_view(m).x1max;
+    Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+
+    Real &x2min = size.d_view(m).x2min;
+    Real &x2max = size.d_view(m).x2max;
+    Real x2v = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+
+    Real &x3min = size.d_view(m).x3min;
+    Real &x3max = size.d_view(m).x3max;
+    Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+
+    Real rv, thv, phv;
+    GetSchwarzschildCoordinates(x1v, x2v, x3v, &rv, &thv, &phv);
+
+    if (rv < r_buf_in || rv > r_top) return;
+
+    // smoothstep ramp in [0,1]
+    Real t = (rv - r_buf_in) * inv_buf_w;
+    Real ramp = t*t*(3.0 - 2.0*t);
+
+    // target velocity (spatial 4-velocity components). Currently rest frame;
+    // promote to a function of position later for rotation / inflow.
+    Real ux_tar = 0.0;
+    Real uy_tar = 0.0;
+    Real uz_tar = 0.0;
+
+    Real uu1 = w0_(m,IVX,k,j,i);
+    Real uu2 = w0_(m,IVY,k,j,i);
+    Real uu3 = w0_(m,IVZ,k,j,i);
+
+    // ramp == 1 -> snap to target this step; ramp == 0 -> leave unchanged.
+    w0_(m,IVX,k,j,i) = ux_tar + (1.0 - ramp)*(uu1 - ux_tar);
+    w0_(m,IVY,k,j,i) = uy_tar + (1.0 - ramp)*(uu2 - uy_tar);
+    w0_(m,IVZ,k,j,i) = uz_tar + (1.0 - ramp)*(uu3 - uz_tar);
+
+  }); // end par_for
+
+  // --------------------------------------------------------------------------
+  // Step 2: reset face-centered B to analytical dipole via curl(A_dipole),
+  // computing A inline at the four edges of each face.
+  // --------------------------------------------------------------------------
+  // x1-face: B_x = (A_z(j+1) - A_z(j))/dx2 - (A_y(k+1) - A_y(k))/dx3
+  par_for("damp_b_x1f", DevExeSpace(), 0,nmb-1, ks,ke, js,je, is,ie+1,
+  KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    Real x1f   = LeftEdgeX  (i  -is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
+    Real x2v   = CellCenterX(j  -js, indcs.nx2, size.d_view(m).x2min, size.d_view(m).x2max);
+    Real x2f   = LeftEdgeX  (j  -js, indcs.nx2, size.d_view(m).x2min, size.d_view(m).x2max);
+    Real x2fp1 = LeftEdgeX  (j+1-js, indcs.nx2, size.d_view(m).x2min, size.d_view(m).x2max);
+    Real x3v   = CellCenterX(k  -ks, indcs.nx3, size.d_view(m).x3min, size.d_view(m).x3max);
+    Real x3f   = LeftEdgeX  (k  -ks, indcs.nx3, size.d_view(m).x3min, size.d_view(m).x3max);
+    Real x3fp1 = LeftEdgeX  (k+1-ks, indcs.nx3, size.d_view(m).x3min, size.d_view(m).x3max);
+    Real rf = sqrt(SQR(x1f) + SQR(x2v) + SQR(x3v));
+
+    if (rf < r_buf_in || rf > r_top) return;
+
+    Real t = (rf - r_buf_in) * inv_buf_w;
+    Real ramp = t*t*(3.0 - 2.0*t);
+
+    Real dx2 = size.d_view(m).dx2;
+    Real dx3 = size.d_view(m).dx3;
+
+    Real az_r = A3dipole(pp_dvce, x1f, x2fp1, x3v);
+    Real az_l = A3dipole(pp_dvce, x1f, x2f,   x3v);
+    Real ay_t = A2dipole(pp_dvce, x1f, x2v, x3fp1);
+    Real ay_b = A2dipole(pp_dvce, x1f, x2v, x3f);
+    Real bx_tgt = (az_r - az_l)/dx2 - (ay_t - ay_b)/dx3;
+
+    b0.x1f(m,k,j,i) = (1.0 - ramp)*b0.x1f(m,k,j,i) + ramp*bx_tgt;
+  });
+
+  // x2-face: B_y = (A_x(k+1) - A_x(k))/dx3 - (A_z(i+1) - A_z(i))/dx1
+  par_for("damp_b_x2f", DevExeSpace(), 0,nmb-1, ks,ke, js,je+1, is,ie,
+  KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    Real x1v   = CellCenterX(i  -is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
+    Real x1f   = LeftEdgeX  (i  -is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
+    Real x1fp1 = LeftEdgeX  (i+1-is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
+    Real x2f   = LeftEdgeX  (j  -js, indcs.nx2, size.d_view(m).x2min, size.d_view(m).x2max);
+    Real x3v   = CellCenterX(k  -ks, indcs.nx3, size.d_view(m).x3min, size.d_view(m).x3max);
+    Real x3f   = LeftEdgeX  (k  -ks, indcs.nx3, size.d_view(m).x3min, size.d_view(m).x3max);
+    Real x3fp1 = LeftEdgeX  (k+1-ks, indcs.nx3, size.d_view(m).x3min, size.d_view(m).x3max);
+    Real rf = sqrt(SQR(x1v) + SQR(x2f) + SQR(x3v));
+
+    if (rf < r_buf_in || rf > r_top) return;
+
+    Real t = (rf - r_buf_in) * inv_buf_w;
+    Real ramp = t*t*(3.0 - 2.0*t);
+
+    Real dx1 = size.d_view(m).dx1;
+    Real dx3 = size.d_view(m).dx3;
+
+    Real ax_t = A1dipole(pp_dvce, x1v, x2f, x3fp1);
+    Real ax_b = A1dipole(pp_dvce, x1v, x2f, x3f);
+    Real az_r = A3dipole(pp_dvce, x1fp1, x2f, x3v);
+    Real az_l = A3dipole(pp_dvce, x1f,   x2f, x3v);
+    Real by_tgt = (ax_t - ax_b)/dx3 - (az_r - az_l)/dx1;
+
+    b0.x2f(m,k,j,i) = (1.0 - ramp)*b0.x2f(m,k,j,i) + ramp*by_tgt;
+  });
+
+  // x3-face: B_z = (A_y(i+1) - A_y(i))/dx1 - (A_x(j+1) - A_x(j))/dx2
+  par_for("damp_b_x3f", DevExeSpace(), 0,nmb-1, ks,ke+1, js,je, is,ie,
+  KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    Real x1v   = CellCenterX(i  -is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
+    Real x1f   = LeftEdgeX  (i  -is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
+    Real x1fp1 = LeftEdgeX  (i+1-is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
+    Real x2v   = CellCenterX(j  -js, indcs.nx2, size.d_view(m).x2min, size.d_view(m).x2max);
+    Real x2f   = LeftEdgeX  (j  -js, indcs.nx2, size.d_view(m).x2min, size.d_view(m).x2max);
+    Real x2fp1 = LeftEdgeX  (j+1-js, indcs.nx2, size.d_view(m).x2min, size.d_view(m).x2max);
+    Real x3f   = LeftEdgeX  (k  -ks, indcs.nx3, size.d_view(m).x3min, size.d_view(m).x3max);
+    Real rf = sqrt(SQR(x1v) + SQR(x2v) + SQR(x3f));
+
+    if (rf < r_buf_in || rf > r_top) return;
+
+    Real t = (rf - r_buf_in) * inv_buf_w;
+    Real ramp = t*t*(3.0 - 2.0*t);
+
+    Real dx1 = size.d_view(m).dx1;
+    Real dx2 = size.d_view(m).dx2;
+
+    Real ay_r = A2dipole(pp_dvce, x1fp1, x2v, x3f);
+    Real ay_l = A2dipole(pp_dvce, x1f,   x2v, x3f);
+    Real ax_t = A1dipole(pp_dvce, x1v, x2fp1, x3f);
+    Real ax_b = A1dipole(pp_dvce, x1v, x2f,   x3f);
+    Real bz_tgt = (ay_r - ay_l)/dx1 - (ax_t - ax_b)/dx2;
+
+    b0.x3f(m,k,j,i) = (1.0 - ramp)*b0.x3f(m,k,j,i) + ramp*bz_tgt;
+  });
+
+  // --------------------------------------------------------------------------
+  // Step 3: rebuild bcc0 in the buffer (cell-centered B = avg of two faces).
+  // --------------------------------------------------------------------------
+  par_for("damp_bcc", DevExeSpace(), 0,nmb-1, ks,ke, js,je, is,ie,
+  KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    Real x1v = CellCenterX(i-is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
+    Real x2v = CellCenterX(j-js, indcs.nx2, size.d_view(m).x2min, size.d_view(m).x2max);
+    Real x3v = CellCenterX(k-ks, indcs.nx3, size.d_view(m).x3min, size.d_view(m).x3max);
+    Real rv  = sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
+
+    if (rv < r_buf_in || rv > r_top) return;
+
+    bcc0_(m,IBX,k,j,i) = 0.5*(b0.x1f(m,k,j,i) + b0.x1f(m,k,j,i+1));
+    bcc0_(m,IBY,k,j,i) = 0.5*(b0.x2f(m,k,j,i) + b0.x2f(m,k,j+1,i));
+    bcc0_(m,IBZ,k,j,i) = 0.5*(b0.x3f(m,k,j,i) + b0.x3f(m,k+1,j,i));
+  });
+
+  // --------------------------------------------------------------------------
+  // Step 4: sync conservatives with the new w0 and bcc0.
+  // --------------------------------------------------------------------------
+  pmbp->pmhd->peos->PrimToCons(w0_, bcc0_, u0_, is, ie, js, je, ks, ke);
+
+} // end SurfaceDamper
+
 
 
 
