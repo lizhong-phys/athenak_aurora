@@ -401,6 +401,15 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     } // endif torus
 
     // below the atmosphere (r < R_star)
+    if ((rv >= r_surf) && (rv <= rmax_atm_pole)) {
+      dens = rho_surf * exp(-(rv-r_surf)/h_surf);
+      pgas = dens * tgas_surf;
+    } // end atmosphere
+
+    // apply floors
+    dens = fmax(dens, dfloor);
+    pgas = fmax(pgas, pfloor);
+
     if (rv < r_surf) {
       dens = rho_surf;
       pgas = rho_surf*tgas_surf;
@@ -414,14 +423,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       //   dens = rho_surf;
       //   pgas = rho_surf*tgas_surf;
       // }
-    } else if (rv <= rmax_atm_pole) {
-      dens = rho_surf * exp(-(rv-r_surf)/h_surf);
-      pgas = dens * tgas_surf;
-    } // end atmosphere
-
-    // apply floors
-    dens = fmax(dens, dfloor);
-    pgas = fmax(pgas, pfloor);
+    }
 
     // set primitive values
     w0_(m,IDN,k,j,i) = dens;
