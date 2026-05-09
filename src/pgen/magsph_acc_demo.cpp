@@ -131,6 +131,7 @@ namespace {
     Real pert_amp;                             // pressure perturbation amplitude (seeds MRI)
 
     // testing paramters
+    Real cool_floor_factor;   // typical 100; tunable
     bool test_hydro_balance;
 
   };
@@ -144,7 +145,7 @@ void MySourceTerms(Mesh* pm, const Real bdt);
 void GravSrcTerm(Mesh* pm, const Real bdt);
 void NeutronStarMask(Mesh* pm, const Real bdt);
 void SurfaceDamper(Mesh* pm, const Real bdt);
-void FloorCooling(Mesh* pm, const Real bdt); 
+void FloorCooling(Mesh* pm, const Real bdt);
 
 // Prototypes for user-defined BCs and history functions
 void NoInflowBC(Mesh *pm);
@@ -223,6 +224,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
   // testing parameters
   pp.test_hydro_balance = pin->GetOrAddBoolean("problem", "test_hydro_balance", false);
+  pp.cool_floor_factor = pin->GetOrAddReal("problem", "cool_floor_factor", 100.0);
 
   // disk paramters
   pp.add_torus = pin->GetOrAddBoolean("problem", "add_torus", false);
@@ -1264,7 +1266,6 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
 
 
 void FloorCooling(Mesh* pm, const Real bdt) {
-  // capture variables for kernel
   MeshBlockPack *pmbp = pm->pmb_pack;
   auto &indcs = pm->mb_indcs;
   int is = indcs.is, js = indcs.js, ks = indcs.ks;
@@ -1283,13 +1284,11 @@ void FloorCooling(Mesh* pm, const Real bdt) {
   auto pp_dvce = pp;
 
   // Cooling parameters
-  const Real r_top       = pp_dvce.rmax_atm_pole;
-  const Real beta_min    = pp_dvce.beta_min;
-  const Real sigma_max   = pp_dvce.sigma_max;
-  const Real sigma_lo    = 0.3 * sigma_max;          // no cooling below this
-  const Real sigma_hi    = 0.7 * sigma_max;          // full cooling above this
-  const Real inv_sigma_w = 1.0 / (sigma_hi - sigma_lo);
-  const Real tau_cool    = bdt;                       // 1 step e-fold; lengthen for gentler cooling
+  const Real r_top      = pp_dvce.rmax_atm_pole;
+  const Real T_iso      = 0.5 * pp_dvce.beta_min * pp_dvce.sigma_max;  // isothermal target
+  const Real ratio_hi   = pp_dvce.cool_floor_factor;     // no cooling above this ρ/ρ_floor
+  const Real ratio_lo   = 0.5 * ratio_hi;                // full cooling below this
+  const Real inv_ratio_w = 1.0 / (ratio_hi - ratio_lo);
 
   par_for("floor_cool", DevExeSpace(), 0,nmb-1, ks,ke, js,je, is,ie,
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
@@ -1318,47 +1317,41 @@ void FloorCooling(Mesh* pm, const Real bdt) {
     Real uu2  = w0_(m,IVY,k,j,i);
     Real uu3  = w0_(m,IVZ,k,j,i);
 
-    // -- read cell-centered B and build the 4-vector b^μ --
-    Real bx = bcc0_(m,IBX,k,j,i);
-    Real by = bcc0_(m,IBY,k,j,i);
-    Real bz = bcc0_(m,IBZ,k,j,i);
+    // Analytical dipole b² (matches what the runtime σ_max ceiling sees in ns_mask)
+    Real cos2_theta = SQR(x3v) / (rv*rv);
+    Real bsq_fake   = SQR(pp_dvce.mu_dipole) * (3.0*cos2_theta + 1.0) / (rv*rv*rv*rv*rv*rv);
+    Real rho_floor  = bsq_fake / pp_dvce.sigma_max;
 
-    Real u0_lor = sqrt(1.0 + uu1*uu1 + uu2*uu2 + uu3*uu3);
-    Real b0_4   = uu1*bx + uu2*by + uu3*bz;          // = u^i B^i (spatial dot product)
-    Real b1_4   = (bx + b0_4*uu1) / u0_lor;
-    Real b2_4   = (by + b0_4*uu2) / u0_lor;
-    Real b3_4   = (bz + b0_4*uu3) / u0_lor;
-    Real bsq    = -SQR(b0_4) + SQR(b1_4) + SQR(b2_4) + SQR(b3_4);  // Lorentz invariant
+    // ρ-based discriminator: floor-like cells only
+    Real rho_ratio = dens / fmax(rho_floor, pp_dvce.dfloor);
+    if (rho_ratio >= ratio_hi) return;   // real gas, leave alone
 
-    Real sigma = bsq / fmax(dens, pp_dvce.dfloor);
-    if (sigma <= sigma_lo) return;                    // not floor-like, leave alone
-
-    Real t_smooth    = fmin(1.0, (sigma - sigma_lo) * inv_sigma_w);
+    Real t_smooth    = fmin(1.0, fmax(0.0, (ratio_hi - rho_ratio) * inv_ratio_w));
     Real cool_factor = t_smooth*t_smooth*(3.0 - 2.0*t_smooth);
 
-    // -- target pressure: matches the runtime β_min floor --
-    Real p_target = beta_min * bsq / 2.0;
-    if (pgas <= p_target) return;                     // already at/below target
+    // Isothermal target: p = ρ × T_iso (Option A)
+    Real p_target = dens * T_iso;
+    if (pgas <= p_target) return;
 
-    // -- exponential relaxation toward p_target --
-    //    p_new = p_target + (p_old - p_target) * exp(-α dt/τ)
-    Real alpha  = cool_factor * bdt / fmax(tau_cool, bdt);
-    Real factor = exp(-alpha);
-    Real p_new  = p_target + (pgas - p_target) * factor;
-    Real dp     = p_new - pgas;                       // negative for cooling
+    // Hard reset toward p_target, scaled by smoothstep
+    Real p_new = pgas + cool_factor * (p_target - pgas);
+    Real dp    = p_new - pgas;
 
     // -- update primitive --
     w0_(m,IEN,k,j,i) = p_new / gm1;
 
     // -- increment conserved variables by the cooling delta --
-    //    Use Δ-form (not overwrite) so contributions from prior source terms (GravSrcTerm,
-    //    flux divergence already in u0) survive. Δρ = 0, Δu^i = 0.
-    //    wtot = ρ + γ/(γ-1) P + b²,  ptot = P + b²/2
-    //    ΔIEN = Δwtot · (u^t)² − Δptot = (γ/(γ-1)) Δp · (u^t)² − Δp
-    //    ΔIM_i = Δwtot · u^t u^i      = (γ/(γ-1)) Δp · u^t u^i
-    Real dwtot = (gm1+1.0)/gm1 * dp;                  // (γ/(γ-1)) Δp
-    Real dptot = dp;
-    u0_(m,IEN,k,j,i) += dwtot * u0_lor*u0_lor - dptot;
+    Real bx = bcc0_(m,IBX,k,j,i);
+    Real by = bcc0_(m,IBY,k,j,i);
+    Real bz = bcc0_(m,IBZ,k,j,i);
+    Real u0_lor = sqrt(1.0 + uu1*uu1 + uu2*uu2 + uu3*uu3);
+    Real b0_4   = uu1*bx + uu2*by + uu3*bz;
+    Real b1_4   = (bx + b0_4*uu1) / u0_lor;
+    Real b2_4   = (by + b0_4*uu2) / u0_lor;
+    Real b3_4   = (bz + b0_4*uu3) / u0_lor;
+
+    Real dwtot = (gm1+1.0)/gm1 * dp;
+    u0_(m,IEN,k,j,i) += dwtot * u0_lor*u0_lor - dp;
     u0_(m,IM1,k,j,i) += dwtot * u0_lor * uu1;
     u0_(m,IM2,k,j,i) += dwtot * u0_lor * uu2;
     u0_(m,IM3,k,j,i) += dwtot * u0_lor * uu3;
