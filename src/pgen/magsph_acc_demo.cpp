@@ -144,6 +144,7 @@ void MySourceTerms(Mesh* pm, const Real bdt);
 void GravSrcTerm(Mesh* pm, const Real bdt);
 void NeutronStarMask(Mesh* pm, const Real bdt);
 void SurfaceDamper(Mesh* pm, const Real bdt);
+void FloorCooling(Mesh* pm, const Real bdt); 
 
 // Prototypes for user-defined BCs and history functions
 void NoInflowBC(Mesh *pm);
@@ -913,6 +914,8 @@ void MySourceTerms(Mesh* pm, const Real bdt) {
 
   GravSrcTerm(pm, bdt);
 
+  FloorCooling(pm, bdt);
+
   return;
 }
 
@@ -1258,6 +1261,111 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
 
 } // end SurfaceDamper
 
+
+
+void FloorCooling(Mesh* pm, const Real bdt) {
+  // capture variables for kernel
+  MeshBlockPack *pmbp = pm->pmb_pack;
+  auto &indcs = pm->mb_indcs;
+  int is = indcs.is, js = indcs.js, ks = indcs.ks;
+  int ie = indcs.ie, je = indcs.je, ke = indcs.ke;
+  int nmb = pmbp->nmb_thispack;
+  auto &size = pmbp->pmb->mb_size;
+
+  // MHD variables
+  DvceArray5D<Real> u0_, w0_, bcc0_;
+  u0_   = pmbp->pmhd->u0;
+  w0_   = pmbp->pmhd->w0;
+  bcc0_ = pmbp->pmhd->bcc0;
+
+  // capture problem parameters
+  Real gm1 = pp.gamma_adi - 1.0;
+  auto pp_dvce = pp;
+
+  // Cooling parameters
+  const Real r_top       = pp_dvce.rmax_atm_pole;
+  const Real beta_min    = pp_dvce.beta_min;
+  const Real sigma_max   = pp_dvce.sigma_max;
+  const Real sigma_lo    = 0.3 * sigma_max;          // no cooling below this
+  const Real sigma_hi    = 0.7 * sigma_max;          // full cooling above this
+  const Real inv_sigma_w = 1.0 / (sigma_hi - sigma_lo);
+  const Real tau_cool    = bdt;                       // 1 step e-fold; lengthen for gentler cooling
+
+  par_for("floor_cool", DevExeSpace(), 0,nmb-1, ks,ke, js,je, is,ie,
+  KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    Real &x1min = size.d_view(m).x1min;
+    Real &x1max = size.d_view(m).x1max;
+    Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+
+    Real &x2min = size.d_view(m).x2min;
+    Real &x2max = size.d_view(m).x2max;
+    Real x2v = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+
+    Real &x3min = size.d_view(m).x3min;
+    Real &x3max = size.d_view(m).x3max;
+    Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+
+    Real rv, thv, phv;
+    GetSchwarzschildCoordinates(x1v, x2v, x3v, &rv, &thv, &phv);
+
+    if (rv <= r_top) return;
+
+    // -- read current primitive state --
+    // w0_(IVX..IVZ) are spatial 4-velocity components u^i (Athena convention)
+    Real dens = w0_(m,IDN,k,j,i);
+    Real pgas = w0_(m,IEN,k,j,i) * gm1;
+    Real uu1  = w0_(m,IVX,k,j,i);
+    Real uu2  = w0_(m,IVY,k,j,i);
+    Real uu3  = w0_(m,IVZ,k,j,i);
+
+    // -- read cell-centered B and build the 4-vector b^μ --
+    Real bx = bcc0_(m,IBX,k,j,i);
+    Real by = bcc0_(m,IBY,k,j,i);
+    Real bz = bcc0_(m,IBZ,k,j,i);
+
+    Real u0_lor = sqrt(1.0 + uu1*uu1 + uu2*uu2 + uu3*uu3);
+    Real b0_4   = uu1*bx + uu2*by + uu3*bz;          // = u^i B^i (spatial dot product)
+    Real b1_4   = (bx + b0_4*uu1) / u0_lor;
+    Real b2_4   = (by + b0_4*uu2) / u0_lor;
+    Real b3_4   = (bz + b0_4*uu3) / u0_lor;
+    Real bsq    = -SQR(b0_4) + SQR(b1_4) + SQR(b2_4) + SQR(b3_4);  // Lorentz invariant
+
+    Real sigma = bsq / fmax(dens, pp_dvce.dfloor);
+    if (sigma <= sigma_lo) return;                    // not floor-like, leave alone
+
+    Real t_smooth    = fmin(1.0, (sigma - sigma_lo) * inv_sigma_w);
+    Real cool_factor = t_smooth*t_smooth*(3.0 - 2.0*t_smooth);
+
+    // -- target pressure: matches the runtime β_min floor --
+    Real p_target = beta_min * bsq / 2.0;
+    if (pgas <= p_target) return;                     // already at/below target
+
+    // -- exponential relaxation toward p_target --
+    //    p_new = p_target + (p_old - p_target) * exp(-α dt/τ)
+    Real alpha  = cool_factor * bdt / fmax(tau_cool, bdt);
+    Real factor = exp(-alpha);
+    Real p_new  = p_target + (pgas - p_target) * factor;
+    Real dp     = p_new - pgas;                       // negative for cooling
+
+    // -- update primitive --
+    w0_(m,IEN,k,j,i) = p_new / gm1;
+
+    // -- increment conserved variables by the cooling delta --
+    //    Use Δ-form (not overwrite) so contributions from prior source terms (GravSrcTerm,
+    //    flux divergence already in u0) survive. Δρ = 0, Δu^i = 0.
+    //    wtot = ρ + γ/(γ-1) P + b²,  ptot = P + b²/2
+    //    ΔIEN = Δwtot · (u^t)² − Δptot = (γ/(γ-1)) Δp · (u^t)² − Δp
+    //    ΔIM_i = Δwtot · u^t u^i      = (γ/(γ-1)) Δp · u^t u^i
+    Real dwtot = (gm1+1.0)/gm1 * dp;                  // (γ/(γ-1)) Δp
+    Real dptot = dp;
+    u0_(m,IEN,k,j,i) += dwtot * u0_lor*u0_lor - dptot;
+    u0_(m,IM1,k,j,i) += dwtot * u0_lor * uu1;
+    u0_(m,IM2,k,j,i) += dwtot * u0_lor * uu2;
+    u0_(m,IM3,k,j,i) += dwtot * u0_lor * uu3;
+  });
+
+  return;
+} // end FloorCooling
 
 
 
