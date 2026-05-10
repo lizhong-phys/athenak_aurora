@@ -319,12 +319,18 @@ void MeshBoundaryValuesCC::ConsToPrimCoarseBndry(const DvceArray5D<Real> &cons,
   bool &is_gr = pmy_pack->pcoord->is_general_relativistic;
 
   auto &use_nsmask = pmy_pack->pcoord->coord_data.ns_mask;
-  auto &r_mask_ = pmy_pack->pcoord->coord_data.r_mask;
+  auto &r_surf_ = pmy_pack->pcoord->coord_data.r_surf;
   Real emag_star = 2*pmy_pack->pcoord->coord_data.pmag_star;
-  
+
   auto &eos = pmy_pack->pmhd->peos->eos_data;
   int &nmhd  = pmy_pack->pmhd->nmhd;
   int &nscal = pmy_pack->pmhd->nscalars;
+
+  // flags and variables for entropy fix
+  auto &entropy_fix_ = pmy_pack->pmhd->entropy_fix;
+  int entropyIdx = (entropy_fix_) ? nmhd+nscal-1 : -1;
+  auto &sigma_cut_ = pmy_pack->pmhd->sigma_cut_efix;
+  auto &beta_cut_  = pmy_pack->pmhd->beta_cut_efix;
 
   // Outer loop over (# of MeshBlocks)*(# of buffers)
   Kokkos::TeamPolicy<> policy(DevExeSpace(), (nmb*nnghbr), Kokkos::AUTO);
@@ -399,7 +405,7 @@ void MeshBoundaryValuesCC::ConsToPrimCoarseBndry(const DvceArray5D<Real> &cons,
           Real b2_fake = -1;
           if (use_nsmask) {
             Real r_sch = sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
-            if (r_sch >= r_mask_) {
+            if (r_sch >= r_surf_) {
               apply_sigma_max = true;
               b2_fake = emag_star/(r_sch*r_sch*r_sch*r_sch*r_sch*r_sch);
             }
@@ -427,14 +433,108 @@ void MeshBoundaryValuesCC::ConsToPrimCoarseBndry(const DvceArray5D<Real> &cons,
             w.vz *= factor;
           }
         } else if (is_sr) {
+          // check extra floors
+          bool apply_sigma_max=false;
+          Real b2_fake = -1;
+          if (use_nsmask) {
+            Real &x1min = size.d_view(m).x1min;
+            Real &x1max = size.d_view(m).x1max;
+            // Note indices refer to coarse arrays, so use cis, cnx1
+            Real x1v = CellCenterX(i-indcs.cis, indcs.cnx1, x1min, x1max);
+
+            Real &x2min = size.d_view(m).x2min;
+            Real &x2max = size.d_view(m).x2max;
+            Real x2v = CellCenterX(j-indcs.cjs, indcs.cnx2, x2min, x2max);
+
+            Real &x3min = size.d_view(m).x3min;
+            Real &x3max = size.d_view(m).x3max;
+            Real x3v = CellCenterX(k-indcs.cks, indcs.cnx3, x3min, x3max);
+
+            Real r_sch = sqrt(SQR(x1v)+SQR(x2v)+SQR(x3v));
+
+            if (r_sch >= r_surf_) {
+              apply_sigma_max = true;
+              b2_fake = emag_star/(r_sch*r_sch*r_sch*r_sch*r_sch*r_sch);
+            }
+          }
+
+          // Save the old state for backup
+          HydPrim1D w_old;
+          w_old.d  = prim(m,IDN,k,j,i);
+          w_old.vx = prim(m,IVX,k,j,i);
+          w_old.vy = prim(m,IVY,k,j,i);
+          w_old.vz = prim(m,IVZ,k,j,i);
+          w_old.e  = prim(m,IEN,k,j,i);
+
           // Compute (S^i S_i) (eqn C2)
           Real s2 = SQR(u.mx) + SQR(u.my) + SQR(u.mz);
           Real b2 = SQR(u.bx) + SQR(u.by) + SQR(u.bz);
           Real rpar = (u.bx*u.mx +  u.by*u.my +  u.bz*u.mz)/u.d;
-          bool c2p_failure=false; bool apply_sigma_max=false;
+          bool c2p_failure=false;
           int iter_used=0;
           SingleC2P_IdealSRMHD(u, eos, s2, b2, rpar, w,
-                               dfloor_used, efloor_used, c2p_failure, iter_used, apply_sigma_max, -1);
+                               dfloor_used, efloor_used, c2p_failure, iter_used, apply_sigma_max, b2_fake);
+
+          // Entropy Fix
+          if (entropy_fix_) {
+            // compute quantities for criteria fix
+            Real sigma_cold=0.0, beta=0.0;
+            if (!c2p_failure) {
+              Real u0_ = sqrt(1.0 + SQR(w.vx) + SQR(w.vy) + SQR(w.vz));
+
+              Real b0_ = u.bx*w.vx + u.by*w.vy + u.bz*w.vz;
+              Real b1_ = (u.bx + b0_ * w.vx) / u0_;
+              Real b2_ = (u.by + b0_ * w.vy) / u0_;
+              Real b3_ = (u.bz + b0_ * w.vz) / u0_;
+              Real b_sq_ = -SQR(b0_) + SQR(b1_) + SQR(b2_) + SQR(b3_);
+
+              sigma_cold = b_sq_/w.d;
+              beta = (eos.gamma-1)*w.e/(0.5*b_sq_);
+            }
+
+            // apply entropy fix
+            if ((c2p_failure) || (sigma_cold > sigma_cut_) || (beta < beta_cut_)) {
+              // compute the entropy fix
+              bool dfloor_used_in_fix=false, efloor_used_in_fix=false;
+              bool c2p_failure_in_fix=c2p_failure;
+              int iter_used_in_fix=0;
+              HydPrim1D w_fix;
+              w_fix.d  = w.d;
+              w_fix.vx = w.vx;
+              w_fix.vy = w.vy;
+              w_fix.vz = w.vz;
+              w_fix.e  = w.e;
+              Real &s_tot = cons(m,entropyIdx,k,j,i);
+              SingleC2P_IdealSRMHD_EntropyFix(u, s_tot, eos, s2, b2, rpar, w_fix, w_old,
+                                              dfloor_used_in_fix, efloor_used_in_fix,
+                                              c2p_failure_in_fix, iter_used_in_fix);
+
+              // entropy fix
+              if (!c2p_failure_in_fix) {
+                // successful entropy-fixed c2p
+                w.d  = w_fix.d;
+                w.e  = w_fix.e;
+                w.vx = w_fix.vx;
+                w.vy = w_fix.vy;
+                w.vz = w_fix.vz;
+                dfloor_used = dfloor_used_in_fix;
+                efloor_used = efloor_used_in_fix;
+                c2p_failure = c2p_failure_in_fix;
+                iter_used_in_fix = iter_used;
+              }
+
+              // otherwise old state
+              if ((c2p_failure) && (c2p_failure_in_fix)) {
+                w.d  = w_old.d;
+                w.e  = w_old.e;
+                w.vx = w_old.vx;
+                w.vy = w_old.vy;
+                w.vz = w_old.vz;
+              }
+
+            }  // endif perform fix
+          } // endif (entropy_fix_)
+
           // apply velocity ceiling if necessary
           Real lor = sqrt(1.0+SQR(w.vx)+SQR(w.vy)+SQR(w.vz));
           if (lor > eos.gamma_max) {

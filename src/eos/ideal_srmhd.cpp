@@ -66,7 +66,7 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
 
   // flags for ns problem
   auto &use_nsmask = pmy_pack->pcoord->coord_data.ns_mask;
-  auto &R_star = pmy_pack->pcoord->coord_data.R_star;
+  auto &r_surf_ = pmy_pack->pcoord->coord_data.r_surf;
   Real emag_star = 2*pmy_pack->pcoord->coord_data.pmag_star;
 
   // flags and variables for entropy fix
@@ -74,6 +74,7 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
   int entropyIdx = (entropy_fix_) ? nmhd+nscal-1 : -1;
   auto &sigma_cut_ = pmy_pack->pmhd->sigma_cut_efix;
   auto &beta_cut_  = pmy_pack->pmhd->beta_cut_efix;
+
   auto &indcs = pmy_pack->pmesh->mb_indcs;
   int &is = indcs.is, &js = indcs.js, &ks = indcs.ks;
   auto &size = pmy_pack->pmb->mb_size;
@@ -151,7 +152,7 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
 
       Real r_sch = sqrt(SQR(x1v)+SQR(x2v)+SQR(x3v));
 
-      if (r_sch >= R_star) {
+      if (r_sch >= r_surf_) {
         apply_sigma_max = true;
         b2_fake = emag_star/(r_sch*r_sch*r_sch*r_sch*r_sch*r_sch);
       }
@@ -163,34 +164,34 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
     // compute quantities for criteria fix
     Real sigma_cold=0.0, beta=0.0;
     if (!c2p_failure) {
-      Real u0 = sqrt(1.0 + SQR(w.vx) + SQR(w.vy) + SQR(w.vz));
+      Real u0_ = sqrt(1.0 + SQR(w.vx) + SQR(w.vy) + SQR(w.vz));
 
-      Real b0 = u.bx*w.vx + u.by*w.vy + u.bz*w.vz;
-      Real b1 = (u.bx + b0 * w.vx) / u0;
-      Real b2 = (u.by + b0 * w.vy) / u0;
-      Real b3 = (u.bz + b0 * w.vz) / u0;
-      Real b_sq = -SQR(b0) + SQR(b1) + SQR(b2) + SQR(b3);
+      Real b0_ = u.bx*w.vx + u.by*w.vy + u.bz*w.vz;
+      Real b1_ = (u.bx + b0_ * w.vx) / u0_;
+      Real b2_ = (u.by + b0_ * w.vy) / u0_;
+      Real b3_ = (u.bz + b0_ * w.vz) / u0_;
+      Real b_sq_ = -SQR(b0_) + SQR(b1_) + SQR(b2_) + SQR(b3_);
 
-      sigma_cold = b_sq/w.d;
-      beta = (eos.gamma-1)*w.e/(0.5*b_sq);
+      sigma_cold = b_sq_/w.d;
+      beta = (eos.gamma-1)*w.e/(0.5*b_sq_);
     }
 
 
     // apply entropy fix
     if (entropy_fix_ && (!only_testfloors)) {
-      Real &x1min = size.d_view(m).x1min;
-      Real &x1max = size.d_view(m).x1max;
-      Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
-
-      Real &x2min = size.d_view(m).x2min;
-      Real &x2max = size.d_view(m).x2max;
-      Real x2v = CellCenterX(j-js, indcs.nx2, x2min, x2max);
-
-      Real &x3min = size.d_view(m).x3min;
-      Real &x3max = size.d_view(m).x3max;
-      Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
-
-      Real rv = sqrt(SQR(x1v)+SQR(x2v)+SQR(x3v));
+      // Real &x1min = size.d_view(m).x1min;
+      // Real &x1max = size.d_view(m).x1max;
+      // Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+      //
+      // Real &x2min = size.d_view(m).x2min;
+      // Real &x2max = size.d_view(m).x2max;
+      // Real x2v = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+      //
+      // Real &x3min = size.d_view(m).x3min;
+      // Real &x3max = size.d_view(m).x3max;
+      // Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+      //
+      // Real rv = sqrt(SQR(x1v)+SQR(x2v)+SQR(x3v));
 
       if ((c2p_failure) || (sigma_cold > sigma_cut_) || (beta < beta_cut_)) {
         // compute the entropy fix
