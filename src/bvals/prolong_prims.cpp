@@ -477,6 +477,21 @@ void MeshBoundaryValuesCC::ConsToPrimCoarseBndry(const DvceArray5D<Real> &cons,
 
           // Entropy Fix
           if (entropy_fix_) {
+            Real &x1min = size.d_view(m).x1min;
+            Real &x1max = size.d_view(m).x1max;
+            // Note indices refer to coarse arrays, so use cis, cnx1
+            Real x1v = CellCenterX(i-indcs.cis, indcs.cnx1, x1min, x1max);
+
+            Real &x2min = size.d_view(m).x2min;
+            Real &x2max = size.d_view(m).x2max;
+            Real x2v = CellCenterX(j-indcs.cjs, indcs.cnx2, x2min, x2max);
+
+            Real &x3min = size.d_view(m).x3min;
+            Real &x3max = size.d_view(m).x3max;
+            Real x3v = CellCenterX(k-indcs.cks, indcs.cnx3, x3min, x3max);
+
+            Real rv = sqrt(SQR(x1v)+SQR(x2v)+SQR(x3v));
+
             // compute quantities for criteria fix
             Real sigma_cold=0.0, beta=0.0;
             if (!c2p_failure) {
