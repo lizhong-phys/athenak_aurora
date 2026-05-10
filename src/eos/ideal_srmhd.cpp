@@ -193,7 +193,8 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
 
       Real rv = sqrt(SQR(x1v)+SQR(x2v)+SQR(x3v));
 
-      if (((c2p_failure) || (sigma_cold > sigma_cut_) || (beta < beta_cut_)) && (rv >= r_surf_)) {
+      // if (((c2p_failure) || (sigma_cold > sigma_cut_) || (beta < beta_cut_)) && (rv >= r_surf_)) {
+      if ((c2p_failure) || (sigma_cold > sigma_cut_) || (beta < beta_cut_)) {
         // compute the entropy fix
         bool dfloor_used_in_fix=false, efloor_used_in_fix=false;
         bool c2p_failure_in_fix=c2p_failure;

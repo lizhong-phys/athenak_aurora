@@ -53,6 +53,7 @@ struct MHDTaskIDs {
   TaskID recvf;
   TaskID rkupdt;
   TaskID srctrms;
+  TaskID masktrms;
   TaskID sendu_oa;
   TaskID recvu_oa;
   TaskID restu;
@@ -137,7 +138,7 @@ class MHD {
   // entropy fix for failed total energy equation
   bool entropy_fix = false;
   Real sigma_cut_efix = 1e10;
-  Real beta_cut_efix  = 1e-10; 
+  Real beta_cut_efix  = 1e-10;
 
   // following used for time derivatives in computation of jcon
   bool wbcc_saved = false;
@@ -165,6 +166,7 @@ class MHD {
   TaskStatus RecvFlux(Driver *d, int stage);
   TaskStatus RKUpdate(Driver *d, int stage);
   TaskStatus MHDSrcTerms(Driver *d, int stage);
+  TaskStatus MHDMaskTerms(Driver *d, int stage);
   TaskStatus SendU_OA(Driver *d, int stage);
   TaskStatus RecvU_OA(Driver *d, int stage);
   TaskStatus RestrictU(Driver *d, int stage);

@@ -73,7 +73,10 @@ void MHD::AssembleMHDTasks(std::map<std::string, std::shared_ptr<TaskList>> tl) 
   id.bcs       = tl["stagen"]->AddTask(&MHD::ApplyPhysicalBCs, this, id.recvb_shr);
   id.prol      = tl["stagen"]->AddTask(&MHD::Prolongate, this, id.bcs);
   id.c2p       = tl["stagen"]->AddTask(&MHD::ConToPrim, this, id.prol);
-  id.newdt     = tl["stagen"]->AddTask(&MHD::NewTimeStep, this, id.c2p);
+
+  id.masktrms  = tl["stagen"]->AddTask(&MHD::MHDMaskTerms, this, id.c2p);
+
+  id.newdt     = tl["stagen"]->AddTask(&MHD::NewTimeStep, this, id.masktrms);
 
   // assemble "after_stagen" task list
   id.csend = tl["after_stagen"]->AddTask(&MHD::ClearSend, this, none);
@@ -281,6 +284,25 @@ TaskStatus MHD::MHDSrcTerms(Driver *pdrive, int stage) {
 
   return TaskStatus::complete;
 }
+
+
+//----------------------------------------------------------------------------------------
+//! \fn TaskList MHD::MHDSrcTerms
+//! \brief Wrapper task list function to apply source terms to conservative vars
+//! Note source terms must be computed using only primitives (w0), as the conserved
+//! variables (u0) have already been partially updated when this fn called.
+
+TaskStatus MHD::MHDMaskTerms(Driver *pdrive, int stage) {
+
+  // Add user source terms
+  if (pmy_pack->pmesh->pgen->user_mask_func != nullptr) {
+    Real beta_dt = (pdrive->beta[stage-1])*(pmy_pack->pmesh->dt);
+    (pmy_pack->pmesh->pgen->user_mask_func)(pmy_pack->pmesh, beta_dt);
+  }
+
+  return TaskStatus::complete;
+}
+
 
 //----------------------------------------------------------------------------------------
 //! \fn TaskList MHD::SendU_OA

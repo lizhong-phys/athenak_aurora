@@ -131,8 +131,13 @@ namespace {
     Real pert_amp;                             // pressure perturbation amplitude (seeds MRI)
 
     // testing paramters
-    Real cool_floor_factor;   // typical 100; tunable
     bool test_hydro_balance;
+
+    // fixes
+    bool apply_ns_mask;
+    bool apply_atm_damper;
+    bool apply_floor_cooling;
+    Real cool_floor_factor;   // typical 100; tunable
 
   };
 
@@ -142,6 +147,7 @@ namespace {
 
 // Prototypes for user-defined source functions
 void MySourceTerms(Mesh* pm, const Real bdt);
+void MyMaskTerms(Mesh* pm, const Real bdt);
 void GravSrcTerm(Mesh* pm, const Real bdt);
 void NeutronStarMask(Mesh* pm, const Real bdt);
 void SurfaceDamper(Mesh* pm, const Real bdt);
@@ -179,6 +185,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   //    - user_bcs_func  : stellar surface boundary condition / no-inflow
   user_bcs_func = NoInflowBC;
   user_srcs_func = MySourceTerms;
+  user_mask_func = MyMaskTerms;
 
   // 3. READ PARAMETERS FROM INPUT FILE
   //    - Neutron star: radius R*, surface field B*, spin Omega*
@@ -224,7 +231,12 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
   // testing parameters
   pp.test_hydro_balance = pin->GetOrAddBoolean("problem", "test_hydro_balance", false);
-  pp.cool_floor_factor = pin->GetOrAddReal("problem", "cool_floor_factor", 100.0);
+
+  // fixes
+  pp.apply_ns_mask       = pin->GetOrAddBoolean("problem", "apply_ns_mask", true);
+  pp.apply_atm_damper    = pin->GetOrAddBoolean("problem", "apply_atm_damper", true);
+  pp.apply_floor_cooling = pin->GetOrAddBoolean("problem", "apply_floor_cooling", true);
+  pp.cool_floor_factor   = pin->GetOrAddReal(   "problem", "cool_floor_factor", 100.0);
 
   // disk paramters
   pp.add_torus = pin->GetOrAddBoolean("problem", "add_torus", false);
@@ -906,20 +918,28 @@ static void TransformVector(Real a0_sks, Real a1_sks, Real a2_sks, Real a3_sks,
 } // end of namespace
 
 
-
-
 void MySourceTerms(Mesh* pm, const Real bdt) {
-
-  NeutronStarMask(pm, bdt);
-
-  SurfaceDamper(pm, bdt);
-
   GravSrcTerm(pm, bdt);
+  return;
+}
 
-  // FloorCooling(pm, bdt);
+
+void MyMaskTerms(Mesh* pm, const Real bdt) {
+  if (pp.apply_ns_mask) {
+    NeutronStarMask(pm, bdt);
+  }
+
+  if (pp.apply_atm_damper) {
+    SurfaceDamper(pm, bdt);
+  }
+
+  if (pp.apply_floor_cooling) {
+    FloorCooling(pm, bdt);
+  }
 
   return;
 }
+
 
 void GravSrcTerm(Mesh* pm, const Real bdt) {
   // capture variables for kernel
@@ -1011,6 +1031,10 @@ void NeutronStarMask(Mesh* pm, const Real bdt) {
   int nmb = pmbp->nmb_thispack;
   auto &size = pmbp->pmb->mb_size;
 
+  int n1m1 = indcs.nx1 + 2*indcs.ng - 1;
+  int n2m1 = (indcs.nx2 > 1) ? (indcs.nx2 + 2*indcs.ng - 1) : 0;
+  int n3m1 = (indcs.nx3 > 1) ? (indcs.nx3 + 2*indcs.ng - 1) : 0;
+
   // MHD variables
   DvceArray5D<Real> u0_, w0_, bcc0_;
   u0_   = pmbp->pmhd->u0;
@@ -1020,7 +1044,8 @@ void NeutronStarMask(Mesh* pm, const Real bdt) {
   // capture problem parameters
   Real gm1 = pp.gamma_adi - 1.0;
   auto pp_dvce = pp;
-  par_for("pgen_nsmask", DevExeSpace(), 0,nmb-1,ks,ke,js,je,is,ie,
+  // par_for("pgen_nsmask", DevExeSpace(), 0,nmb-1,ks,ke,js,je,is,ie,
+  par_for("pgen_nsmask", DevExeSpace(), 0,nmb-1, 0,n3m1, 0,n2m1, 0,n1m1,
   KOKKOS_LAMBDA(int m,int k,int j,int i) {
     Real &x1min = size.d_view(m).x1min;
     Real &x1max = size.d_view(m).x1max;
@@ -1043,23 +1068,36 @@ void NeutronStarMask(Mesh* pm, const Real bdt) {
 
     // extract problem paramters
     if (rv < pp_dvce.r_surf) {
+      // no modification in b-field
       Real dens = rho_surf;
       Real pgas = dens*tgas_surf;
       Real bx = bcc0_(m,IBX,k,j,i);
       Real by = bcc0_(m,IBY,k,j,i);
       Real bz = bcc0_(m,IBZ,k,j,i);
 
-      Real u0 = 1./sqrt(1. - SQR(Omg_star*rv*sin(thv)));
-      Real u1 = -Omg_star*x2v*u0;
-      Real u2 =  Omg_star*x1v*u0;
+      // Real u0 = 1./sqrt(1. - SQR(Omg_star*rv*sin(thv)));
+      // Real u1 = -Omg_star*x2v*u0;
+      // Real u2 =  Omg_star*x1v*u0;
+      // Real u3 = 0.0;
+
+      Real u0 = 1.0;
+      Real u1 = 0.0;
+      Real u2 = 0.0;
       Real u3 = 0.0;
 
+      // assign primitives first
+      w0_(m,IDN,k,j,i) = dens;
+      w0_(m,IEN,k,j,i) = pgas/gm1;
+      w0_(m,IVX,k,j,i) = u1;
+      w0_(m,IVY,k,j,i) = u2;
+      w0_(m,IVZ,k,j,i) = u3;
+
+      // compute and assign conservatives
       Real b0 = u1*bx + u2*by + u3*bz;
       Real b1 = (bx + b0*u1) / u0;
       Real b2 = (by + b0*u2) / u0;
       Real b3 = (bz + b0*u3) / u0;
       Real b_sq = -SQR(b0) + SQR(b1) + SQR(b2) + SQR(b3);
-
       Real wtot = dens + (gm1+1)/gm1*pgas + b_sq;
       Real ptot = pgas + 0.5*b_sq;
       u0_(m,IDN,k,j,i) = dens*u0;
@@ -1067,19 +1105,10 @@ void NeutronStarMask(Mesh* pm, const Real bdt) {
       u0_(m,IM1,k,j,i) = wtot*u0*u1 - b0*b1;
       u0_(m,IM2,k,j,i) = wtot*u0*u2 - b0*b2;
       u0_(m,IM3,k,j,i) = wtot*u0*u3 - b0*b3;
-
-      w0_(m,IDN,k,j,i) = dens;
-      w0_(m,IEN,k,j,i) = pgas/gm1;
-      w0_(m,IVX,k,j,i) = u1;
-      w0_(m,IVY,k,j,i) = u2;
-      w0_(m,IVZ,k,j,i) = u3;
-
-    } // endif
+    } // endif (rv < pp_dvce.r_surf)
 
   }); // end par_for
 } // end NeutronStarMask
-
-
 
 
 void SurfaceDamper(Mesh* pm, const Real bdt) {
@@ -1090,6 +1119,10 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
   int ie = indcs.ie, je = indcs.je, ke = indcs.ke;
   int nmb = pmbp->nmb_thispack;
   auto &size = pmbp->pmb->mb_size;
+
+  int n1m1 = indcs.nx1 + 2*indcs.ng - 1;
+  int n2m1 = (indcs.nx2 > 1) ? (indcs.nx2 + 2*indcs.ng - 1) : 0;
+  int n3m1 = (indcs.nx3 > 1) ? (indcs.nx3 + 2*indcs.ng - 1) : 0;
 
   // MHD variables
   DvceArray5D<Real> u0_, w0_, bcc0_;
@@ -1108,7 +1141,8 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
   const Real r_buf_in  = 0.9 * r_top;
   const Real inv_buf_w = 1.0 / (r_top - r_buf_in);
 
-  par_for("damp_v_perp", DevExeSpace(), 0,nmb-1,ks,ke,js,je,is,ie,
+  // par_for("damp_v_perp", DevExeSpace(), 0,nmb-1,ks,ke,js,je,is,ie,
+  par_for("damp_v_perp", DevExeSpace(), 0,nmb-1, 0,n3m1, 0,n2m1, 0,n1m1,
   KOKKOS_LAMBDA(int m,int k,int j,int i) {
     Real &x1min = size.d_view(m).x1min;
     Real &x1max = size.d_view(m).x1max;
@@ -1126,6 +1160,8 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
     GetSchwarzschildCoordinates(x1v, x2v, x3v, &rv, &thv, &phv);
 
     if (rv < r_buf_in || rv > r_top) return;
+
+    // only adopted damping in (r_buf_in <= rv <= r_top)
 
     // smoothstep ramp in [0,1]
     Real t = (rv - r_buf_in) * inv_buf_w;
@@ -1145,7 +1181,6 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
     w0_(m,IVX,k,j,i) = ux_tar + (1.0 - ramp)*(uu1 - ux_tar);
     w0_(m,IVY,k,j,i) = uy_tar + (1.0 - ramp)*(uu2 - uy_tar);
     w0_(m,IVZ,k,j,i) = uz_tar + (1.0 - ramp)*(uu3 - uz_tar);
-
   }); // end par_for
 
   // --------------------------------------------------------------------------
@@ -1153,7 +1188,8 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
   // computing A inline at the four edges of each face.
   // --------------------------------------------------------------------------
   // x1-face: B_x = (A_z(j+1) - A_z(j))/dx2 - (A_y(k+1) - A_y(k))/dx3
-  par_for("damp_b_x1f", DevExeSpace(), 0,nmb-1, ks,ke, js,je, is,ie+1,
+  // par_for("damp_b_x1f", DevExeSpace(), 0,nmb-1, ks,ke, js,je, is,ie+1,
+  par_for("damp_b_x1f", DevExeSpace(), 0,nmb-1, 0,n3m1, 0,n2m1, 0,n1m1+1,
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
     Real x1f   = LeftEdgeX  (i  -is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
     Real x2v   = CellCenterX(j  -js, indcs.nx2, size.d_view(m).x2min, size.d_view(m).x2max);
@@ -1182,7 +1218,8 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
   });
 
   // x2-face: B_y = (A_x(k+1) - A_x(k))/dx3 - (A_z(i+1) - A_z(i))/dx1
-  par_for("damp_b_x2f", DevExeSpace(), 0,nmb-1, ks,ke, js,je+1, is,ie,
+  // par_for("damp_b_x2f", DevExeSpace(), 0,nmb-1, ks,ke, js,je+1, is,ie,
+  par_for("damp_b_x2f", DevExeSpace(), 0,nmb-1, 0,n3m1, 0,n2m1+1, 0,n1m1,
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
     Real x1v   = CellCenterX(i  -is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
     Real x1f   = LeftEdgeX  (i  -is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
@@ -1211,7 +1248,8 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
   });
 
   // x3-face: B_z = (A_y(i+1) - A_y(i))/dx1 - (A_x(j+1) - A_x(j))/dx2
-  par_for("damp_b_x3f", DevExeSpace(), 0,nmb-1, ks,ke+1, js,je, is,ie,
+  // par_for("damp_b_x3f", DevExeSpace(), 0,nmb-1, ks,ke+1, js,je, is,ie,
+  par_for("damp_b_x3f", DevExeSpace(), 0,nmb-1, 0,n3m1+1, 0,n2m1, 0,n1m1,
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
     Real x1v   = CellCenterX(i  -is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
     Real x1f   = LeftEdgeX  (i  -is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
@@ -1242,7 +1280,8 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
   // --------------------------------------------------------------------------
   // Step 3: rebuild bcc0 in the buffer (cell-centered B = avg of two faces).
   // --------------------------------------------------------------------------
-  par_for("damp_bcc", DevExeSpace(), 0,nmb-1, ks,ke, js,je, is,ie,
+  // par_for("damp_bcc", DevExeSpace(), 0,nmb-1, ks,ke, js,je, is,ie,
+  par_for("damp_bcc", DevExeSpace(), 0,nmb-1, 0,n3m1, 0,n2m1, 0,n1m1,
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
     Real x1v = CellCenterX(i-is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
     Real x2v = CellCenterX(j-js, indcs.nx2, size.d_view(m).x2min, size.d_view(m).x2max);
@@ -1259,7 +1298,8 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
   // --------------------------------------------------------------------------
   // Step 4: sync conservatives with the new w0 and bcc0.
   // --------------------------------------------------------------------------
-  par_for("sync_cons", DevExeSpace(), 0,nmb-1, ks,ke, js,je, is,ie,
+  // par_for("sync_cons", DevExeSpace(), 0,nmb-1, ks,ke, js,je, is,ie,
+  par_for("sync_cons", DevExeSpace(), 0,nmb-1, 0,n3m1, 0,n2m1, 0,n1m1,
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
     Real x1v = CellCenterX(i-is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
     Real x2v = CellCenterX(j-js, indcs.nx2, size.d_view(m).x2min, size.d_view(m).x2max);
@@ -1308,6 +1348,10 @@ void FloorCooling(Mesh* pm, const Real bdt) {
   int nmb = pmbp->nmb_thispack;
   auto &size = pmbp->pmb->mb_size;
 
+  int n1m1 = indcs.nx1 + 2*indcs.ng - 1;
+  int n2m1 = (indcs.nx2 > 1) ? (indcs.nx2 + 2*indcs.ng - 1) : 0;
+  int n3m1 = (indcs.nx3 > 1) ? (indcs.nx3 + 2*indcs.ng - 1) : 0;
+
   // MHD variables
   DvceArray5D<Real> u0_, w0_, bcc0_;
   u0_   = pmbp->pmhd->u0;
@@ -1325,7 +1369,8 @@ void FloorCooling(Mesh* pm, const Real bdt) {
   const Real ratio_lo   = 0.5 * ratio_hi;                // full cooling below this
   const Real inv_ratio_w = 1.0 / (ratio_hi - ratio_lo);
 
-  par_for("floor_cool", DevExeSpace(), 0,nmb-1, ks,ke, js,je, is,ie,
+  // par_for("floor_cool", DevExeSpace(), 0,nmb-1, ks,ke, js,je, is,ie,
+  par_for("floor_cool", DevExeSpace(), 0,nmb-1, 0,n3m1, 0,n2m1, 0,n1m1,
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
     Real &x1min = size.d_view(m).x1min;
     Real &x1max = size.d_view(m).x1max;
