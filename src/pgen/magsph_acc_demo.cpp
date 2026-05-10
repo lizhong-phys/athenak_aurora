@@ -136,6 +136,7 @@ namespace {
     // fixes
     bool apply_ns_mask;
     bool apply_atm_damper;
+    bool smooth_atm_top;
     bool apply_floor_cooling;
     Real cool_floor_factor;   // typical 100; tunable
 
@@ -235,6 +236,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   // fixes
   pp.apply_ns_mask       = pin->GetOrAddBoolean("problem", "apply_ns_mask", true);
   pp.apply_atm_damper    = pin->GetOrAddBoolean("problem", "apply_atm_damper", true);
+  pp.smooth_atm_top      = pin->GetOrAddBoolean("problem", "smooth_atm_top", true);
   pp.apply_floor_cooling = pin->GetOrAddBoolean("problem", "apply_floor_cooling", true);
   pp.cool_floor_factor   = pin->GetOrAddReal(   "problem", "cool_floor_factor", 100.0);
 
@@ -314,7 +316,6 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
 
   // initialize primitive variables for new run ---------------------------------------
-
   auto pp_dvce = pp;
   Kokkos::Random_XorShift64_Pool<> rand_pool64(pmbp->gids);
   Real ptotmax = std::numeric_limits<float>::min();
@@ -417,8 +418,31 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
     // below the atmosphere (r < R_star)
     if ((rv >= r_surf) && (rv <= rmax_atm_pole)) {
+      // analytical isothermal atmosphere
       dens = rho_surf * exp(-(rv-r_surf)/h_surf);
       pgas = dens * tgas_surf;
+
+      if (pp_dvce.smooth_atm_top) {
+        const Real r_taper_in = 0.95 * rmax_atm_pole;
+        if (rv > r_taper_in) {
+          // endpoint values at r_taper_in
+          Real rho_at_taper_in = rho_surf * exp(-(r_taper_in - r_surf) / h_surf);
+          Real pgas_at_taper_in = rho_at_taper_in * tgas_surf;
+
+          // smoothstep parameter
+          Real r_frac = (rv - r_taper_in) / (rmax_atm_pole - r_taper_in);
+          Real frac_smth = r_frac * r_frac * (3.0 - 2.0 * r_frac);
+
+          // Independent log-blends for ρ and p
+          //   ρ:  rho_at_taper_in --> dfloor   (large jump, this is the smoothing)
+          //   p:  pgas_at_taper_in --> pfloor  (small jump by design — preserves continuity)
+          Real log_rho = (1.0 - frac_smth) * log(rho_at_taper_in)  + frac_smth * log(dfloor);
+          Real log_p   = (1.0 - frac_smth) * log(pgas_at_taper_in) + frac_smth * log(pfloor);
+          dens = exp(log_rho);
+          pgas = exp(log_p);
+        }
+      } // endif smooth atmosphere top
+
     } // end atmosphere
 
     // apply floors
@@ -1035,6 +1059,14 @@ void NeutronStarMask(Mesh* pm, const Real bdt) {
   int n2m1 = (indcs.nx2 > 1) ? (indcs.nx2 + 2*indcs.ng - 1) : 0;
   int n3m1 = (indcs.nx3 > 1) ? (indcs.nx3 + 2*indcs.ng - 1) : 0;
 
+  // printf("is=%d, ie=%d, js=%d, je=%d, ks=%d, ke=%d \n", is,ie,js,je,ks,ke);
+  // printf("n1=%d, n2=%d, n3=%d, ng=%d \n", indcs.nx1, indcs.nx2, indcs.nx3, indcs.ng);
+
+  bool &entropy_fix_ = pmbp->pmhd->entropy_fix;
+  int &nmhd  = pmbp->pmhd->nmhd;
+  int &nscal = pmbp->pmhd->nscalars;
+  int entropyIdx = (entropy_fix_) ? nmhd+nscal-1 : -1;
+
   // MHD variables
   DvceArray5D<Real> u0_, w0_, bcc0_;
   u0_   = pmbp->pmhd->u0;
@@ -1091,6 +1123,7 @@ void NeutronStarMask(Mesh* pm, const Real bdt) {
       w0_(m,IVX,k,j,i) = u1;
       w0_(m,IVY,k,j,i) = u2;
       w0_(m,IVZ,k,j,i) = u3;
+      if (entropy_fix_) w0_(m,entropyIdx,k,j,i) = pgas/pow(dens,gm1)/dens;
 
       // compute and assign conservatives
       Real b0 = u1*bx + u2*by + u3*bz;
@@ -1105,6 +1138,7 @@ void NeutronStarMask(Mesh* pm, const Real bdt) {
       u0_(m,IM1,k,j,i) = wtot*u0*u1 - b0*b1;
       u0_(m,IM2,k,j,i) = wtot*u0*u2 - b0*b2;
       u0_(m,IM3,k,j,i) = wtot*u0*u3 - b0*b3;
+      if (entropy_fix_) u0_(m,entropyIdx,k,j,i) = pgas/pow(dens,gm1)*u0;
     } // endif (rv < pp_dvce.r_surf)
 
   }); // end par_for
@@ -1123,6 +1157,11 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
   int n1m1 = indcs.nx1 + 2*indcs.ng - 1;
   int n2m1 = (indcs.nx2 > 1) ? (indcs.nx2 + 2*indcs.ng - 1) : 0;
   int n3m1 = (indcs.nx3 > 1) ? (indcs.nx3 + 2*indcs.ng - 1) : 0;
+
+  bool &entropy_fix_ = pmbp->pmhd->entropy_fix;
+  int &nmhd  = pmbp->pmhd->nmhd;
+  int &nscal = pmbp->pmhd->nscalars;
+  int entropyIdx = (entropy_fix_) ? nmhd+nscal-1 : -1;
 
   // MHD variables
   DvceArray5D<Real> u0_, w0_, bcc0_;
@@ -1334,6 +1373,13 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
     u0_(m,IM1,k,j,i) = wtot_u02 * u1 / u0 - b0 * b1;
     u0_(m,IM2,k,j,i) = wtot_u02 * u2 / u0 - b0 * b2;
     u0_(m,IM3,k,j,i) = wtot_u02 * u3 / u0 - b0 * b3;
+
+    // entropy
+    if (entropy_fix_) {
+      w0_(m,entropyIdx,k,j,i) = (gm1*eint)/pow(dens,gm1)/dens;
+      u0_(m,entropyIdx,k,j,i) = (gm1*eint)/pow(dens,gm1)*u0;
+    }
+
   });
 
 } // end SurfaceDamper
@@ -1351,6 +1397,11 @@ void FloorCooling(Mesh* pm, const Real bdt) {
   int n1m1 = indcs.nx1 + 2*indcs.ng - 1;
   int n2m1 = (indcs.nx2 > 1) ? (indcs.nx2 + 2*indcs.ng - 1) : 0;
   int n3m1 = (indcs.nx3 > 1) ? (indcs.nx3 + 2*indcs.ng - 1) : 0;
+
+  bool &entropy_fix_ = pmbp->pmhd->entropy_fix;
+  int &nmhd  = pmbp->pmhd->nmhd;
+  int &nscal = pmbp->pmhd->nscalars;
+  int entropyIdx = (entropy_fix_) ? nmhd+nscal-1 : -1;
 
   // MHD variables
   DvceArray5D<Real> u0_, w0_, bcc0_;
@@ -1435,6 +1486,12 @@ void FloorCooling(Mesh* pm, const Real bdt) {
     u0_(m,IM1,k,j,i) += dwtot * u0_lor * uu1;
     u0_(m,IM2,k,j,i) += dwtot * u0_lor * uu2;
     u0_(m,IM3,k,j,i) += dwtot * u0_lor * uu3;
+
+    if (entropy_fix_) {
+      w0_(m,entropyIdx,k,j,i) = p_new/pow(dens,gm1)/dens;
+      u0_(m,entropyIdx,k,j,i) = p_new/pow(dens,gm1)*u0_lor;
+    }
+
   });
 
   return;
