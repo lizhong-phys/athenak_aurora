@@ -236,7 +236,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   // fixes
   pp.apply_ns_mask       = pin->GetOrAddBoolean("problem", "apply_ns_mask", true);
   pp.apply_atm_damper    = pin->GetOrAddBoolean("problem", "apply_atm_damper", true);
-  pp.smooth_atm_top      = pin->GetOrAddBoolean("problem", "smooth_atm_top", true);
+  pp.smooth_atm_top      = pin->GetOrAddBoolean("problem", "smooth_atm_top", false);
   pp.apply_floor_cooling = pin->GetOrAddBoolean("problem", "apply_floor_cooling", true);
   pp.cool_floor_factor   = pin->GetOrAddReal(   "problem", "cool_floor_factor", 100.0);
 
