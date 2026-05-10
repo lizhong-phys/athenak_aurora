@@ -916,7 +916,7 @@ void MySourceTerms(Mesh* pm, const Real bdt) {
 
   GravSrcTerm(pm, bdt);
 
-  FloorCooling(pm, bdt);
+  // FloorCooling(pm, bdt);
 
   return;
 }
