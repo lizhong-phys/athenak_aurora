@@ -179,21 +179,21 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
 
     // apply entropy fix
     if (entropy_fix_ && (!only_testfloors)) {
-      // Real &x1min = size.d_view(m).x1min;
-      // Real &x1max = size.d_view(m).x1max;
-      // Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
-      //
-      // Real &x2min = size.d_view(m).x2min;
-      // Real &x2max = size.d_view(m).x2max;
-      // Real x2v = CellCenterX(j-js, indcs.nx2, x2min, x2max);
-      //
-      // Real &x3min = size.d_view(m).x3min;
-      // Real &x3max = size.d_view(m).x3max;
-      // Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
-      //
-      // Real rv = sqrt(SQR(x1v)+SQR(x2v)+SQR(x3v));
+      Real &x1min = size.d_view(m).x1min;
+      Real &x1max = size.d_view(m).x1max;
+      Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
 
-      if ((c2p_failure) || (sigma_cold > sigma_cut_) || (beta < beta_cut_)) {
+      Real &x2min = size.d_view(m).x2min;
+      Real &x2max = size.d_view(m).x2max;
+      Real x2v = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+
+      Real &x3min = size.d_view(m).x3min;
+      Real &x3max = size.d_view(m).x3max;
+      Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+
+      Real rv = sqrt(SQR(x1v)+SQR(x2v)+SQR(x3v));
+
+      if (((c2p_failure) || (sigma_cold > sigma_cut_) || (beta < beta_cut_)) && (rv >= r_surf_)) {
         // compute the entropy fix
         bool dfloor_used_in_fix=false, efloor_used_in_fix=false;
         bool c2p_failure_in_fix=c2p_failure;

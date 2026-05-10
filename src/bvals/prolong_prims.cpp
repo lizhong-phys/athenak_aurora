@@ -493,7 +493,7 @@ void MeshBoundaryValuesCC::ConsToPrimCoarseBndry(const DvceArray5D<Real> &cons,
             }
 
             // apply entropy fix
-            if ((c2p_failure) || (sigma_cold > sigma_cut_) || (beta < beta_cut_)) {
+            if (((c2p_failure) || (sigma_cold > sigma_cut_) || (beta < beta_cut_)) && (rv >= r_surf_)) {
               // compute the entropy fix
               bool dfloor_used_in_fix=false, efloor_used_in_fix=false;
               bool c2p_failure_in_fix=c2p_failure;
