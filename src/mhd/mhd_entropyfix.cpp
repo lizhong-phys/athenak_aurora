@@ -65,7 +65,7 @@ void MHD::EntropyReset() {
     Real &wvy = w0_(m,IVY,k,j,i);
     Real &wvz = w0_(m,IVZ,k,j,i);
     Real &wen = w0_(m,IEN,k,j,i);
-    
+
     Real u0 = sqrt(1.0+SQR(wvx)+SQR(wvy)+SQR(wvz));
 
     if (is_general_relativistic) {

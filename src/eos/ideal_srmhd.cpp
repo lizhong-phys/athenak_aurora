@@ -177,7 +177,7 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
 
 
     // apply entropy fix
-    if ((entropy_fix_) && (!only_testfloors)) {
+    if (entropy_fix_ && (!only_testfloors)) {
       Real &x1min = size.d_view(m).x1min;
       Real &x1max = size.d_view(m).x1max;
       Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);

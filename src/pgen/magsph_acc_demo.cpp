@@ -1259,7 +1259,42 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
   // --------------------------------------------------------------------------
   // Step 4: sync conservatives with the new w0 and bcc0.
   // --------------------------------------------------------------------------
-  pmbp->pmhd->peos->PrimToCons(w0_, bcc0_, u0_, is, ie, js, je, ks, ke);
+  par_for("sync_cons", DevExeSpace(), 0,nmb-1, ks,ke, js,je, is,ie,
+  KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    Real x1v = CellCenterX(i-is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
+    Real x2v = CellCenterX(j-js, indcs.nx2, size.d_view(m).x2min, size.d_view(m).x2max);
+    Real x3v = CellCenterX(k-ks, indcs.nx3, size.d_view(m).x3min, size.d_view(m).x3max);
+    Real rv  = sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
+
+    if (rv < r_buf_in || rv > r_top) return;
+
+    Real dens = w0_(m,IDN,k,j,i);
+    Real eint = w0_(m,IEN,k,j,i);
+    Real u1 = w0_(m,IVX,k,j,i);
+    Real u2 = w0_(m,IVY,k,j,i);
+    Real u3 = w0_(m,IVZ,k,j,i);
+    Real bcc1 = bcc0_(m,IBX,k,j,i);
+    Real bcc2 = bcc0_(m,IBY,k,j,i);
+    Real bcc3 = bcc0_(m,IBZ,k,j,i);
+
+    Real u0 = sqrt(1.0 + SQR(u1) + SQR(u2) + SQR(u3));
+
+    // Calculate 4-magnetic field
+    Real b0 = bcc1*u1 + bcc2*u2 + bcc3*u3;
+    Real b1 = (bcc1 + b0 * u1) / u0;
+    Real b2 = (bcc2 + b0 * u2) / u0;
+    Real b3 = (bcc3 + b0 * u3) / u0;
+    Real b_sq = -SQR(b0) + SQR(b1) + SQR(b2) + SQR(b3);
+
+    // Set conserved quantities
+    Real ud = dens * u0;
+    Real wtot_u02 = (dens + (gm1+1) * eint + b_sq) * u0 * u0;
+    u0_(m,IDN,k,j,i) = ud;
+    u0_(m,IEN,k,j,i) = wtot_u02 - b0 * b0 - (gm1*eint + 0.5*b_sq) - ud;  // In SR, evolve E - D
+    u0_(m,IM1,k,j,i) = wtot_u02 * u1 / u0 - b0 * b1;
+    u0_(m,IM2,k,j,i) = wtot_u02 * u2 / u0 - b0 * b2;
+    u0_(m,IM3,k,j,i) = wtot_u02 * u3 / u0 - b0 * b3;
+  });
 
 } // end SurfaceDamper
 
