@@ -1178,7 +1178,9 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
   // ramp = 0 at r_buf_in (no damping), ramp = 1 at r_top (full damp/reset).
   const Real r_top     = pp_dvce.rmax_atm_pole;
   const Real r_buf_in  = 0.9 * r_top;
-  const Real inv_buf_w = 1.0 / (r_top - r_buf_in);
+  const Real r_buf_out = 1.05 * r_top;
+  const Real inv_in_w   = 1.0 / (r_top - r_buf_in);
+  const Real inv_out_w  = 1.0 / (r_top - r_buf_out);
 
   // par_for("damp_v_perp", DevExeSpace(), 0,nmb-1,ks,ke,js,je,is,ie,
   par_for("damp_fluid", DevExeSpace(), 0,nmb-1, 0,n3m1, 0,n2m1, 0,n1m1,
@@ -1198,32 +1200,43 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
     Real rv, thv, phv;
     GetSchwarzschildCoordinates(x1v, x2v, x3v, &rv, &thv, &phv);
 
-    if (rv < r_buf_in || rv > r_top) return;
+    if (rv < r_buf_in || rv > r_buf_out) return;
 
-    // only adopted damping in (r_buf_in <= rv <= r_top)
-
-    // smoothstep ramp in [0,1]
-    Real t = (rv - r_buf_in) * inv_buf_w;
-    Real ramp = t*t*(3.0 - 2.0*t);
-
-    // target velocity (spatial 4-velocity components). Currently rest frame;
-    // promote to a function of position later for rotation / inflow.
-    Real dens = w0_(m,IDN,k,j,i);
     Real pgas = w0_(m,IEN,k,j,i) * gm1;
-    Real uu1 = w0_(m,IVX,k,j,i);
-    Real uu2 = w0_(m,IVY,k,j,i);
-    Real uu3 = w0_(m,IVZ,k,j,i);
+    if (rv > r_top) { // r_top < rv <= r_buf_out
+      Real t = (rv - r_buf_out) * inv_out_w;
+      Real ramp = t*t*(3.0 - 2.0*t);     // 1 at r_top, 0 at r_buf_out
 
-    Real ux_tar = 0.0;
-    Real uy_tar = 0.0;
-    Real uz_tar = 0.0;
-    Real p_tar  = dens * pp_dvce.tgas_surf;
+      Real emag_star = SQR(pp_dvce.B_star*pp_dvce.R_star*pp_dvce.R_star*pp_dvce.R_star);
+      Real p_tar = fmax(pp_dvce.pfloor, emag_star/SQR(rv*rv*rv)/2*pp_dvce.beta_min);
 
-    // ramp == 1 -> snap to target this step; ramp == 0 -> leave unchanged.
-    w0_(m,IVX,k,j,i) = ux_tar + (1.0 - ramp)*(uu1 - ux_tar);
-    w0_(m,IVY,k,j,i) = uy_tar + (1.0 - ramp)*(uu2 - uy_tar);
-    w0_(m,IVZ,k,j,i) = uz_tar + (1.0 - ramp)*(uu3 - uz_tar);
-    w0_(m,IEN,k,j,i) = (p_tar + (1.0 - ramp)*(pgas - p_tar))/gm1;
+      w0_(m,IEN,k,j,i) = (p_tar + (1.0 - ramp)*(pgas - p_tar))/gm1;
+    } // endif r_top < rv <= r_buf_out
+
+    if (rv <= r_top) { // r_buf_in <= rv <= r_top
+      // smoothstep ramp in [0,1]
+      Real t = (rv - r_buf_in) * inv_in_w;
+      Real ramp = t*t*(3.0 - 2.0*t);
+
+      // target velocity (spatial 4-velocity components). Currently rest frame;
+      // promote to a function of position later for rotation / inflow.
+      Real dens = w0_(m,IDN,k,j,i);
+      Real uu1 = w0_(m,IVX,k,j,i);
+      Real uu2 = w0_(m,IVY,k,j,i);
+      Real uu3 = w0_(m,IVZ,k,j,i);
+
+      Real ux_tar = 0.0;
+      Real uy_tar = 0.0;
+      Real uz_tar = 0.0;
+      Real p_tar  = dens * pp_dvce.tgas_surf;
+
+      // ramp == 1 -> snap to target this step; ramp == 0 -> leave unchanged.
+      w0_(m,IVX,k,j,i) = ux_tar + (1.0 - ramp)*(uu1 - ux_tar);
+      w0_(m,IVY,k,j,i) = uy_tar + (1.0 - ramp)*(uu2 - uy_tar);
+      w0_(m,IVZ,k,j,i) = uz_tar + (1.0 - ramp)*(uu3 - uz_tar);
+      w0_(m,IEN,k,j,i) = (p_tar + (1.0 - ramp)*(pgas - p_tar))/gm1;
+    } // endif r_buf_in <= rv <= r_top
+
   }); // end par_for
 
   // --------------------------------------------------------------------------
@@ -1245,7 +1258,7 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
 
     if (rf < r_buf_in || rf > r_top) return;
 
-    Real t = (rf - r_buf_in) * inv_buf_w;
+    Real t = (rf - r_buf_in) * inv_in_w;
     Real ramp = t*t*(3.0 - 2.0*t);
 
     Real dx2 = size.d_view(m).dx2;
@@ -1275,7 +1288,7 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
 
     if (rf < r_buf_in || rf > r_top) return;
 
-    Real t = (rf - r_buf_in) * inv_buf_w;
+    Real t = (rf - r_buf_in) * inv_in_w;
     Real ramp = t*t*(3.0 - 2.0*t);
 
     Real dx1 = size.d_view(m).dx1;
@@ -1305,7 +1318,7 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
 
     if (rf < r_buf_in || rf > r_top) return;
 
-    Real t = (rf - r_buf_in) * inv_buf_w;
+    Real t = (rf - r_buf_in) * inv_in_w;
     Real ramp = t*t*(3.0 - 2.0*t);
 
     Real dx1 = size.d_view(m).dx1;
@@ -1349,7 +1362,7 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
     Real x3v = CellCenterX(k-ks, indcs.nx3, size.d_view(m).x3min, size.d_view(m).x3max);
     Real rv  = sqrt(SQR(x1v) + SQR(x2v) + SQR(x3v));
 
-    if (rv < r_buf_in || rv > r_top) return;
+    if (rv < r_buf_in || rv > r_buf_out) return;
 
     Real dens = w0_(m,IDN,k,j,i);
     Real eint = w0_(m,IEN,k,j,i);
@@ -1418,7 +1431,6 @@ void FloorCooling(Mesh* pm, const Real bdt) {
 
   // Cooling parameters
   const Real r_top      = pp_dvce.rmax_atm_pole;
-  const Real T_iso      = 0.5 * pp_dvce.beta_min * pp_dvce.sigma_max;  // isothermal target
   const Real ratio_hi   = pp_dvce.cool_floor_factor;     // no cooling above this ρ/ρ_floor
   const Real ratio_lo   = 0.5 * ratio_hi;                // full cooling below this
   const Real inv_ratio_w = 1.0 / (ratio_hi - ratio_lo);
@@ -1463,7 +1475,7 @@ void FloorCooling(Mesh* pm, const Real bdt) {
     Real t_smooth = fmin(1.0, fmax(0.0, (ratio_hi - rho_ratio) * inv_ratio_w));
     Real cool_factor = t_smooth*t_smooth*(3.0 - 2.0*t_smooth);
 
-    // Isothermal target: p = ρ × T_iso (Option A)
+    // Pressire target
     Real p_target = pfloor;
     if (pgas <= p_target) return;
 
