@@ -530,9 +530,11 @@ void MeshBoundaryValuesCC::ConsToPrimCoarseBndry(const DvceArray5D<Real> &cons,
                 // successful entropy-fixed c2p
                 w.d  = w_fix.d;
                 w.e  = w_fix.e;
-                w.vx = w_fix.vx;
-                w.vy = w_fix.vy;
-                w.vz = w_fix.vz;
+                if (c2p_failure) {
+                  w.vx = w_fix.vx;
+                  w.vy = w_fix.vy;
+                  w.vz = w_fix.vz;
+                }
                 dfloor_used = dfloor_used_in_fix;
                 efloor_used = efloor_used_in_fix;
                 c2p_failure = c2p_failure_in_fix;
