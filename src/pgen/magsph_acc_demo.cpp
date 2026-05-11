@@ -1181,7 +1181,7 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
   const Real inv_buf_w = 1.0 / (r_top - r_buf_in);
 
   // par_for("damp_v_perp", DevExeSpace(), 0,nmb-1,ks,ke,js,je,is,ie,
-  par_for("damp_v_perp", DevExeSpace(), 0,nmb-1, 0,n3m1, 0,n2m1, 0,n1m1,
+  par_for("damp_fluid", DevExeSpace(), 0,nmb-1, 0,n3m1, 0,n2m1, 0,n1m1,
   KOKKOS_LAMBDA(int m,int k,int j,int i) {
     Real &x1min = size.d_view(m).x1min;
     Real &x1max = size.d_view(m).x1max;
@@ -1208,18 +1208,22 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
 
     // target velocity (spatial 4-velocity components). Currently rest frame;
     // promote to a function of position later for rotation / inflow.
-    Real ux_tar = 0.0;
-    Real uy_tar = 0.0;
-    Real uz_tar = 0.0;
-
+    Real dens = w0_(m,IDN,k,j,i);
+    Real pgas = w0_(m,IEN,k,j,i) * gm1;
     Real uu1 = w0_(m,IVX,k,j,i);
     Real uu2 = w0_(m,IVY,k,j,i);
     Real uu3 = w0_(m,IVZ,k,j,i);
+
+    Real ux_tar = 0.0;
+    Real uy_tar = 0.0;
+    Real uz_tar = 0.0;
+    Real p_tar  = dens * pp_dvce.tgas_surf;
 
     // ramp == 1 -> snap to target this step; ramp == 0 -> leave unchanged.
     w0_(m,IVX,k,j,i) = ux_tar + (1.0 - ramp)*(uu1 - ux_tar);
     w0_(m,IVY,k,j,i) = uy_tar + (1.0 - ramp)*(uu2 - uy_tar);
     w0_(m,IVZ,k,j,i) = uz_tar + (1.0 - ramp)*(uu3 - uz_tar);
+    w0_(m,IEN,k,j,i) = (p_tar + (1.0 - ramp)*(pgas - p_tar))/gm1;
   }); // end par_for
 
   // --------------------------------------------------------------------------
