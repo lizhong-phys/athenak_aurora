@@ -385,10 +385,6 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       Real perturbation = 0.0;
       // Overwrite primitives inside torus
       if (in_torus) {
-        // compute Schwarzschild metric
-        Real glower[4][4], gupper[4][4];
-        ComputeMetricAndInverse(x1v, x2v, x3v, false, 0.0, glower, gupper);
-
         // Calculate perturbation
         auto rand_gen = rand_pool64.get_state(); // get random number state this thread
         perturbation = 2.0*pp_dvce.pert_amp*(rand_gen.frand() - 0.5);
@@ -407,12 +403,13 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
         Real u0, u1, u2, u3;
         TransformVector(u0_sks, u1_sks, u2_sks, u3_sks, x1v, x2v, x3v, &u0, &u1, &u2, &u3);
 
-        uu1 = u1 - gupper[0][1]/gupper[0][0] * u0;
-        uu2 = u2 - gupper[0][2]/gupper[0][0] * u0;
-        uu3 = u3 - gupper[0][3]/gupper[0][0] * u0;
-
         // record maximum pressure
         max_ptot = fmax(pgas, max_ptot);
+
+        // convert torus solution from GR to SR
+        uu1 = u1;
+        uu2 = u2;
+        uu3 = u3;
       } // endif (in_torus)
     } // endif torus
 
