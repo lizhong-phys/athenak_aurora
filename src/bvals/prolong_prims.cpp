@@ -476,6 +476,7 @@ void MeshBoundaryValuesCC::ConsToPrimCoarseBndry(const DvceArray5D<Real> &cons,
                                dfloor_used, efloor_used, c2p_failure, iter_used, apply_sigma_max, b2_fake);
 
           // Entropy Fix
+          entropy_fix_ = false; 
           if (entropy_fix_) {
             Real &x1min = size.d_view(m).x1min;
             Real &x1max = size.d_view(m).x1max;
