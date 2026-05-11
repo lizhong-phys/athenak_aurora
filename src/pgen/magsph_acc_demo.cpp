@@ -1385,7 +1385,6 @@ void SurfaceDamper(Mesh* pm, const Real bdt) {
 } // end SurfaceDamper
 
 
-
 void FloorCooling(Mesh* pm, const Real bdt) {
   MeshBlockPack *pmbp = pm->pmb_pack;
   auto &indcs = pm->mb_indcs;
@@ -1449,19 +1448,19 @@ void FloorCooling(Mesh* pm, const Real bdt) {
     Real uu3  = w0_(m,IVZ,k,j,i);
 
     // Analytical dipole b² (matches what the runtime σ_max ceiling sees in ns_mask)
-    Real cos2_theta = SQR(x3v) / (rv*rv);
-    Real bsq_fake   = SQR(pp_dvce.mu_dipole) * (3.0*cos2_theta + 1.0) / (rv*rv*rv*rv*rv*rv);
-    Real rho_floor  = bsq_fake / pp_dvce.sigma_max;
+    Real emag_star = SQR(pp_dvce.B_star*pp_dvce.R_star*pp_dvce.R_star*pp_dvce.R_star);
+    Real dfloor = fmax(pp_dvce.dfloor, emag_star/SQR(rv*rv*rv)/pp_dvce.sigma_max);
+    Real pfloor = fmax(pp_dvce.pfloor, emag_star/SQR(rv*rv*rv)/2*pp_dvce.beta_min);
 
     // ρ-based discriminator: floor-like cells only
-    Real rho_ratio = dens / fmax(rho_floor, pp_dvce.dfloor);
+    Real rho_ratio = dens / dfloor;
     if (rho_ratio >= ratio_hi) return;   // real gas, leave alone
 
-    Real t_smooth    = fmin(1.0, fmax(0.0, (ratio_hi - rho_ratio) * inv_ratio_w));
+    Real t_smooth = fmin(1.0, fmax(0.0, (ratio_hi - rho_ratio) * inv_ratio_w));
     Real cool_factor = t_smooth*t_smooth*(3.0 - 2.0*t_smooth);
 
     // Isothermal target: p = ρ × T_iso (Option A)
-    Real p_target = dens * T_iso;
+    Real p_target = pfloor;
     if (pgas <= p_target) return;
 
     // Hard reset toward p_target, scaled by smoothstep
@@ -1496,6 +1495,118 @@ void FloorCooling(Mesh* pm, const Real bdt) {
 
   return;
 } // end FloorCooling
+
+
+// void FloorCooling(Mesh* pm, const Real bdt) {
+//   MeshBlockPack *pmbp = pm->pmb_pack;
+//   auto &indcs = pm->mb_indcs;
+//   int is = indcs.is, js = indcs.js, ks = indcs.ks;
+//   int ie = indcs.ie, je = indcs.je, ke = indcs.ke;
+//   int nmb = pmbp->nmb_thispack;
+//   auto &size = pmbp->pmb->mb_size;
+//
+//   int n1m1 = indcs.nx1 + 2*indcs.ng - 1;
+//   int n2m1 = (indcs.nx2 > 1) ? (indcs.nx2 + 2*indcs.ng - 1) : 0;
+//   int n3m1 = (indcs.nx3 > 1) ? (indcs.nx3 + 2*indcs.ng - 1) : 0;
+//
+//   bool &entropy_fix_ = pmbp->pmhd->entropy_fix;
+//   int &nmhd  = pmbp->pmhd->nmhd;
+//   int &nscal = pmbp->pmhd->nscalars;
+//   int entropyIdx = (entropy_fix_) ? nmhd+nscal-1 : -1;
+//
+//   // MHD variables
+//   DvceArray5D<Real> u0_, w0_, bcc0_;
+//   u0_   = pmbp->pmhd->u0;
+//   w0_   = pmbp->pmhd->w0;
+//   bcc0_ = pmbp->pmhd->bcc0;
+//
+//   // capture problem parameters
+//   Real gm1 = pp.gamma_adi - 1.0;
+//   auto pp_dvce = pp;
+//
+//   // Cooling parameters
+//   const Real r_top      = pp_dvce.rmax_atm_pole;
+//   const Real T_iso      = 0.5 * pp_dvce.beta_min * pp_dvce.sigma_max;  // isothermal target
+//   const Real ratio_hi   = pp_dvce.cool_floor_factor;     // no cooling above this ρ/ρ_floor
+//   const Real ratio_lo   = 0.5 * ratio_hi;                // full cooling below this
+//   const Real inv_ratio_w = 1.0 / (ratio_hi - ratio_lo);
+//
+//   // par_for("floor_cool", DevExeSpace(), 0,nmb-1, ks,ke, js,je, is,ie,
+//   par_for("floor_cool", DevExeSpace(), 0,nmb-1, 0,n3m1, 0,n2m1, 0,n1m1,
+//   KOKKOS_LAMBDA(int m, int k, int j, int i) {
+//     Real &x1min = size.d_view(m).x1min;
+//     Real &x1max = size.d_view(m).x1max;
+//     Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+//
+//     Real &x2min = size.d_view(m).x2min;
+//     Real &x2max = size.d_view(m).x2max;
+//     Real x2v = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+//
+//     Real &x3min = size.d_view(m).x3min;
+//     Real &x3max = size.d_view(m).x3max;
+//     Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+//
+//     Real rv, thv, phv;
+//     GetSchwarzschildCoordinates(x1v, x2v, x3v, &rv, &thv, &phv);
+//
+//     if (rv <= r_top) return;
+//
+//     // -- read current primitive state --
+//     // w0_(IVX..IVZ) are spatial 4-velocity components u^i (Athena convention)
+//     Real dens = w0_(m,IDN,k,j,i);
+//     Real pgas = w0_(m,IEN,k,j,i) * gm1;
+//     Real uu1  = w0_(m,IVX,k,j,i);
+//     Real uu2  = w0_(m,IVY,k,j,i);
+//     Real uu3  = w0_(m,IVZ,k,j,i);
+//
+//     // Analytical dipole b² (matches what the runtime σ_max ceiling sees in ns_mask)
+//     Real cos2_theta = SQR(x3v) / (rv*rv);
+//     Real bsq_fake   = SQR(pp_dvce.mu_dipole) * (3.0*cos2_theta + 1.0) / (rv*rv*rv*rv*rv*rv);
+//     Real rho_floor  = bsq_fake / pp_dvce.sigma_max;
+//
+//     // ρ-based discriminator: floor-like cells only
+//     Real rho_ratio = dens / fmax(rho_floor, pp_dvce.dfloor);
+//     if (rho_ratio >= ratio_hi) return;   // real gas, leave alone
+//
+//     Real t_smooth    = fmin(1.0, fmax(0.0, (ratio_hi - rho_ratio) * inv_ratio_w));
+//     Real cool_factor = t_smooth*t_smooth*(3.0 - 2.0*t_smooth);
+//
+//     // Isothermal target: p = ρ × T_iso (Option A)
+//     Real p_target = dens * T_iso;
+//     if (pgas <= p_target) return;
+//
+//     // Hard reset toward p_target, scaled by smoothstep
+//     Real p_new = pgas + cool_factor * (p_target - pgas);
+//     Real dp    = p_new - pgas;
+//
+//     // -- update primitive --
+//     w0_(m,IEN,k,j,i) = p_new / gm1;
+//
+//     // -- increment conserved variables by the cooling delta --
+//     Real bx = bcc0_(m,IBX,k,j,i);
+//     Real by = bcc0_(m,IBY,k,j,i);
+//     Real bz = bcc0_(m,IBZ,k,j,i);
+//     Real u0_lor = sqrt(1.0 + uu1*uu1 + uu2*uu2 + uu3*uu3);
+//     Real b0_4   = uu1*bx + uu2*by + uu3*bz;
+//     Real b1_4   = (bx + b0_4*uu1) / u0_lor;
+//     Real b2_4   = (by + b0_4*uu2) / u0_lor;
+//     Real b3_4   = (bz + b0_4*uu3) / u0_lor;
+//
+//     Real dwtot = (gm1+1.0)/gm1 * dp;
+//     u0_(m,IEN,k,j,i) += dwtot * u0_lor*u0_lor - dp;
+//     u0_(m,IM1,k,j,i) += dwtot * u0_lor * uu1;
+//     u0_(m,IM2,k,j,i) += dwtot * u0_lor * uu2;
+//     u0_(m,IM3,k,j,i) += dwtot * u0_lor * uu3;
+//
+//     if (entropy_fix_) {
+//       w0_(m,entropyIdx,k,j,i) = p_new/pow(dens,gm1)/dens;
+//       u0_(m,entropyIdx,k,j,i) = p_new/pow(dens,gm1)*u0_lor;
+//     }
+//
+//   });
+//
+//   return;
+// } // end FloorCooling
 
 
 
