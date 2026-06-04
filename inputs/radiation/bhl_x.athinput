@@ -1,0 +1,157 @@
+<comment>
+problem   = xin_bhl_x (BHL wind onto Kerr BH; +x injection on inner_x1)
+reference = xin_bhl_x.cpp
+
+<job>
+basename  = xin_bhl_x
+
+<mesh>
+nghost = 4        # Number of ghost cells
+
+nx1    = 128       # number of cells in x1-direction
+x1min  = -128.0    # 256 r_g box
+x1max  =  128.0
+ix1_bc = user      # INJECTION: -x face is the upstream wind boundary
+ox1_bc = user      # outflow (downstream wake exit)
+
+nx2    = 128
+x2min  = -128.0
+x2max  =  128.0
+ix2_bc = user      # outflow
+ox2_bc = user      # outflow
+
+nx3    = 128
+x3min  = -128.0
+x3max  =  128.0
+ix3_bc = user      # outflow
+ox3_bc = user      # outflow
+
+<meshblock>
+nx1  = 64
+nx2  = 64
+nx3  = 64
+
+<mesh_refinement>
+refinement = static
+prolong_primitives = true
+
+<refined_region1>
+level = 1
+x1min = -64.0
+x1max =  64.0
+x2min = -64.0
+x2max =  64.0
+x3min = -64.0
+x3max =  64.0
+
+<refined_region2>
+level = 2
+x1min = -32.0
+x1max =  32.0
+x2min = -32.0
+x2max =  32.0
+x3min = -32.0
+x3max =  32.0
+
+<refined_region3>
+level = 3
+x1min = -16.0
+x1max =  16.0
+x2min = -16.0
+x2max =  16.0
+x3min = -16.0
+x3max =  16.0
+
+<refined_region4>
+level = 4
+x1min = -8.0
+x1max =  8.0
+x2min = -8.0
+x2max =  8.0
+x3min = -8.0
+x3max =  8.0
+
+<time>
+evolution  = dynamic
+integrator = rk2
+cfl_number = 0.3
+nlim       = -1
+tlim       = 5000.0
+ndiag      = 100
+
+<coord>
+general_rel = true
+a           = 0.9375
+excise      = true
+dexcise     = 1.0e-7
+pexcise     = 3.3333333333333335e-13
+
+<mhd>
+eos         = ideal
+reconstruct = ppm4
+rsolver     = hlle
+dfloor      = 1.0e-7
+pfloor      = 3.3333333333333335e-13
+sfloor      = 1.0e-12
+sfloor1     = 3.0e-10
+sfloor2     = 1.0e-9
+rho1        = 1.0e0
+rho2        = 1.0e2
+gamma       = 1.6666666666666667
+fofc        = true
+gamma_max   = 20.0
+
+<radiation>
+reconstruct   = plm
+rotate_geo    = false
+nlevel        = 2
+power_opacity = true
+compton       = true
+kappa_s       = 0.34
+n_0_floor     = 0.1
+correct_radsrc_opacity = false
+dfloor_opacity         = 1.e-14
+dens_trunc_max         = 1.e-5
+tau_truncation         = 1.5e-4
+sigmoid_residual       = 1.e-2
+
+<units>
+bhmass_msun = 100.0
+density_cgs = 1.0e-7
+mu          = 0.6
+
+<problem>
+rho0        = 1.0
+t0          = 1.52e-9
+v_wind      = 0.1      # wind speed along +x (units of c)
+beta_target = 100.0
+user_hist   = true
+
+<output1>
+file_type      = hst
+dt             = 10.0
+user_hist_only = true
+
+<output2>
+file_type = bin
+id        = full
+variable  = rad_mhd_w_bcc
+dt        = 100.0
+
+<output3>
+file_type = bin              # x2=0 slice (x-z plane: shows wind impacting BH)
+slice_x2  = 0.0
+id        = slice_y
+variable  = rad_mhd_w_bcc
+dt        = 10.0
+
+<output4>
+file_type = bin              # x3=0 slice (x-y plane, equatorial)
+slice_x3  = 0.0
+id        = slice_z
+variable  = rad_mhd_w_bcc
+dt        = 10.0
+
+<output5>
+file_type = rst
+dt        = 200.0

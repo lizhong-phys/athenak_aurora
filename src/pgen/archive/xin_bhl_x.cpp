@@ -3,25 +3,35 @@
 // Copyright(C) 2020 James M. Stone <jmstone@ias.edu> and the Athena code team
 // Licensed under the 3-clause BSD License (the "LICENSE")
 //========================================================================================
-//! \file gr_bondi.cpp
-//! \brief Problem generator: uniform gas around a Kerr black hole with a Gaussian
-//!        density dip and (optionally) a uniform vertical B-field, used to test
-//!        relaxation toward Bondi-like accretion equilibrium.
+//! \file xin_bhl_x.cpp
+//! \brief Problem generator: Bondi-Hoyle-Lyttleton wind onto a Kerr BH.
+//!        Uniform medium streams past the BH at v_wind ~ 0.1 c along +x.
+//!        Injection on the -x face (inner_x1); other 5 faces outflow.
+//!        Wind is perpendicular to the BH spin axis (taken as +z), so this
+//!        setup probes spin/frame-dragging asymmetry of the wake.
 //!
 //! Initial state (Cartesian Kerr-Schild):
-//!    rho(r, t=0) = rho0 * (1 - delta * exp(-r^2 / rc^2))   (r is BL radius)
-//!    p           = rho * t0                                (isothermal)
-//!    uu^i        = 0
-//!    A_phi       = 0.5 * b0 * (r sin theta)^2              (-> uniform B_z)
+//!    rho      = rho0                                       outside excision
+//!    p        = rho0 * t0                                  (isothermal)
+//!    uu^i     = (v_wind, 0, 0)                             outside excision
+//!    uu^i     = (0, 0, 0)                                  inside excision
+//!    A_phi    = 0.5 * b0 * (r sin theta)^2                 (-> uniform B_z)
 //!
 //! B-field amplitude b0 is set from a target plasma-beta:
-//!    b0 = sqrt(2 * rho0 * t0 / beta_target)
+//!    b0 = sqrt(2 * p_tot / beta_target),
+//!    p_tot = rho0*t0 + arad*t0^4   (gas + radiation pressure)
 //!
-//! Outer boundary: Dirichlet-to-uniform-reservoir (ReservoirBondi).
+//! Boundaries:
+//!    inner_x1 (-x face): INJECTION.  Dirichlet on hydro (rho0, p0, uu^x=v_wind),
+//!                       face-centered B pinned to (0, 0, b0), thermal radiation
+//!                       at t0 boosted with the wind (formula identical to IC).
+//!    other 5 faces:     pure zero-gradient outflow.  Primitives copied from
+//!                       innermost active cell; face B copied; radiation uses
+//!                       "no inflow" filter.
+//!
 //! Inside the horizon: primitives replaced by excision floors (dexcise, pexcise).
 //!
-//! Adapted from gr_torus.cpp by stripping the FM/Chakrabarti torus equilibrium
-//! and replacing the density-weighted poloidal field with a uniform B_z.
+//! Adapted from xin_bhl.cpp (wind along +z, injected on inner_x3).
 
 #include <stdio.h>
 #include <math.h>
@@ -57,24 +67,24 @@
 // prototypes for functions used internally to this pgen
 namespace {
 KOKKOS_INLINE_FUNCTION
-static void GetBoyerLindquistCoordinates(struct bondi_pgen pgen,
+static void GetBoyerLindquistCoordinates(struct bhl_pgen pgen,
                                          Real x1, Real x2, Real x3,
                                          Real *pr, Real *ptheta, Real *pphi);
 
 KOKKOS_INLINE_FUNCTION
-static void CalculateVectorPotential(struct bondi_pgen pgen,
+static void CalculateVectorPotential(struct bhl_pgen pgen,
                                      Real r, Real theta, Real phi,
                                      Real *patheta, Real *paphi);
 
 KOKKOS_INLINE_FUNCTION
-Real A1(struct bondi_pgen pgen, Real x1, Real x2, Real x3);
+Real A1(struct bhl_pgen pgen, Real x1, Real x2, Real x3);
 KOKKOS_INLINE_FUNCTION
-Real A2(struct bondi_pgen pgen, Real x1, Real x2, Real x3);
+Real A2(struct bhl_pgen pgen, Real x1, Real x2, Real x3);
 KOKKOS_INLINE_FUNCTION
-Real A3(struct bondi_pgen pgen, Real x1, Real x2, Real x3);
+Real A3(struct bhl_pgen pgen, Real x1, Real x2, Real x3);
 
-// Parameters for Gaussian-dip IC with uniform vertical B-field
-struct bondi_pgen {
+// Parameters for the BHL-wind setup (wind along +x)
+struct bhl_pgen {
   // Spacetime / excision / EOS
   Real spin;            // black hole spin a/M
   Real dexcise;         // density floor inside excision radius
@@ -82,16 +92,11 @@ struct bondi_pgen {
   Real gamma_adi;       // ideal-gas adiabatic index
   Real arad;            // radiation constant (only if radiation enabled)
 
-  // Initial density profile:  rho(r) = rho0 * (1 - delta * exp(-r^2 / rc^2))
-  // Requires 0 <= delta < 1 so that rho stays positive at the origin.
-  Real rho0;            // asymptotic / background rest-mass density
-  Real delta;           // Gaussian-dip depth at r = 0
-  Real rc;              // Gaussian-dip width
-
-  // Pressure law for the initial state.  Current convention: isothermal,
-  // p = rho * t0.  Switch to an isentropic law (p = k_adi rho^gamma) by
-  // replacing t0 with k_adi in the init kernel.
-  Real t0;              // uniform initial temperature
+  // Upstream-wind state (uniform far from BH):
+  //   rho = rho0,  p = rho0*t0,  uu^i = (v_wind, 0, 0)
+  Real rho0;            // uniform background rest-mass density
+  Real t0;              // isothermal temperature
+  Real v_wind;          // wind speed along +x (units of c; valid for v_wind << 1)
 
   // Uniform vertical magnetic field in the Wald/asymptotic sense:
   // A_phi = 0.5 * b0 * (r sin theta)^2, giving B -> B0 z-hat at large r,
@@ -100,32 +105,31 @@ struct bondi_pgen {
   Real b0;              // vertical field amplitude
 };
 
-  bondi_pgen bondi;
+  bhl_pgen bhl;
 
 } // namespace
 
 // Prototypes for user-defined BCs and history functions
-void ReservoirBondi(Mesh *pm);
-void BondiFluxes(HistoryData *pdata, Mesh *pm);
+void WindBCs(Mesh *pm);
+void WindFluxes(HistoryData *pdata, Mesh *pm);
 
 //----------------------------------------------------------------------------------------
 //! \fn void ProblemGenerator::UserProblem()
-//! \brief Uniform gas + Gaussian central dip around a Kerr BH, optionally threaded
-//!        by a uniform vertical B-field. See file header for full description.
-//! Compile with '-D PROBLEM=gr_bondi' to enroll as user-specific problem generator.
+//! \brief BHL wind onto a Kerr BH along +x.  Optional uniform vertical B-field.
+//! Compile with '-D PROBLEM=xin_bhl_x' to enroll as user-specific problem generator.
 
 void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   MeshBlockPack *pmbp = pmy_mesh_->pmb_pack;
   if (!pmbp->pcoord->is_general_relativistic &&
       !pmbp->pcoord->is_dynamical_relativistic) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
-              << "GR bondi problem can only be run when GR defined in <coord> block"
+              << "xin_bhl_x problem can only be run when GR defined in <coord> block"
               << std::endl;
     exit(EXIT_FAILURE);
   }
 
   // User boundary function
-  user_bcs_func = ReservoirBondi;
+  user_bcs_func = WindBCs;
 
   // capture variables for kernel
   auto &indcs = pmy_mesh_->mb_indcs;
@@ -135,22 +139,17 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   auto &coord = pmbp->pcoord->coord_data;
 
   // Extract BH parameters
-  bondi.spin = coord.bh_spin;
+  bhl.spin = coord.bh_spin;
   const Real r_excise = coord.rexcise;
   const bool is_radiation_enabled = (pmbp->prad != nullptr);
 
   // Spherical Grid for user-defined history
   auto &grids = spherical_grids;
-  const Real rflux = (is_radiation_enabled) ? ceil(r_excise + 1.0) : 1.0 + sqrt(1.0 - SQR(bondi.spin));
+  const Real rflux = (is_radiation_enabled) ? ceil(r_excise + 1.0) : 1.0 + sqrt(1.0 - SQR(bhl.spin));
   grids.push_back(std::make_unique<SphericalGrid>(pmbp, 5, rflux));
-  // NOTE(@pdmullen): Enroll additional radii for flux analysis by
-  // pushing back the grids vector with additional SphericalGrid instances
   grids.push_back(std::make_unique<SphericalGrid>(pmbp, 5, 12.0));
   grids.push_back(std::make_unique<SphericalGrid>(pmbp, 5, 24.0));
-  user_hist_func = BondiFluxes;
-
-  // return if restart
-  if (restart) return;
+  user_hist_func = WindFluxes;
 
   // Select either Hydro or MHD
   DvceArray5D<Real> u0_, w0_;
@@ -178,37 +177,41 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
   // Get ideal gas EOS data
   if (pmbp->phydro != nullptr) {
-    bondi.gamma_adi = pmbp->phydro->peos->eos_data.gamma;
+    bhl.gamma_adi = pmbp->phydro->peos->eos_data.gamma;
   } else if (pmbp->pmhd != nullptr) {
-    bondi.gamma_adi = pmbp->pmhd->peos->eos_data.gamma;
+    bhl.gamma_adi = pmbp->pmhd->peos->eos_data.gamma;
   }
-  Real gm1 = bondi.gamma_adi - 1.0;
+  Real gm1 = bhl.gamma_adi - 1.0;
 
   // Get Radiation constant (if radiation enabled)
   if (pmbp->prad != nullptr) {
-    bondi.arad = pmbp->prad->arad;
+    bhl.arad = pmbp->prad->arad;
   }
 
-  // Read Bondi IC parameters from input file
-  //   rho(r, t=0) = rho0 * (1 - delta * exp(-r^2 / rc^2))
-  //   p = rho * t0   (isothermal background)
-  bondi.rho0  = pin->GetReal("problem", "rho0");
-  bondi.delta = pin->GetOrAddReal("problem", "delta", 0.0);
-  bondi.rc    = pin->GetReal("problem", "rc");
-  bondi.t0    = pin->GetReal("problem", "t0");
+  // Read BHL IC parameters from input file
+  //   uniform IC: rho = rho0, p = rho0*t0, uu^x = v_wind
+  bhl.rho0   = pin->GetReal("problem", "rho0");
+  bhl.t0     = pin->GetReal("problem", "t0");
+  bhl.v_wind = pin->GetReal("problem", "v_wind");
 
   // excision parameters
-  bondi.dexcise = coord.dexcise;
-  bondi.pexcise = coord.pexcise;
+  bhl.dexcise = coord.dexcise;
+  bhl.pexcise = coord.pexcise;
+
+  // Return on restart AFTER the params above: the reservoir BC and history
+  // function run on restart too and read this struct, so it must be populated
+  // (else the BC pins all boundary ghosts to vacuum -> global NaN).
+  if (restart) return;
 
   // initialize primitive variables for new run ---------------------------------------
-  //   rho(r, t=0) = rho0 * (1 - delta * exp(-r^2 / rc^2))
-  //   p = rho * t0,  uu^i = 0,  uniform B_z via vector potential (below)
+  //   uniform: rho = rho0, p = rho0*t0, uu^i = (v_wind, 0, 0) outside excision
+  //   excision: rho = dexcise, p = pexcise, uu^i = 0
+  //   uniform B_z via vector potential (below)
 
-  auto trs = bondi;
+  auto trs = bhl;
   auto &size = pmbp->pmb->mb_size;
 
-  par_for("pgen_bondi_ic", DevExeSpace(), 0,nmb-1, ks,ke, js,je, is,ie,
+  par_for("pgen_bhl_ic", DevExeSpace(), 0,nmb-1, ks,ke, js,je, is,ie,
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
     Real &x1min = size.d_view(m).x1min;
     Real &x1max = size.d_view(m).x1max;
@@ -231,10 +234,6 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     ComputeMetricAndInverse(x1v, x2v, x3v, coord.is_minkowski, coord.bh_spin,
                             glower, gupper);
 
-    // BL radius for the density profile
-    Real r, theta, phi;
-    GetBoyerLindquistCoordinates(trs, x1v, x2v, x3v, &r, &theta, &phi);
-
     // Excision check: use the cell corner farthest from origin so that cells
     // with only a tiny tip inside the horizon are NOT excised.
     Real r_excise, theta_excise, phi_excise;
@@ -244,17 +243,19 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
                                       &r_excise, &theta_excise, &phi_excise);
 
     Real rho, pgas, urad = 0.0;
+    Real uu1, uu2, uu3;
     if (r_excise > 1.0) {
-      // Uniform background with Gaussian central dip
-      rho  = trs.rho0 * (1.0 - trs.delta * exp(-SQR(r / trs.rc)));
+      // Asymptotic-wind state (along +x)
+      rho  = trs.rho0;
       pgas = rho * trs.t0;
       if (is_radiation_enabled) urad = trs.arad * SQR(SQR(trs.t0));
+      uu1 = trs.v_wind;  uu2 = 0.0;  uu3 = 0.0;
     } else {
-      // Inside horizon: apply excision floors
+      // Inside horizon: apply excision floors, zero velocity
       rho  = trs.dexcise;
       pgas = trs.pexcise;
+      uu1 = 0.0;  uu2 = 0.0;  uu3 = 0.0;
     }
-    Real uu1 = 0.0, uu2 = 0.0, uu3 = 0.0;
 
     // Write primitives
     w0_(m,IDN,k,j,i) = rho;
@@ -300,8 +301,8 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     // Control uniform vertical B_z via target plasma beta:
     //   beta = p_gas / (b^2 / 2)  ->  b0 = sqrt(2 * rho0 * t0 / beta_target)
     Real beta_target = pin->GetOrAddReal("problem", "beta_target", 100.0);
-    Real ptot = bondi.rho0*bondi.t0 + bondi.arad*SQR(SQR(bondi.t0));
-    bondi.b0 = sqrt(2.0*ptot / beta_target);
+    Real ptot = bhl.rho0*bhl.t0 + bhl.arad*SQR(SQR(bhl.t0));
+    bhl.b0 = sqrt(2.0*ptot / beta_target);
 
     // compute vector potential over all faces
     int ncells1 = indcs.nx1 + 2*(indcs.ng);
@@ -314,7 +315,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
     auto &nghbr = pmbp->pmb->nghbr;
     auto &mblev = pmbp->pmb->mb_lev;
-    auto trs = bondi;
+    auto trs = bhl;
 
     par_for("pgen_vector_potential", DevExeSpace(), 0,nmb-1,ks,ke+1,js,je+1,is,ie+1,
     KOKKOS_LAMBDA(int m, int k, int j, int i) {
@@ -473,7 +474,6 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     auto &bcc_ = pmbp->pmhd->bcc0;
     par_for("pgen_bcc", DevExeSpace(), 0,nmb-1,ks,ke,js,je,is,ie,
     KOKKOS_LAMBDA(int m, int k, int j, int i) {
-      // cell-centered fields are simple linear average of face-centered fields
       Real& w_bx = bcc_(m,IBX,k,j,i);
       Real& w_by = bcc_(m,IBY,k,j,i);
       Real& w_bz = bcc_(m,IBZ,k,j,i);
@@ -481,10 +481,6 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       w_by = 0.5*(b0.x2f(m,k,j,i) + b0.x2f(m,k,j+1,i));
       w_bz = 0.5*(b0.x3f(m,k,j,i) + b0.x3f(m,k+1,j,i));
     });
-
-    // No global beta-renormalization needed: bondi.b0 was set analytically from
-    // beta_target above, so the vector-potential kernel already produced B at the
-    // correct amplitude. Cell-centered B (bcc_) was filled by pgen_bcc.
   }
 
   // Convert primitives to conserved
@@ -496,7 +492,6 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       pmbp->pmhd->peos->PrimToCons(w0_, bcc0_, u0_, is, ie, js, je, ks, ke);
     }
   } else {
-    //pmbp->pdyngr->PrimToConInit(0, (n1-1), 0, (n2-1), 0, (n3-1));
     pmbp->pdyngr->PrimToConInit(is, ie, js, je, ks, ke);
   }
 
@@ -506,14 +501,8 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 namespace {
 
 //----------------------------------------------------------------------------------------
-// Function for returning corresponding Boyer-Lindquist coordinates of point
-// Inputs:
-//   x1,x2,x3: global coordinates to be converted
-// Outputs:
-//   pr,ptheta,pphi: variables pointed to set to Boyer-Lindquist coordinates
-
 KOKKOS_INLINE_FUNCTION
-static void GetBoyerLindquistCoordinates(struct bondi_pgen pgen,
+static void GetBoyerLindquistCoordinates(struct bhl_pgen pgen,
                                          Real x1, Real x2, Real x3,
                                          Real *pr, Real *ptheta, Real *pphi) {
   Real rad = sqrt(SQR(x1) + SQR(x2) + SQR(x3));
@@ -527,19 +516,11 @@ static void GetBoyerLindquistCoordinates(struct bondi_pgen pgen,
 }
 
 //----------------------------------------------------------------------------------------
-// Function for calculating vector potential in Spherical KS given CKS coordinates
-// Inputs:
-//   r,theta,phi spherical Boyer-Lindquist coordinates of point
-// Outputs:
-//   patheta,paphi: pointers to lower theta, phi components in desired coordinates
-
 KOKKOS_INLINE_FUNCTION
-static void CalculateVectorPotential(struct bondi_pgen pgen,
+static void CalculateVectorPotential(struct bhl_pgen pgen,
                                      Real r, Real theta, Real phi,
                                      Real *patheta, Real *paphi) {
   // Uniform vertical B_z via  A_phi = 0.5 * b0 * (r sin theta)^2
-  //   (in spherical Boyer-Lindquist coords; a_r = a_theta = 0)
-  //   b0 is set analytically from beta_target by the pgen setup.
   Real sin_theta = sin(theta);
   Real a = pgen.spin;
 
@@ -547,17 +528,13 @@ static void CalculateVectorPotential(struct bondi_pgen pgen,
   *paphi   = 0.5 * pgen.b0 * (SQR(r) - SQR(a)) * SQR(sin_theta);
   return;
 }
-//----------------------------------------------------------------------------------------
-// Function to compute 1-component of vector potential.  First computes phi-componenent
-// in spherical KS coordinates, then transforms to Cartesian KS
 
+//----------------------------------------------------------------------------------------
 KOKKOS_INLINE_FUNCTION
-Real A1(struct bondi_pgen pgen, Real x1, Real x2, Real x3) {
-  // BL coordinates
+Real A1(struct bhl_pgen pgen, Real x1, Real x2, Real x3) {
   Real r, theta, phi;
   GetBoyerLindquistCoordinates(pgen, x1, x2, x3, &r, &theta, &phi);
 
-  // calculate vector potential in spherical KS
   Real atheta, aphi;
   CalculateVectorPotential(pgen, r, theta, phi, &atheta, &aphi);
 
@@ -570,15 +547,11 @@ Real A1(struct bondi_pgen pgen, Real x1, Real x2, Real x3) {
 }
 
 //----------------------------------------------------------------------------------------
-// Function to compute 2-component of vector potential. See comments for A1.
-
 KOKKOS_INLINE_FUNCTION
-Real A2(struct bondi_pgen pgen, Real x1, Real x2, Real x3) {
-  // BL coordinates
+Real A2(struct bhl_pgen pgen, Real x1, Real x2, Real x3) {
   Real r, theta, phi;
   GetBoyerLindquistCoordinates(pgen, x1, x2, x3, &r, &theta, &phi);
 
-  // calculate vector potential in spherical KS
   Real atheta, aphi;
   CalculateVectorPotential(pgen, r, theta, phi, &atheta, &aphi);
 
@@ -591,15 +564,11 @@ Real A2(struct bondi_pgen pgen, Real x1, Real x2, Real x3) {
 }
 
 //----------------------------------------------------------------------------------------
-// Function to compute 3-component of vector potential. See comments for A1.
-
 KOKKOS_INLINE_FUNCTION
-Real A3(struct bondi_pgen pgen, Real x1, Real x2, Real x3) {
-  // BL coordinates
+Real A3(struct bhl_pgen pgen, Real x1, Real x2, Real x3) {
   Real r, theta, phi;
   GetBoyerLindquistCoordinates(pgen, x1, x2, x3, &r, &theta, &phi);
 
-  // calculate vector potential in spherical KS
   Real atheta, aphi;
   CalculateVectorPotential(pgen, r, theta, phi, &atheta, &aphi);
 
@@ -614,13 +583,17 @@ Real A3(struct bondi_pgen pgen, Real x1, Real x2, Real x3) {
 } // namespace
 
 //----------------------------------------------------------------------------------------
-//! \fn ReservoirBondi
-//  \brief Dirichlet-to-uniform-reservoir BC on all 6 outer faces.
-//         Pins ghost zones to (rho0, p=rho0*t0, v=0, B_z=b0). Radiation BC remains
-//         zero-gradient for now — port UserProblem intensity formula once finalized.
+//! \fn WindBCs
+//  \brief BHL-wind boundary conditions (wind along +x).
+//         inner_x1 (-x face): INJECTION.  Dirichlet on hydro (rho0, p0,
+//             uu^x=v_wind), pinned face B = (0, 0, b0), thermal radiation at t0
+//             boosted with the wind (same tetrad formula as IC).
+//         Other 5 faces: pure zero-gradient outflow.  Copy primitives and
+//             face-centered B from the innermost active cell.  Radiation uses
+//             the "no inflow" filter.
 // FIXME: Boundaries need to be adjusted for DynGRMHD
 
-void ReservoirBondi(Mesh *pm) {
+void WindBCs(Mesh *pm) {
   auto &indcs = pm->mb_indcs;
   int &ng = indcs.ng;
   int n1 = indcs.nx1 + 2*ng;
@@ -645,32 +618,43 @@ void ReservoirBondi(Mesh *pm) {
   // Determine if radiation is enabled
   const bool is_radiation_enabled = (pm->pmb_pack->prad != nullptr);
   DvceArray5D<Real> i0_; int nang1;
-  DvceArray6D<Real> tc; DualArray2D<Real> nh_c_;
+  DvceArray6D<Real> tc, norm_to_tet_, tetcov_c_;
+  DualArray2D<Real> nh_c_;
   if (is_radiation_enabled) {
     i0_ = pm->pmb_pack->prad->i0;
     nang1 = pm->pmb_pack->prad->prgeo->nangles - 1;
     nh_c_ = pm->pmb_pack->prad->nh_c;
     tc    = pm->pmb_pack->prad->tet_c;
+    norm_to_tet_ = pm->pmb_pack->prad->norm_to_tet;
+    tetcov_c_    = pm->pmb_pack->prad->tetcov_c;
   }
 
-  // Reservoir state, captured by value into device lambdas
-  const Real gm1 = bondi.gamma_adi - 1.0;
-  const Real rho_res = bondi.rho0;
-  const Real pgas_res = bondi.rho0 * bondi.t0;
-  const Real bz_res = bondi.b0;
+  // Geometry / coord data needed for injection face metric
+  auto &size = pm->pmb_pack->pmb->mb_size;
+  auto &coord = pm->pmb_pack->pcoord->coord_data;
 
-  // X1-Boundary: uniform B_z on ghost faces (x1f=0, x2f=0, x3f=b0)
+  // State captured by value into device lambdas
+  const Real gm1     = bhl.gamma_adi - 1.0;
+  const Real rho_inj  = bhl.rho0;
+  const Real pgas_inj = bhl.rho0 * bhl.t0;
+  const Real v_wind   = bhl.v_wind;
+  const Real bz_inj   = bhl.b0;
+  const Real urad_inj = (is_radiation_enabled) ? bhl.arad * SQR(SQR(bhl.t0)) : 0.0;
+
+  // X1-Boundary fields:
+  //   inner_x1 = injection: pin uniform vertical B (x1f=0, x2f=0, x3f=bz_inj)
+  //   outer_x1 = outflow:   copy interior face values
   if (pm->pmb_pack->pmhd != nullptr) {
     auto &b0 = pm->pmb_pack->pmhd->b0;
-    par_for("dirichlet_field_x1", DevExeSpace(),0,(nmb-1),0,(n3-1),0,(n2-1),
+    par_for("bfield_x1_bc", DevExeSpace(),0,(nmb-1),0,(n3-1),0,(n2-1),
     KOKKOS_LAMBDA(int m, int k, int j) {
       if (mb_bcs.d_view(m,BoundaryFace::inner_x1) == BoundaryFlag::user) {
         for (int i=0; i<ng; ++i) {
-          b0.x1f(m,k,j,is-i-1) = b0.x1f(m,k,j,is);
-          b0.x2f(m,k,j,is-i-1) = b0.x2f(m,k,j,is);
-          if (j == n2-1) {b0.x2f(m,k,j+1,is-i-1) = b0.x2f(m,k,j+1,is);}
-          b0.x3f(m,k,j,is-i-1) = b0.x3f(m,k,j,is);
-          if (k == n3-1) {b0.x3f(m,k+1,j,is-i-1) = b0.x3f(m,k+1,j,is);}
+          b0.x1f(m,k,j,is-i-1) = 0.0;
+          b0.x2f(m,k,j,is-i-1) = 0.0;
+          if (j == n2-1) {b0.x2f(m,k,j+1,is-i-1) = 0.0;}
+          b0.x3f(m,k,j,is-i-1) = bz_inj;
+          if (k == n3-1) {b0.x3f(m,k+1,j,is-i-1) = bz_inj;}
         }
       }
       if (mb_bcs.d_view(m,BoundaryFace::outer_x1) == BoundaryFlag::user) {
@@ -694,44 +678,70 @@ void ReservoirBondi(Mesh *pm) {
     pm->pmb_pack->pmhd->peos->ConsToPrim(u0_,b0,w0_,bcc,false,is-ng,is,0,(n2-1),0,(n3-1));
     pm->pmb_pack->pmhd->peos->ConsToPrim(u0_,b0,w0_,bcc,false,ie,ie+ng,0,(n2-1),0,(n3-1));
   }
-  // Dirichlet primitives in X1 ghost zones: (rho0, pgas_res, v=0)
-  par_for("dirichlet_hydro_x1", DevExeSpace(),0,(nmb-1),0,(n3-1),0,(n2-1),
+  // X1 hydro BC:
+  //   inner_x1 = injection: Dirichlet on (rho0, p0, uu^x=v_wind, uu^y=uu^z=0)
+  //   outer_x1 = outflow:   pure copy from innermost active cell
+  par_for("hydro_x1_bc", DevExeSpace(),0,(nmb-1),0,(n3-1),0,(n2-1),
   KOKKOS_LAMBDA(int m, int k, int j) {
     if (mb_bcs.d_view(m,BoundaryFace::inner_x1) == BoundaryFlag::user) {
       for (int i=0; i<ng; ++i) {
         int ig = is - i - 1;
-        w0_(m,IDN,k,j,ig) = rho_res;
-        w0_(m,IEN,k,j,ig) = pgas_res / gm1;
-        w0_(m,IVX,k,j,ig) = w0_(m,IVX,k,j,is);
-        w0_(m,IVY,k,j,ig) = w0_(m,IVY,k,j,is);
-        w0_(m,IVZ,k,j,ig) = w0_(m,IVZ,k,j,is);
+        w0_(m,IDN,k,j,ig) = rho_inj;
+        w0_(m,IEN,k,j,ig) = pgas_inj / gm1;
+        w0_(m,IVX,k,j,ig) = v_wind;
+        w0_(m,IVY,k,j,ig) = 0.0;
+        w0_(m,IVZ,k,j,ig) = 0.0;
       }
     }
     if (mb_bcs.d_view(m,BoundaryFace::outer_x1) == BoundaryFlag::user) {
       for (int i=0; i<ng; ++i) {
         int ig = ie + i + 1;
-        w0_(m,IDN,k,j,ig) = rho_res;
-        w0_(m,IEN,k,j,ig) = pgas_res / gm1;
+        w0_(m,IDN,k,j,ig) = w0_(m,IDN,k,j,ie);
+        w0_(m,IEN,k,j,ig) = w0_(m,IEN,k,j,ie);
         w0_(m,IVX,k,j,ig) = w0_(m,IVX,k,j,ie);
         w0_(m,IVY,k,j,ig) = w0_(m,IVY,k,j,ie);
         w0_(m,IVZ,k,j,ig) = w0_(m,IVZ,k,j,ie);
       }
     }
   });
-  // TODO: proper radiation reservoir BC — port UserProblem intensity formula.
-  //       Currently zero-gradient on i0 (matches steady-state reservoir assumption).
   if (is_radiation_enabled) {
-    par_for("dirichlet_rad_x1", DevExeSpace(),0,(nmb-1),0,nang1,0,(n3-1),0,(n2-1),
+    // inner_x1 = injection: thermal radiation at t0 boosted with wind (along +x)
+    //                       Evaluated at active cell (k, j, is).
+    // outer_x1 = outflow:   no incoming intensity, copy outgoing.
+    par_for("rad_x1_bc", DevExeSpace(),0,(nmb-1),0,nang1,0,(n3-1),0,(n2-1),
     KOKKOS_LAMBDA(int m, int n, int k, int j) {
       Real nh0 = nh_c_.d_view(n,0);
       Real nh1 = nh_c_.d_view(n,1);
       Real nh2 = nh_c_.d_view(n,2);
       Real nh3 = nh_c_.d_view(n,3);
       if (mb_bcs.d_view(m,BoundaryFace::inner_x1) == BoundaryFlag::user) {
-        Real n1 = tc(m,0,1,k,j,is)*nh0 + tc(m,1,1,k,j,is)*nh1 + tc(m,2,1,k,j,is)*nh2 + tc(m,3,1,k,j,is)*nh3;
-        Real val = (n1 > 0) ? 0.0 : i0_(m,n,k,j,is);
+        Real &x1min = size.d_view(m).x1min;
+        Real &x1max = size.d_view(m).x1max;
+        Real &x2min = size.d_view(m).x2min;
+        Real &x2max = size.d_view(m).x2max;
+        Real &x3min = size.d_view(m).x3min;
+        Real &x3max = size.d_view(m).x3max;
+        Real x1v = CellCenterX(0,    indcs.nx1, x1min, x1max);  // is → local 0
+        Real x2v = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+        Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+        Real glower[4][4], gupper[4][4];
+        ComputeMetricAndInverse(x1v, x2v, x3v, coord.is_minkowski, coord.bh_spin,
+                                glower, gupper);
+        Real uu1 = v_wind, uu2 = 0.0, uu3 = 0.0;
+        Real q   = glower[1][1]*uu1*uu1;
+        Real uu0 = sqrt(1.0 + q);
+        Real ut0 = (norm_to_tet_(m,0,0,k,j,is)*uu0 + norm_to_tet_(m,0,1,k,j,is)*uu1);
+        Real ut1 = (norm_to_tet_(m,1,0,k,j,is)*uu0 + norm_to_tet_(m,1,1,k,j,is)*uu1);
+        Real ut2 = (norm_to_tet_(m,2,0,k,j,is)*uu0 + norm_to_tet_(m,2,1,k,j,is)*uu1);
+        Real ut3 = (norm_to_tet_(m,3,0,k,j,is)*uu0 + norm_to_tet_(m,3,1,k,j,is)*uu1);
+        Real un_t = ut1*nh1 + ut2*nh2 + ut3*nh3;
+        Real n0_f = ut0*nh0 - un_t;
+        Real n0 = tc(m,0,0,k,j,is);
+        Real n_0 = tetcov_c_(m,0,0,k,j,is)*nh0 + tetcov_c_(m,1,0,k,j,is)*nh1 +
+                   tetcov_c_(m,2,0,k,j,is)*nh2 + tetcov_c_(m,3,0,k,j,is)*nh3;
+        Real i_inj = n0*n_0*(urad_inj/(4.0*M_PI))/SQR(SQR(n0_f));
         for (int i=0; i<ng; ++i) {
-          i0_(m,n,k,j,is-i-1) = val;
+          i0_(m,n,k,j,is-i-1) = i_inj;
         }
       }
       if (mb_bcs.d_view(m,BoundaryFace::outer_x1) == BoundaryFlag::user) {
@@ -753,10 +763,10 @@ void ReservoirBondi(Mesh *pm) {
     pm->pmb_pack->pmhd->peos->PrimToCons(w0_,bcc0_,u0_,ie+1,ie+ng,0,(n2-1),0,(n3-1));
   }
 
-  // X2-Boundary: uniform B_z on ghost faces (x1f=0, x2f=0, x3f=b0)
+  // X2-Boundary fields: zero-gradient outflow on both faces
   if (pm->pmb_pack->pmhd != nullptr) {
     auto &b0 = pm->pmb_pack->pmhd->b0;
-    par_for("dirichlet_field_x2", DevExeSpace(),0,(nmb-1),0,(n3-1),0,(n1-1),
+    par_for("outflow_field_x2", DevExeSpace(),0,(nmb-1),0,(n3-1),0,(n1-1),
     KOKKOS_LAMBDA(int m, int k, int i) {
       if (mb_bcs.d_view(m,BoundaryFace::inner_x2) == BoundaryFlag::user) {
         for (int j=0; j<ng; ++j) {
@@ -788,14 +798,14 @@ void ReservoirBondi(Mesh *pm) {
     pm->pmb_pack->pmhd->peos->ConsToPrim(u0_,b0,w0_,bcc,false,0,(n1-1),js-ng,js,0,(n3-1));
     pm->pmb_pack->pmhd->peos->ConsToPrim(u0_,b0,w0_,bcc,false,0,(n1-1),je,je+ng,0,(n3-1));
   }
-  // Dirichlet primitives in X2 ghost zones
-  par_for("dirichlet_hydro_x2", DevExeSpace(),0,(nmb-1),0,(n3-1),0,(n1-1),
+  // Zero-gradient (pure copy) outflow on X2 ghost zones
+  par_for("outflow_hydro_x2", DevExeSpace(),0,(nmb-1),0,(n3-1),0,(n1-1),
   KOKKOS_LAMBDA(int m, int k, int i) {
     if (mb_bcs.d_view(m,BoundaryFace::inner_x2) == BoundaryFlag::user) {
       for (int j=0; j<ng; ++j) {
         int jg = js - j - 1;
-        w0_(m,IDN,k,jg,i) = rho_res;
-        w0_(m,IEN,k,jg,i) = pgas_res / gm1;
+        w0_(m,IDN,k,jg,i) = w0_(m,IDN,k,js,i);
+        w0_(m,IEN,k,jg,i) = w0_(m,IEN,k,js,i);
         w0_(m,IVX,k,jg,i) = w0_(m,IVX,k,js,i);
         w0_(m,IVY,k,jg,i) = w0_(m,IVY,k,js,i);
         w0_(m,IVZ,k,jg,i) = w0_(m,IVZ,k,js,i);
@@ -804,8 +814,8 @@ void ReservoirBondi(Mesh *pm) {
     if (mb_bcs.d_view(m,BoundaryFace::outer_x2) == BoundaryFlag::user) {
       for (int j=0; j<ng; ++j) {
         int jg = je + j + 1;
-        w0_(m,IDN,k,jg,i) = rho_res;
-        w0_(m,IEN,k,jg,i) = pgas_res / gm1;
+        w0_(m,IDN,k,jg,i) = w0_(m,IDN,k,je,i);
+        w0_(m,IEN,k,jg,i) = w0_(m,IEN,k,je,i);
         w0_(m,IVX,k,jg,i) = w0_(m,IVX,k,je,i);
         w0_(m,IVY,k,jg,i) = w0_(m,IVY,k,je,i);
         w0_(m,IVZ,k,jg,i) = w0_(m,IVZ,k,je,i);
@@ -813,7 +823,7 @@ void ReservoirBondi(Mesh *pm) {
     }
   });
   if (is_radiation_enabled) {
-    par_for("dirichlet_rad_x2", DevExeSpace(),0,(nmb-1),0,nang1,0,(n3-1),0,(n1-1),
+    par_for("outflow_rad_x2", DevExeSpace(),0,(nmb-1),0,nang1,0,(n3-1),0,(n1-1),
     KOKKOS_LAMBDA(int m, int n, int k, int i) {
       Real nh0 = nh_c_.d_view(n,0);
       Real nh1 = nh_c_.d_view(n,1);
@@ -845,10 +855,10 @@ void ReservoirBondi(Mesh *pm) {
     pm->pmb_pack->pmhd->peos->PrimToCons(w0_,bcc0_,u0_,0,(n1-1),je+1,je+ng,0,(n3-1));
   }
 
-  // X3-Boundary: uniform B_z on ghost faces (x1f=0, x2f=0, x3f=b0)
+  // X3-Boundary fields: zero-gradient outflow on both faces
   if (pm->pmb_pack->pmhd != nullptr) {
     auto &b0 = pm->pmb_pack->pmhd->b0;
-    par_for("dirichlet_field_x3", DevExeSpace(),0,(nmb-1),0,(n2-1),0,(n1-1),
+    par_for("outflow_field_x3", DevExeSpace(),0,(nmb-1),0,(n2-1),0,(n1-1),
     KOKKOS_LAMBDA(int m, int j, int i) {
       if (mb_bcs.d_view(m,BoundaryFace::inner_x3) == BoundaryFlag::user) {
         for (int k=0; k<ng; ++k) {
@@ -880,14 +890,14 @@ void ReservoirBondi(Mesh *pm) {
     pm->pmb_pack->pmhd->peos->ConsToPrim(u0_,b0,w0_,bcc,false,0,(n1-1),0,(n2-1),ks-ng,ks);
     pm->pmb_pack->pmhd->peos->ConsToPrim(u0_,b0,w0_,bcc,false,0,(n1-1),0,(n2-1),ke,ke+ng);
   }
-  // Dirichlet primitives in X3 ghost zones
-  par_for("dirichlet_hydro_x3", DevExeSpace(),0,(nmb-1),0,(n2-1),0,(n1-1),
+  // Zero-gradient (pure copy) outflow on X3 ghost zones
+  par_for("outflow_hydro_x3", DevExeSpace(),0,(nmb-1),0,(n2-1),0,(n1-1),
   KOKKOS_LAMBDA(int m, int j, int i) {
     if (mb_bcs.d_view(m,BoundaryFace::inner_x3) == BoundaryFlag::user) {
       for (int k=0; k<ng; ++k) {
         int kg = ks - k - 1;
-        w0_(m,IDN,kg,j,i) = rho_res;
-        w0_(m,IEN,kg,j,i) = pgas_res / gm1;
+        w0_(m,IDN,kg,j,i) = w0_(m,IDN,ks,j,i);
+        w0_(m,IEN,kg,j,i) = w0_(m,IEN,ks,j,i);
         w0_(m,IVX,kg,j,i) = w0_(m,IVX,ks,j,i);
         w0_(m,IVY,kg,j,i) = w0_(m,IVY,ks,j,i);
         w0_(m,IVZ,kg,j,i) = w0_(m,IVZ,ks,j,i);
@@ -896,8 +906,8 @@ void ReservoirBondi(Mesh *pm) {
     if (mb_bcs.d_view(m,BoundaryFace::outer_x3) == BoundaryFlag::user) {
       for (int k=0; k<ng; ++k) {
         int kg = ke + k + 1;
-        w0_(m,IDN,kg,j,i) = rho_res;
-        w0_(m,IEN,kg,j,i) = pgas_res / gm1;
+        w0_(m,IDN,kg,j,i) = w0_(m,IDN,ke,j,i);
+        w0_(m,IEN,kg,j,i) = w0_(m,IEN,ke,j,i);
         w0_(m,IVX,kg,j,i) = w0_(m,IVX,ke,j,i);
         w0_(m,IVY,kg,j,i) = w0_(m,IVY,ke,j,i);
         w0_(m,IVZ,kg,j,i) = w0_(m,IVZ,ke,j,i);
@@ -905,7 +915,7 @@ void ReservoirBondi(Mesh *pm) {
     }
   });
   if (is_radiation_enabled) {
-    par_for("dirichlet_rad_x3", DevExeSpace(),0,(nmb-1),0,nang1,0,(n2-1),0,(n1-1),
+    par_for("outflow_rad_x3", DevExeSpace(),0,(nmb-1),0,nang1,0,(n2-1),0,(n1-1),
     KOKKOS_LAMBDA(int m, int n, int j, int i) {
       Real nh0 = nh_c_.d_view(n,0);
       Real nh1 = nh_c_.d_view(n,1);
@@ -943,14 +953,12 @@ void ReservoirBondi(Mesh *pm) {
 //----------------------------------------------------------------------------------------
 // Function for computing accretion fluxes through constant spherical KS radius surfaces
 
-void BondiFluxes(HistoryData *pdata, Mesh *pm) {
+void WindFluxes(HistoryData *pdata, Mesh *pm) {
   MeshBlockPack *pmbp = pm->pmb_pack;
 
-  // extract BH parameters
   bool &flat = pmbp->pcoord->coord_data.is_minkowski;
   Real &spin = pmbp->pcoord->coord_data.bh_spin;
 
-  // set nvars, adiabatic index, primitive array w0, and field array bcc0 if is_mhd
   int nvars; Real gamma; bool is_mhd = false;
   DvceArray5D<Real> w0_, bcc0_;
   if (pmbp->phydro != nullptr) {
@@ -965,22 +973,15 @@ void BondiFluxes(HistoryData *pdata, Mesh *pm) {
     bcc0_ = pmbp->pmhd->bcc0;
   }
 
-  // Calculate conversion for P to e if using DynGRMHD.
   Real to_ien = 1.;
   if (pmbp->pdyngr != nullptr) {
     to_ien = 1.0 / (gamma - 1.);
   }
 
-  // extract grids, number of radii, number of fluxes, and history appending index
   auto &grids = pm->pgen->spherical_grids;
   int nradii = grids.size();
   int nflux = (is_mhd) ? 4 : 3;
 
-  // set number of and names of history variables for hydro or mhd
-  //  (1) mass accretion rate
-  //  (2) energy flux
-  //  (3) angular momentum flux
-  //  (4) magnetic flux (iff MHD)
   pdata->nhist = nradii*nflux;
   if (pdata->nhist > NHISTORY_VARIABLES) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
@@ -1000,16 +1001,13 @@ void BondiFluxes(HistoryData *pdata, Mesh *pm) {
     }
   }
 
-  // go through angles at each radii:
-  DualArray2D<Real> interpolated_bcc;  // needed for MHD
+  DualArray2D<Real> interpolated_bcc;
   for (int g=0; g<nradii; ++g) {
-    // zero fluxes at this radius
     pdata->hdata[nflux*g+0] = 0.0;
     pdata->hdata[nflux*g+1] = 0.0;
     pdata->hdata[nflux*g+2] = 0.0;
     if (is_mhd) pdata->hdata[nflux*g+3] = 0.0;
 
-    // interpolate primitives (and cell-centered magnetic fields iff mhd)
     if (is_mhd) {
       grids[g]->InterpolateToSphere(3, bcc0_);
       Kokkos::realloc(interpolated_bcc, grids[g]->nangles, 3);
@@ -1019,9 +1017,7 @@ void BondiFluxes(HistoryData *pdata, Mesh *pm) {
     }
     grids[g]->InterpolateToSphere(nvars, w0_);
 
-    // compute fluxes
     for (int n=0; n<grids[g]->nangles; ++n) {
-      // extract coordinate data at this angle
       Real r = grids[g]->radius;
       Real theta = grids[g]->polar_pos.h_view(n,0);
       Real phi = grids[g]->polar_pos.h_view(n,1);
@@ -1031,14 +1027,12 @@ void BondiFluxes(HistoryData *pdata, Mesh *pm) {
       Real glower[4][4], gupper[4][4];
       ComputeMetricAndInverse(x1,x2,x3,flat,spin,glower,gupper);
 
-      // extract interpolated primitives
       Real &int_dn = grids[g]->interp_vals.h_view(n,IDN);
       Real &int_vx = grids[g]->interp_vals.h_view(n,IVX);
       Real &int_vy = grids[g]->interp_vals.h_view(n,IVY);
       Real &int_vz = grids[g]->interp_vals.h_view(n,IVZ);
       Real int_ie = grids[g]->interp_vals.h_view(n,IEN)*to_ien;
 
-      // extract interpolated field components (iff is_mhd)
       Real int_bx = 0.0, int_by = 0.0, int_bz = 0.0;
       if (is_mhd) {
         int_bx = interpolated_bcc.h_view(n,IBX);
@@ -1046,7 +1040,6 @@ void BondiFluxes(HistoryData *pdata, Mesh *pm) {
         int_bz = interpolated_bcc.h_view(n,IBZ);
       }
 
-      // Compute interpolated u^\mu in CKS
       Real q = glower[1][1]*int_vx*int_vx + 2.0*glower[1][2]*int_vx*int_vy +
                2.0*glower[1][3]*int_vx*int_vz + glower[2][2]*int_vy*int_vy +
                2.0*glower[2][3]*int_vy*int_vz + glower[3][3]*int_vz*int_vz;
@@ -1057,26 +1050,22 @@ void BondiFluxes(HistoryData *pdata, Mesh *pm) {
       Real u2 = int_vy - alpha * lor * gupper[0][2];
       Real u3 = int_vz - alpha * lor * gupper[0][3];
 
-      // Lower vector indices
       Real u_0 = glower[0][0]*u0 + glower[0][1]*u1 + glower[0][2]*u2 + glower[0][3]*u3;
       Real u_1 = glower[1][0]*u0 + glower[1][1]*u1 + glower[1][2]*u2 + glower[1][3]*u3;
       Real u_2 = glower[2][0]*u0 + glower[2][1]*u1 + glower[2][2]*u2 + glower[2][3]*u3;
       Real u_3 = glower[3][0]*u0 + glower[3][1]*u1 + glower[3][2]*u2 + glower[3][3]*u3;
 
-      // Calculate 4-magnetic field (returns zero if not MHD)
       Real b0 = u_1*int_bx + u_2*int_by + u_3*int_bz;
       Real b1 = (int_bx + b0 * u1) / u0;
       Real b2 = (int_by + b0 * u2) / u0;
       Real b3 = (int_bz + b0 * u3) / u0;
 
-      // compute b_\mu in CKS and b_sq (returns zero if not MHD)
       Real b_0 = glower[0][0]*b0 + glower[0][1]*b1 + glower[0][2]*b2 + glower[0][3]*b3;
       Real b_1 = glower[1][0]*b0 + glower[1][1]*b1 + glower[1][2]*b2 + glower[1][3]*b3;
       Real b_2 = glower[2][0]*b0 + glower[2][1]*b1 + glower[2][2]*b2 + glower[2][3]*b3;
       Real b_3 = glower[3][0]*b0 + glower[3][1]*b1 + glower[3][2]*b2 + glower[3][3]*b3;
       Real b_sq = b0*b_0 + b1*b_1 + b2*b_2 + b3*b_3;
 
-      // Transform CKS 4-velocity and 4-magnetic field to spherical KS
       Real a2 = SQR(spin);
       Real rad2 = SQR(x1)+SQR(x2)+SQR(x3);
       Real r2 = SQR(r);
@@ -1086,38 +1075,28 @@ void BondiFluxes(HistoryData *pdata, Mesh *pm) {
       Real drdx = r*x1/(2.0*r2 - rad2 + a2);
       Real drdy = r*x2/(2.0*r2 - rad2 + a2);
       Real drdz = (r*x3 + a2*x3/r)/(2.0*r2-rad2+a2);
-      // contravariant r component of 4-velocity
       Real ur  = drdx *u1 + drdy *u2 + drdz *u3;
-      // contravariant r component of 4-magnetic field (returns zero if not MHD)
       Real br  = drdx *b1 + drdy *b2 + drdz *b3;
-      // covariant phi component of 4-velocity
       Real u_ph = (-r*sph-spin*cph)*sth*u_1 + (r*cph-spin*sph)*sth*u_2;
-      // covariant phi component of 4-magnetic field (returns zero if not MHD)
       Real b_ph = (-r*sph-spin*cph)*sth*b_1 + (r*cph-spin*sph)*sth*b_2;
 
-      // integration params
       Real &domega = grids[g]->solid_angles.h_view(n);
       Real sqrtmdet = (r2+SQR(spin*cos(theta)));
 
-      // compute mass flux
       pdata->hdata[nflux*g+0] += -1.0*int_dn*ur*sqrtmdet*domega;
 
-      // compute energy flux
       Real t1_0 = (int_dn + gamma*int_ie + b_sq)*ur*u_0 - br*b_0;
       pdata->hdata[nflux*g+1] += -1.0*t1_0*sqrtmdet*domega;
 
-      // compute angular momentum flux
       Real t1_3 = (int_dn + gamma*int_ie + b_sq)*ur*u_ph - br*b_ph;
       pdata->hdata[nflux*g+2] += t1_3*sqrtmdet*domega;
 
-      // compute magnetic flux
       if (is_mhd) {
         pdata->hdata[nflux*g+3] += 0.5*fabs(br*u0 - b0*ur)*sqrtmdet*domega;
       }
     }
   }
 
-  // fill rest of the_array with zeros, if nhist < NHISTORY_VARIABLES
   for (int n=pdata->nhist; n<NHISTORY_VARIABLES; ++n) {
     pdata->hdata[n] = 0.0;
   }

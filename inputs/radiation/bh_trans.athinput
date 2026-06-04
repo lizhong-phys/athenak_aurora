@@ -1,0 +1,194 @@
+<comment>
+problem   = Xin (uniform reservoir + Gaussian dip)
+reference = custom gr_bondi.cpp (adapted from gr_torus.cpp)
+
+<job>
+basename  = xin
+
+<mesh>
+nghost = 4        # Number of ghost cells
+
+nx1    = 128       # number of cells in x1-direction: 128
+x1min  = -1024.0  # 2x10^3 r_g box (box size MUCH smaller than r_B for T=10^4 K;
+x1max  =  1024.0  #  BC at +/-1000 M represents imposed inner-zone state, NOT infinity)
+ix1_bc = user     # ReservoirBondi
+ox1_bc = user
+
+nx2    = 128
+x2min  = -1024.0
+x2max  =  1024.0
+ix2_bc = user
+ox2_bc = user
+
+nx3    = 128
+x3min  = -1024.0
+x3max  =  1024.0
+ix3_bc = user
+ox3_bc = user
+
+<meshblock>
+nx1  = 64
+nx2  = 64
+nx3  = 64
+
+<mesh_refinement>
+refinement = static
+prolong_primitives = true
+
+<refined_region1>
+level = 1
+x1min = -1024.0
+x1max =  1024.0
+x2min = -1024.0
+x2max =  1024.0
+x3min = -1024.0
+x3max =  1024.0
+
+<refined_region2>
+level = 2
+x1min = -512.0
+x1max =  512.0
+x2min = -512.0
+x2max =  512.0
+x3min = -512.0
+x3max =  512.0
+
+<refined_region3>
+level = 3
+x1min = -256.0
+x1max =  256.0
+x2min = -256.0
+x2max =  256.0
+x3min = -256.0
+x3max =  256.0
+
+<refined_region4>
+level = 4
+x1min = -128.0
+x1max =  128.0
+x2min = -128.0
+x2max =  128.0
+x3min = -128.0
+x3max =  128.0
+
+<refined_region5>
+level = 5
+x1min = -64.0
+x1max =  64.0
+x2min = -64.0
+x2max =  64.0
+x3min = -64.0
+x3max =  64.0
+
+<refined_region6>
+level = 6
+x1min = -32.0
+x1max =  32.0
+x2min = -32.0
+x2max =  32.0
+x3min = -32.0
+x3max =  32.0
+
+<refined_region7>
+level = 7
+x1min = -16.0
+x1max =  16.0
+x2min = -16.0
+x2max =  16.0
+x3min = -16.0
+x3max =  16.0
+
+<refined_region8>
+level = 8
+x1min = -8.0
+x1max = 8.0
+x2min = -8.0
+x2max = 8.0
+x3min = -8.0
+x3max = 8.0
+
+<time>
+evolution  = dynamic   # dynamic/kinematic/static
+integrator = rk2       # time integration algorithm
+cfl_number = 0.3       # CFL number
+nlim       = -1        # cycle limit (-1 = no limit)
+tlim       = 60000.0   # end time (M) -- several light-crossing / Bondi times
+ndiag      = 100       # cycles between diagnostic output
+
+<coord>
+general_rel = true     # general relativity
+a           = 0.3      # black hole spin a/M (0 <= |a/M| < 1)
+excise      = true     # excise r_ks <= 1.0 from the evolution
+dexcise     = 1.0e-7   # density floor inside excision
+pexcise     = 3.3333333333333335e-13 # pressure floor inside excision
+
+<mhd>
+eos         = ideal    # adiabatic ideal-gas EOS -> T evolves dynamically
+reconstruct = ppm4     # spatial reconstruction
+rsolver     = hlle     # Riemann solver
+dfloor      = 1.0e-7   # density floor
+pfloor      = 3.3333333333333335e-13 # pressure floor
+sfloor      = 5.0e-7   # specific-entropy floor
+sfloor1     = 1.e-4
+sfloor2     = 1.e-6
+rho1        = 1.e-6
+rho2        = 1.e0
+gamma       = 1.6666666666666667
+fofc        = true     # first-order flux correction
+gamma_max   = 20.0     # ceiling on Lorentz factor
+
+<radiation>
+reconstruct   = plm    # reconstruction method (radiation)
+rotate_geo    = false  # rotate geodesic grid
+nlevel        = 2      # geodesic-grid angular resolution
+power_opacity = true   # absorption opacity ~ T^(-3.5) (free-free)
+compton       = true   # enable Compton scattering
+kappa_s       = 0.34   # scattering opacity (Thomson)
+n_0_floor     = 0.1    # floor on n_0
+correct_radsrc_opacity = true
+dfloor_opacity         = 1.e-14
+dens_trunc_max         = 1.e-5
+tau_truncation         = 1.5e-4
+sigmoid_residual       = 1.e-2
+
+<units>
+bhmass_msun = 10.0     # BH mass (solar masses)
+density_cgs = 1.0e-10  # rho=1 (code) == 1e-10 g/cm^3 (physical ISM/AGN density)
+mu          = 0.6      # mean molecular weight (ionized H)
+
+<problem>
+rho0        = 1.0        # == 1e-10 g/cm^3
+delta       = 0.8        # 50% Gaussian-dip depth at r=0
+rc          = 20.0       # dip width = 20 r_g
+t0          = 1.52e-9    # T = 1e4 K
+beta_target = 1000.0     # p_mag = 1e-3 * p_gas  (weakly magnetized)
+user_hist   = true       # enable BondiFluxes history function
+
+<output1>
+file_type      = hst   # history output (mdot, edot, ldot, phi at 3 radii)
+dt             = 10.0
+user_hist_only = true
+
+<output2>
+file_type = bin              # full 3D dump of rad-MHD primitives
+id        = full
+variable  = rad_mhd_w_bcc
+dt        = 100.0
+
+<output3>
+file_type = bin              # x1=0 slice (y-z plane)
+slice_x1  = 0.0
+id        = slice_x
+variable  = rad_mhd_w_bcc
+dt        = 10.0
+
+<output4>
+file_type = bin              # x3=0 slice (x-y plane, equatorial)
+slice_x3  = 0.0
+id        = slice_z
+variable  = rad_mhd_w_bcc
+dt        = 10.0
+
+<output5>
+file_type = rst              # restart dumps
+dt        = 500.0
