@@ -205,6 +205,7 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
       if ((eos.enable_r_dep_tfloor) && (sqrt(r_sks2) <= eos.r_tfloor) && (!excision_floor_(m,k,j,i))) {
         Real tgas = fmax(gm1*w.e/w.d, eos.tfloor_local);
         w.e = w.d*tgas/gm1;
+        efloor_used = true;
       } // endif (r_sks2 <= SQR(r_tfloor))
 
     }
