@@ -33,6 +33,11 @@ struct EOS_Data {
   Real sfloor1, sfloor2, rho1, rho2; // density-dependent entropy floor
   Real gamma_max;    // ceiling on Lorentz factor in SR/GR
 
+  // for local temperature floor
+  bool enable_r_dep_tfloor; 
+  Real r_tfloor;
+  Real tfloor_local;
+
   // IDEAL GAS PRESSURE: converts primitive variable (either internal energy density e
   // or temperature e/d) into pressure.
   KOKKOS_INLINE_FUNCTION

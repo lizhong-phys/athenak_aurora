@@ -196,6 +196,17 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   bondi.dexcise = coord.dexcise;
   bondi.pexcise = coord.pexcise;
 
+  // Vertical field amplitude b0 from beta_target.  Computed here, BEFORE the
+  // restart return, so bondi.b0 is populated on restart too (the reservoir BC
+  // reads it as bz_res).  Harmless today since the field BC is zero-gradient
+  // copy, but this keeps the struct restart-correct and avoids a latent bug if
+  // the BC is ever switched to pin a uniform B_z.
+  if (pmbp->pmhd != nullptr) {
+    Real beta_target = pin->GetOrAddReal("problem", "beta_target", 100.0);
+    Real ptot = bondi.rho0*bondi.t0 + bondi.arad*SQR(SQR(bondi.t0));
+    bondi.b0 = sqrt(2.0*ptot / beta_target);
+  }
+
   // Return on restart AFTER the params above: the reservoir BC and history
   // function run on restart too and read this struct, so it must be populated
   // (else the BC pins all boundary ghosts to vacuum -> global NaN).
@@ -297,11 +308,9 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
   // initialize magnetic fields ---------------------------------------
   if (pmbp->pmhd != nullptr) {
-    // Control uniform vertical B_z via target plasma beta:
-    //   beta = p_gas / (b^2 / 2)  ->  b0 = sqrt(2 * rho0 * t0 / beta_target)
-    Real beta_target = pin->GetOrAddReal("problem", "beta_target", 100.0);
-    Real ptot = bondi.rho0*bondi.t0 + bondi.arad*SQR(SQR(bondi.t0));
-    bondi.b0 = sqrt(2.0*ptot / beta_target);
+    // Uniform vertical B_z via target plasma beta; bondi.b0 was already
+    // computed above (before the restart return):
+    //   beta = p_gas / (b^2 / 2)  ->  b0 = sqrt(2 * p_tot / beta_target)
 
     // compute vector potential over all faces
     int ncells1 = indcs.nx1 + 2*(indcs.ng);

@@ -219,6 +219,18 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   bhl.dexcise = coord.dexcise;
   bhl.pexcise = coord.pexcise;
 
+  // Asymptotic horizontal field amplitude b0 (coordinate-frame B^y) from
+  // beta_target.  MUST be computed here, BEFORE the restart return: WindBCs
+  // reads bhl.b0 (as by_inj) to inject the field and runs on restart too, so
+  // if this lived only in the IC block below it would be 0 after a restart
+  // (-> zero field injected, growing field-free cavity at the inflow).
+  if (pmbp->pmhd != nullptr) {
+    Real beta_target = pin->GetOrAddReal("problem", "beta_target", 100.0);
+    Real ptot = bhl.rho0*bhl.t0 + bhl.arad*SQR(SQR(bhl.t0));
+    Real one_m_v2 = 1.0 - bhl.v_inf * bhl.v_inf;
+    bhl.b0 = sqrt(2.0 * ptot / (beta_target * one_m_v2));
+  }
+
   // Return on restart AFTER the params above: the reservoir BC and history
   // function run on restart too and read this struct, so it must be populated
   // (else the BC pins all boundary ghosts to vacuum -> global NaN).
@@ -319,15 +331,11 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
   // initialize magnetic fields ---------------------------------------
   if (pmbp->pmhd != nullptr) {
-    // Uniform horizontal B = b0 * y_hat (coordinate-frame B^y) controlled by
-    // the asymptotic plasma-beta beta_target = beta_inf:
+    // Uniform horizontal B = b0 * y_hat (coordinate-frame B^y).  bhl.b0 was
+    // already computed above (before the restart return) from beta_target:
     //   comoving b^2 = b0^2 * (1 - v_inf^2)        (B perp to v)
     //   beta_inf = p_gas / (b^2/2)                 (K&M Eq. 22-23)
     //   =>  b0 = sqrt( 2 * p_tot / (beta_target * (1 - v_inf^2)) )
-    Real beta_target = pin->GetOrAddReal("problem", "beta_target", 100.0);
-    Real ptot = bhl.rho0*bhl.t0 + bhl.arad*SQR(SQR(bhl.t0));
-    Real one_m_v2 = 1.0 - bhl.v_inf * bhl.v_inf;
-    bhl.b0 = sqrt(2.0 * ptot / (beta_target * one_m_v2));
 
     // compute vector potential over all faces
     int ncells1 = indcs.nx1 + 2*(indcs.ng);

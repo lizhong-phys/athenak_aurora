@@ -158,6 +158,55 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
         w.vy *= factor;
         w.vz *= factor;
       }
+
+      // apply temperature floor near BH
+      // TODO: add local temperature floor, applied radius
+
+      Real sigma_cold = 0.0;
+      // compute sigma_cold (2*pmag/rho) to decide whether turn on the fixes
+      {
+        Real qq = glower[1][1]*w.vx*w.vx +2.0*glower[1][2]*w.vx*w.vy +2.0*glower[1][3]*w.vx*w.vz
+                + glower[2][2]*w.vy*w.vy +2.0*glower[2][3]*w.vy*w.vz
+                + glower[3][3]*w.vz*w.vz;
+        Real alpha = sqrt(-1.0/gupper[0][0]);
+        Real u0_norm = sqrt(1.0 + qq);
+        Real u0 = u0_norm / alpha;
+        Real u1 = w.vx - alpha * u0_norm * gupper[0][1];
+        Real u2 = w.vy - alpha * u0_norm * gupper[0][2];
+        Real u3 = w.vz - alpha * u0_norm * gupper[0][3];
+
+        // lower vector indices
+        Real u_1 = glower[1][0]*u0 + glower[1][1]*u1 + glower[1][2]*u2 + glower[1][3]*u3;
+        Real u_2 = glower[2][0]*u0 + glower[2][1]*u1 + glower[2][2]*u2 + glower[2][3]*u3;
+        Real u_3 = glower[3][0]*u0 + glower[3][1]*u1 + glower[3][2]*u2 + glower[3][3]*u3;
+
+        // calculate 4-magnetic field
+        Real b0_ = u_1*u.bx + u_2*u.by + u_3*u.bz;
+        Real b1_ = (u.bx + b0_ * u1) / u0;
+        Real b2_ = (u.by + b0_ * u2) / u0;
+        Real b3_ = (u.bz + b0_ * u3) / u0;
+
+        // lower vector indices
+        Real b_0 = glower[0][0]*b0_ + glower[0][1]*b1_ + glower[0][2]*b2_ + glower[0][3]*b3_;
+        Real b_1 = glower[1][0]*b0_ + glower[1][1]*b1_ + glower[1][2]*b2_ + glower[1][3]*b3_;
+        Real b_2 = glower[2][0]*b0_ + glower[2][1]*b1_ + glower[2][2]*b2_ + glower[2][3]*b3_;
+        Real b_3 = glower[3][0]*b0_ + glower[3][1]*b1_ + glower[3][2]*b2_ + glower[3][3]*b3_;
+        Real b_sq = b0_*b_0 + b1_*b_1 + b2_*b_2 + b3_*b_3;
+
+        sigma_cold = b_sq/w.d;
+      } // end computing magnetization
+
+      // compute radius in SKS
+      Real R_cap2 = SQR(x1v) + SQR(x2v) + SQR(x3v);
+      Real a2 = SQR(spin);
+      Real r_sks2 = 0.5*( (R_cap2-a2) + sqrt(SQR((R_cap2-a2)) + 4*a2*SQR(x3v)) );
+
+      // apply temp floor based on radius
+      if ((eos.enable_r_dep_tfloor) && (sqrt(r_sks2) <= eos.r_tfloor) && (!excision_floor_(m,k,j,i))) {
+        Real tgas = fmax(gm1*w.e/w.d, eos.tfloor_local);
+        w.e = w.d*tgas/gm1;
+      } // endif (r_sks2 <= SQR(r_tfloor))
+
     }
 
     // set FOFC flag and quit loop if this function called only to check floors
