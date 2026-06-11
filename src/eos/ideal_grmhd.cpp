@@ -214,6 +214,30 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
         }
       } // endif (r_sks2 <= SQR(r_tfloor))
 
+      // sigma-dependent temperature floor: T_floor rises with sigma_cold,
+      // log-log interpolated between (sigma1, sigma_tfloor1) and (sigma2, sigma_tfloor2),
+      // then capped at sigma_tfloor_cap.
+      //   T_floor(sigma) = sigma_tfloor1 * (sigma/sigma1)^k,
+      //   k = log(sigma_tfloor2/sigma_tfloor1) / log(sigma2/sigma1)
+      // Entropy floor (sfloor1/2) is applied separately in c2p; since we only RAISE
+      // T here, the net result is max(entropy floor, sigma floor).
+      // Guarded: only cells actually below the floor are modified/flagged (no blanket FOFC).
+      if (eos.enable_sigma_tfloor && (!excision_floor_(m,k,j,i))) {
+        Real sig  = fmax(sigma_cold, 1.0e-30);                       // guard log10(0)
+        Real lg_T = log10(eos.sigma_tfloor1)
+                  + (log10(sig)-log10(eos.sigma1))
+                   *(log10(eos.sigma_tfloor2)-log10(eos.sigma_tfloor1))
+                   /(log10(eos.sigma2)-log10(eos.sigma1));
+        Real T_sig = fmin(pow(10.0, lg_T), eos.sigma_tfloor_cap);    // cap
+        Real tgas  = gm1*w.e/w.d;
+        if (tgas < T_sig) {
+          w.e = w.d*T_sig/gm1;
+          efloor_used = true;
+        }
+      }
+
+
+
     }
 
     // set FOFC flag and quit loop if this function called only to check floors
