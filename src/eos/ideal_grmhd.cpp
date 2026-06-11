@@ -202,10 +202,16 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
       Real r_sks2 = 0.5*( (R_cap2-a2) + sqrt(SQR((R_cap2-a2)) + 4*a2*SQR(x3v)) );
 
       // apply temp floor based on radius
+      // Only cells that are ACTUALLY below the floor are modified/flagged; cells
+      // already hotter than tfloor_local are left untouched.  Flagging every cell
+      // inside r_tfloor (even hot ones) would force FOFC + cons-reset across the
+      // whole r<r_tfloor region, leaving a first-order/diffusive ring at r_tfloor.
       if ((eos.enable_r_dep_tfloor) && (sqrt(r_sks2) <= eos.r_tfloor) && (!excision_floor_(m,k,j,i))) {
-        Real tgas = fmax(gm1*w.e/w.d, eos.tfloor_local);
-        w.e = w.d*tgas/gm1;
-        efloor_used = true;
+        Real tgas = gm1*w.e/w.d;
+        if (tgas < eos.tfloor_local) {
+          w.e = w.d*eos.tfloor_local/gm1;
+          efloor_used = true;
+        }
       } // endif (r_sks2 <= SQR(r_tfloor))
 
     }
