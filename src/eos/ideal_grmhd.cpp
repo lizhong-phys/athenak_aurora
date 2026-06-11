@@ -251,7 +251,7 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
 
     // set FOFC flag and quit loop if this function called only to check floors
     if (only_testfloors) {
-      if (dfloor_used || efloor_used || vceiling_used || c2p_failure) {
+      if (dfloor_used || efloor_used || vceiling_used || c2p_failure || sceiling_used) {
         fofc_(m,k,j,i) = true;
         sumd++;  // use dfloor as counter for when either is true
       }
