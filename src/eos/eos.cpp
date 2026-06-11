@@ -39,6 +39,8 @@ EquationOfState::EquationOfState(std::string bk, MeshBlockPack* pp, ParameterInp
   eos_data.sigma_tfloor_cap    = pin->GetOrAddReal(bk,"sigma_tfloor_cap", 1e10);
   eos_data.sigma1              = pin->GetOrAddReal(bk,"sigma1", -1);
   eos_data.sigma2              = pin->GetOrAddReal(bk,"sigma2", -1);
+
+  eos_data.sceiling            = pin->GetOrAddReal(bk,"sceiling", 1e30);
 }
 
 //----------------------------------------------------------------------------------------

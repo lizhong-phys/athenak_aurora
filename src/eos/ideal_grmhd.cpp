@@ -112,7 +112,7 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
 
     HydPrim1D w;
     bool dfloor_used=false, efloor_used=false;
-    bool vceiling_used=false, c2p_failure=false;
+    bool vceiling_used=false, c2p_failure=false, sceiling_used=false;
     int iter_used=0;
 
     // Only execute cons2prim if outside excised region
@@ -236,6 +236,15 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
         }
       }
 
+      if (!excision_floor_(m,k,j,i)) {
+      Real spe_over_eps = gm1/pow(w.d, gm1);    // gm1 = gamma-1 (in scope, used at line 232)
+      Real spe = spe_over_eps*w.e/w.d;          // specific entropy p/rho^gamma
+      if (spe > eos.sceiling) {
+        w.e = w.d*eos.sceiling/spe_over_eps;    // cap -> lowers e (removes energy)
+        sceiling_used = true;
+      }
+    }
+
 
 
     }
@@ -266,7 +275,7 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
       bcc(m,IBZ,k,j,i) = u.bz;
 
       // reset conserved variables if floor, ceiling, failure, or excision encountered
-      if (dfloor_used || efloor_used || vceiling_used || c2p_failure || excised) {
+      if (dfloor_used || efloor_used || vceiling_used || c2p_failure || excised || sceiling_used) {
         MHDPrim1D w_in;
         w_in.d  = w.d;
         w_in.vx = w.vx;
