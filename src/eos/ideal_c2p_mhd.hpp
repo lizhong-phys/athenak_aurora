@@ -120,6 +120,7 @@ Real Equation44(const Real mu, const Real b2, const Real rpar, const Real r, con
   sfloor_local = fmax(eos.sfloor, sfloor_local);
   Real epsmin = fmax(eos.pfloor/(wd*gm1), sfloor_local*pow(wd, gm1)/gm1);
   eps = fmax(eps, epsmin);
+  eps = fmin(eps, eos.sceiling*pow(wd, gm1)/gm1);
   Real const h = 1.0 + eos.gamma*eps;              // (43)
   return mu - 1./(h/w + rbar*mu);                  // (45)
 }
@@ -276,6 +277,11 @@ void SingleC2P_IdealSRMHD(MHDCons1D &u, const EOS_Data &eos, Real s2, Real b2, R
   Real epsmin = fmax(eos.pfloor/(dens*gm1), sfloor_local*pow(dens, gm1)/gm1);
   if (eps <= epsmin) {
     eps = epsmin;
+    efloor_used = true;
+  }
+  Real epsmax = eos.sceiling*pow(dens, gm1)/gm1;     // ADD
+  if (eps >= epsmax) {                                // ADD
+    eps = epsmax;                                     // ADD
     efloor_used = true;
   }
 
