@@ -278,11 +278,11 @@ void SingleC2P_IdealSRMHD(MHDCons1D &u, const EOS_Data &eos, Real s2, Real b2, R
     eps = epsmin;
     efloor_used = true;
   }
-  Real epsmax = eos.sceiling*pow(dens, gm1)/gm1;     // ADD
-  if (eps >= epsmax) {                                // ADD
-    eps = epsmax;                                     // ADD
-    efloor_used = true;
-  }
+  // Real epsmax = eos.sceiling*pow(dens, gm1)/gm1;     // ADD
+  // if (eps >= epsmax) {                                // ADD
+  //   eps = epsmax;                                     // ADD
+  //   efloor_used = true;
+  // }
 
   // set parameters required for velocity inversion
   Real const h = 1.0 + eos.gamma*eps;  // (43)
