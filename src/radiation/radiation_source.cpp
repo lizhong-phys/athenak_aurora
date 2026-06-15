@@ -213,25 +213,25 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
     // correct the density used for opacity setup
     Real wdn_opacity = fmax(wdn-dfloor, dfloor_op);
     if (correct_radsrc_opacity_) {
-      if (excision_flux_(m,k,j,i)) {
-        wdn_opacity = dfloor_op;
-      } else {
-        Real delta_l = fmax(fmax(size.d_view(m).dx1, size.d_view(m).dx2), size.d_view(m).dx3);
-        Real dtrunc = fmax(0.0, sigma_cold)*tau_trunc / (kappa_s_*delta_l);
-        dtrunc = fmin(dtrunc_max, fmax(dfloor, dtrunc)); // dfloor <= dtrunc <= dtrunc_max
-        Real fac_trunc = dtrunc / dfloor;
-        Real wid_trunc = 0.5*log10(fac_trunc) / log(1./sigmoid_res - 1.);
-        Real wdn_real = fmax(wdn-dfloor, dfloor_op);
-        Real del_reduce = log10(dfloor) - log10(dfloor_op);
+      // if (excision_flux_(m,k,j,i)) {
+      //   wdn_opacity = dfloor_op;
+      // } else {
+      Real delta_l = fmax(fmax(size.d_view(m).dx1, size.d_view(m).dx2), size.d_view(m).dx3);
+      Real dtrunc = fmax(0.0, sigma_cold)*tau_trunc / (kappa_s_*delta_l);
+      dtrunc = fmin(dtrunc_max, fmax(dfloor, dtrunc)); // dfloor <= dtrunc <= dtrunc_max
+      Real fac_trunc = dtrunc / dfloor;
+      Real wid_trunc = 0.5*log10(fac_trunc) / log(1./sigmoid_res - 1.);
+      Real wdn_real = fmax(wdn-dfloor, dfloor_op);
+      Real del_reduce = log10(dfloor) - log10(dfloor_op);
 
-        Real fac_inv = 1.0;
-        if (fabs(fac_trunc-1) > 1e-12) {
-          fac_inv = 1.0 + exp( -1./wid_trunc * ( log10(wdn_real) - (log10(dfloor) + 0.5*log10(fac_trunc)) ) );
-        }
+      Real fac_inv = 1.0;
+      if (fabs(fac_trunc-1) > 1e-12) {
+        fac_inv = 1.0 + exp( -1./wid_trunc * ( log10(wdn_real) - (log10(dfloor) + 0.5*log10(fac_trunc)) ) );
+      }
 
-        Real lg_rho_op = log10(wdn_real) - (1.-1./fac_inv) * del_reduce;
-        wdn_opacity = pow(10.0, lg_rho_op);
-      } // endelse
+      Real lg_rho_op = log10(wdn_real) - (1.-1./fac_inv) * del_reduce;
+      wdn_opacity = pow(10.0, lg_rho_op);
+      // } // endelse
 
       // apply the reduced density
       sigma_a *= wdn_opacity/wdn;
