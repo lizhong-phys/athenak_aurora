@@ -42,6 +42,9 @@ struct EOS_Data {
   Real sigma1, sigma2;               // sigma anchors (b^2/rho, code)
   Real sigma_tfloor1, sigma_tfloor2; // floor T (code) at sigma1, sigma2
   Real sigma_tfloor_cap;             // hard cap on the combined floor T (code)
+  
+  bool enable_sigma_dfloor;   // magnetization density floor on/off
+  Real sigma_max;             // ceiling on sigma_cold = b^2/rho
   // Real sceiling;
 
   // IDEAL GAS PRESSURE: converts primitive variable (either internal energy density e

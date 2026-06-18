@@ -196,6 +196,12 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
         sigma_cold = b_sq/w.d;
       } // end computing magnetization
 
+      if (eos.enable_sigma_dfloor && (sigma_cold > eos.sigma_max) && (!excision_floor_(m,k,j,i))) {
+        w.d *= sigma_cold/eos.sigma_max;   // raise rho so b^2/rho == sigma_max
+        sigma_cold = eos.sigma_max;        // keep consistent for the sigma T-floor below
+        dfloor_used = true;                // triggers conserved re-derivation (line 278)
+      }
+
       // compute radius in SKS
       Real R_cap2 = SQR(x1v) + SQR(x2v) + SQR(x3v);
       Real a2 = SQR(spin);
