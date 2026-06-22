@@ -213,9 +213,9 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
     // correct the density used for opacity setup
     Real wdn_opacity = fmax(wdn-dfloor, dfloor_op);
     if (correct_radsrc_opacity_) {
-      // if (excision_flux_(m,k,j,i)) {
-      //   wdn_opacity = dfloor_op;
-      // } else {
+      if (excision_flux_(m,k,j,i)) {
+        wdn_opacity = dfloor_op;
+      } else {
       Real delta_l = fmax(fmax(size.d_view(m).dx1, size.d_view(m).dx2), size.d_view(m).dx3);
       Real dtrunc = fmax(0.0, sigma_cold)*tau_trunc / (kappa_s_*delta_l);
       dtrunc = fmin(dtrunc_max, fmax(dfloor, dtrunc)); // dfloor <= dtrunc <= dtrunc_max
@@ -231,7 +231,7 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
 
       Real lg_rho_op = log10(wdn_real) - (1.-1./fac_inv) * del_reduce;
       wdn_opacity = pow(10.0, lg_rho_op);
-      // } // endelse
+      } // endelse
 
       // apply the reduced density
       sigma_a *= wdn_opacity/wdn;
