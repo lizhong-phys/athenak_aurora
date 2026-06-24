@@ -70,6 +70,7 @@ struct RadiationTaskIDs {
   TaskID mhd_prol;
   TaskID hyd_prol;
   TaskID mhd_c2p;
+  TaskID mhd_masktrms;
   TaskID hyd_c2p;
   TaskID rad_csend;
   TaskID mhd_csend;

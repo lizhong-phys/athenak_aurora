@@ -295,7 +295,12 @@ void IdealSRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
       // convert scalars (if any)
       for (int n=nmhd; n<(nmhd+nscal); ++n) {
         prim(m,n,k,j,i) = cons(m,n,k,j,i)/u.d;
-      }
+        if ((use_nsmask) && (n==nmhd+0)) {
+          // density tracer
+          prim(m,n,k,j,i) = fmax(prim(m,n,k,j,i), 0.0);
+        } // end density tracer
+      } // endfor n
+      
     }
   }, Kokkos::Sum<int>(nfloord_), Kokkos::Sum<int>(nfloore_), Kokkos::Sum<int>(nceilv_),
      Kokkos::Sum<int>(nfail_), Kokkos::Max<int>(maxit_));

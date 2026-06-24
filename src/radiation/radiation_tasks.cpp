@@ -71,6 +71,7 @@ void Radiation::AssembleRadTasks(std::map<std::string, std::shared_ptr<TaskList>
     id.rad_prol  = tl["stagen"]->AddTask(&Radiation::Prolongate, this, id.bcs);
     id.mhd_prol  = tl["stagen"]->AddTask(&mhd::MHD::Prolongate, pmhd, id.rad_prol);
     id.mhd_c2p   = tl["stagen"]->AddTask(&mhd::MHD::ConToPrim, pmhd, id.mhd_prol);
+    id.mhd_masktrms = tl["stagen"]->AddTask(&mhd::MHD::MHDMaskTerms, pmhd, id.mhd_c2p);
 
     // assemble "after_stagen" task list
     id.rad_csend = tl["after_stagen"]->AddTask(&Radiation::ClearSend, this, none);
