@@ -116,6 +116,9 @@ struct bondi_pgen {
 void ReservoirBondi(Mesh *pm);
 void BondiFluxes(HistoryData *pdata, Mesh *pm);
 
+// Prototypes for user-defined source functions
+void MySourceTerms(Mesh* pm, const Real bdt);
+
 //----------------------------------------------------------------------------------------
 //! \fn void ProblemGenerator::UserProblem()
 //! \brief Uniform gas + Gaussian central dip around a Kerr BH, optionally threaded
@@ -134,6 +137,9 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
   // User boundary function
   user_bcs_func = ReservoirBondi;
+
+  // User src terms
+  user_srcs_func = MySourceTerms;
 
   // capture variables for kernel
   auto &indcs = pmy_mesh_->mb_indcs;
@@ -634,6 +640,179 @@ Real A3(struct bondi_pgen pgen, Real x1, Real x2, Real x3) {
 }
 
 } // namespace
+
+
+
+void MySourceTerms(Mesh* pm, const Real bdt) {
+
+  // damp gas velocity near BH mask
+  {
+    // capture variables for kernel
+    MeshBlockPack *pmbp = pm->pmb_pack;
+    auto &indcs = pm->mb_indcs;
+    int is = indcs.is, js = indcs.js, ks = indcs.ks;
+    int nmb = pmbp->nmb_thispack;
+    auto &size = pmbp->pmb->mb_size;
+
+    int n1m1 = indcs.nx1 + 2*indcs.ng - 1;
+    int n2m1 = (indcs.nx2 > 1) ? (indcs.nx2 + 2*indcs.ng - 1) : 0;
+    int n3m1 = (indcs.nx3 > 1) ? (indcs.nx3 + 2*indcs.ng - 1) : 0;
+
+    // MHD variables
+    DvceArray5D<Real> u0_ = pmbp->pmhd->u0;
+    DvceArray5D<Real> w0_ = pmbp->pmhd->w0;
+    DvceArray5D<Real> bcc0_ = pmbp->pmhd->bcc0;
+
+    // excision masks
+    auto &excision_floor_ = pmbp->pcoord->excision_floor;
+    auto &excision_flux_  = pmbp->pcoord->excision_flux;
+
+    // coordinate data
+    auto &coord = pmbp->pcoord->coord_data;
+    bool flat_  = coord.is_minkowski;
+
+    Real gm1 = bondi.gamma_adi - 1.0;
+    auto bondi_dvce = bondi;
+
+    // Damping coefficient [0, 1]: fraction of lateral velocity removed per timestep.
+    // Lateral components are damped unconditionally as they drive the instability.
+    // Radial component is left untouched entirely.
+    // Use alpha=1.0 to fully suppress lateral oscillations; tune down if too aggressive.
+    const Real alpha = 0.3;
+
+    par_for("mask_vel_damp", DevExeSpace(), 0,nmb-1, 0,n3m1, 0,n2m1, 0,n1m1,
+    KOKKOS_LAMBDA(int m, int k, int j, int i) {
+
+      // ----------------------------------------------------------------
+      // 1. Cell selection: active cells directly adjacent to BH mask.
+      //    Condition: excision_flux=true, excision_floor=false, and at
+      //    least one face neighbor inside the mask (excision_floor=true).
+      // ----------------------------------------------------------------
+      if ( excision_floor_(m,k,j,i)) return;
+      if (!excision_flux_ (m,k,j,i)) return;
+      bool has_masked_neighbor =
+        excision_floor_(m,k,j,i+1) || excision_floor_(m,k,j,i-1) ||
+        excision_floor_(m,k,j+1,i) || excision_floor_(m,k,j-1,i) ||
+        excision_floor_(m,k+1,j,i) || excision_floor_(m,k-1,j,i);
+      if (!has_masked_neighbor) return;
+
+      // ----------------------------------------------------------------
+      // 2. Cell-center coordinates
+      // ----------------------------------------------------------------
+      Real x1v = CellCenterX(i-is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
+      Real x2v = CellCenterX(j-js, indcs.nx2, size.d_view(m).x2min, size.d_view(m).x2max);
+      Real x3v = CellCenterX(k-ks, indcs.nx3, size.d_view(m).x3min, size.d_view(m).x3max);
+
+      // ----------------------------------------------------------------
+      // 3. Radial unit vector in CKS Cartesian components
+      // ----------------------------------------------------------------
+      Real r, theta, phi;
+      GetBoyerLindquistCoordinates(bondi_dvce, x1v, x2v, x3v, &r, &theta, &phi);
+      Real rad2 = SQR(x1v) + SQR(x2v) + SQR(x3v);
+      Real r2   = SQR(r);
+      Real a2   = SQR(bondi_dvce.spin);
+      Real denom = 2.0*r2 - rad2 + a2;   // = 2r^2 - (x^2+y^2+z^2) + a^2
+
+      Real drdx = r*x1v / denom;
+      Real drdy = r*x2v / denom;
+      Real drdz = (r*x3v + a2*x3v/r) / denom;
+
+      // normalize to get radial unit vector
+      Real norm  = sqrt(SQR(drdx) + SQR(drdy) + SQR(drdz));
+      Real inv_n = 1.0 / fmax(norm, 1.0e-12);
+      Real nr_x  = drdx * inv_n;
+      Real nr_y  = drdy * inv_n;
+      Real nr_z  = drdz * inv_n;
+
+      // ----------------------------------------------------------------
+      // 4. Current primitive velocity and decomposition into radial
+      //    and lateral components.
+      //    In GRMHD (Valencia formulation), w0_(IVX/IVY/IVZ) = u^i in
+      //    the normal frame. Free-fall target is u^i = 0.
+      // ----------------------------------------------------------------
+      Real uu1 = w0_(m,IVX,k,j,i);
+      Real uu2 = w0_(m,IVY,k,j,i);
+      Real uu3 = w0_(m,IVZ,k,j,i);
+
+      // radial component (positive = outward)
+      Real vr  = uu1*nr_x + uu2*nr_y + uu3*nr_z;
+
+      // lateral (tangential) components
+      Real uu1_lat = uu1 - vr*nr_x;
+      Real uu2_lat = uu2 - vr*nr_y;
+      Real uu3_lat = uu3 - vr*nr_z;
+
+      // ----------------------------------------------------------------
+      // 5. Damp lateral components unconditionally toward zero.
+      //    Radial component is left untouched entirely — only the lateral
+      //    oscillations are driving the numerical instability.
+      // ----------------------------------------------------------------
+      Real uu1_new = uu1 - alpha * uu1_lat;
+      Real uu2_new = uu2 - alpha * uu2_lat;
+      Real uu3_new = uu3 - alpha * uu3_lat;
+
+      w0_(m,IVX,k,j,i) = uu1_new;
+      w0_(m,IVY,k,j,i) = uu2_new;
+      w0_(m,IVZ,k,j,i) = uu3_new;
+
+      // ----------------------------------------------------------------
+      // 6. Recompute conserved variables with full CKS metric to keep
+      //    primitives and conserved arrays consistent.
+      // ----------------------------------------------------------------
+      Real dens = w0_(m,IDN,k,j,i);
+      Real eint = w0_(m,IEN,k,j,i);
+      Real bcc1 = bcc0_(m,IBX,k,j,i);
+      Real bcc2 = bcc0_(m,IBY,k,j,i);
+      Real bcc3 = bcc0_(m,IBZ,k,j,i);
+
+      Real glower[4][4], gupper[4][4];
+      ComputeMetricAndInverse(x1v, x2v, x3v, flat_, bondi_dvce.spin, glower, gupper);
+
+      Real lapse  = sqrt(-1.0 / gupper[0][0]);
+      Real q      = glower[1][1]*SQR(uu1_new)
+                  + 2.0*glower[1][2]*uu1_new*uu2_new
+                  + 2.0*glower[1][3]*uu1_new*uu3_new
+                  + glower[2][2]*SQR(uu2_new)
+                  + 2.0*glower[2][3]*uu2_new*uu3_new
+                  + glower[3][3]*SQR(uu3_new);
+      Real lor    = sqrt(1.0 + q);
+      Real u0_con = lor / lapse;
+      Real u1_con = uu1_new - lapse * lor * gupper[0][1];
+      Real u2_con = uu2_new - lapse * lor * gupper[0][2];
+      Real u3_con = uu3_new - lapse * lor * gupper[0][3];
+
+      Real u_0 = glower[0][0]*u0_con + glower[0][1]*u1_con + glower[0][2]*u2_con + glower[0][3]*u3_con;
+      Real u_1 = glower[1][0]*u0_con + glower[1][1]*u1_con + glower[1][2]*u2_con + glower[1][3]*u3_con;
+      Real u_2 = glower[2][0]*u0_con + glower[2][1]*u1_con + glower[2][2]*u2_con + glower[2][3]*u3_con;
+      Real u_3 = glower[3][0]*u0_con + glower[3][1]*u1_con + glower[3][2]*u2_con + glower[3][3]*u3_con;
+
+      Real b0_4 = u_1*bcc1 + u_2*bcc2 + u_3*bcc3;
+      Real b1_4 = (bcc1 + b0_4*u1_con) / u0_con;
+      Real b2_4 = (bcc2 + b0_4*u2_con) / u0_con;
+      Real b3_4 = (bcc3 + b0_4*u3_con) / u0_con;
+      Real b_0  = glower[0][0]*b0_4 + glower[0][1]*b1_4 + glower[0][2]*b2_4 + glower[0][3]*b3_4;
+      Real b_1  = glower[1][0]*b0_4 + glower[1][1]*b1_4 + glower[1][2]*b2_4 + glower[1][3]*b3_4;
+      Real b_2  = glower[2][0]*b0_4 + glower[2][1]*b1_4 + glower[2][2]*b2_4 + glower[2][3]*b3_4;
+      Real b_3  = glower[3][0]*b0_4 + glower[3][1]*b1_4 + glower[3][2]*b2_4 + glower[3][3]*b3_4;
+      Real b_sq = b0_4*b_0 + b1_4*b_1 + b2_4*b_2 + b3_4*b_3;
+
+      Real wtot = dens + (gm1+1.0)*eint + b_sq;
+
+      u0_(m,IDN,k,j,i) = dens * u0_con;
+      u0_(m,IEN,k,j,i) = wtot*u0_con*u0_con - b0_4*b_0 - (gm1*eint + 0.5*b_sq) - dens*u0_con;
+      u0_(m,IM1,k,j,i) = wtot*u0_con*u_1 - b0_4*b_1;
+      u0_(m,IM2,k,j,i) = wtot*u0_con*u_2 - b0_4*b_2;
+      u0_(m,IM3,k,j,i) = wtot*u0_con*u_3 - b0_4*b_3;
+
+    }); // end par_for mask_vel_damp
+  } // end vel damping
+
+  return;
+}
+
+
+
+
 
 //----------------------------------------------------------------------------------------
 //! \fn BondiEquilibIntensity
