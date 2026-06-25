@@ -29,8 +29,8 @@
 //!
 //! B-field amplitude b0 (coordinate-frame B^y) is set from beta_inf using the
 //! relativistic formula for B perpendicular to v:
-//!    b0 = sqrt(2 * p_tot / (beta_target * (1 - v_inf^2)))
-//! where p_tot = rho0*t0 + arad*t0^4 (gas + radiation pressure).
+//!    b0 = sqrt(2 * p_gas / (beta_target * (1 - v_inf^2))),   p_gas = rho0*t0
+//! (GAS plasma-beta; radiation is NOT in this balance, so beta_target = realized beta).
 //! The (1 - v_inf^2) factor accounts for b^2_comoving = B^2 (1 - v_inf^2) when
 //! B is perpendicular to the bulk velocity, so beta_inf = p_gas / (b^2/2) is the
 //! comoving plasma-beta (matches K&M Eq. 22-23).
@@ -234,9 +234,14 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   // (-> zero field injected, growing field-free cavity at the inflow).
   if (pmbp->pmhd != nullptr) {
     Real beta_target = pin->GetOrAddReal("problem", "beta_target", 100.0);
-    Real ptot = bhl.rho0*bhl.t0 + bhl.arad*SQR(SQR(bhl.t0));
+    // GAS (comoving) plasma-beta: beta_inf = 2 p_gas / b^2_comoving, with
+    // b^2_comoving = B^2 (1 - v_inf^2) for B perp v  ->  b0 = sqrt(2*p_gas/(beta*(1-v^2))).
+    // Radiation is intentionally NOT in this balance (for a total-pressure beta, add
+    // the radiation PRESSURE bhl.arad*SQR(SQR(bhl.t0))/3.0 -- NOTE the /3: arad*T^4 is
+    // the radiation ENERGY density, the pressure is one third of it).
+    Real p_gas = bhl.rho0*bhl.t0;
     Real one_m_v2 = 1.0 - bhl.v_inf * bhl.v_inf;
-    bhl.b0 = sqrt(2.0 * ptot / (beta_target * one_m_v2));
+    bhl.b0 = sqrt(2.0 * p_gas / (beta_target * one_m_v2));
   }
 
   // Return on restart AFTER the params above: the reservoir BC and history
@@ -343,7 +348,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     // already computed above (before the restart return) from beta_target:
     //   comoving b^2 = b0^2 * (1 - v_inf^2)        (B perp to v)
     //   beta_inf = p_gas / (b^2/2)                 (K&M Eq. 22-23)
-    //   =>  b0 = sqrt( 2 * p_tot / (beta_target * (1 - v_inf^2)) )
+    //   =>  b0 = sqrt( 2 * p_gas / (beta_target * (1 - v_inf^2)) )
 
     // compute vector potential over all faces
     int ncells1 = indcs.nx1 + 2*(indcs.ng);

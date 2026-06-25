@@ -19,8 +19,8 @@
 //!    uu^i        = 0                                       (gas at rest)
 //!    A_phi       = 0.5 * b0 * (r sin theta)^2              (-> uniform B_z)
 //!
-//! B-field amplitude b0 from beta_target.  v=0 at IC so no (1-v^2) factor here:
-//!    b0 = sqrt(2 * p_tot / beta_target),   p_tot = rho0*t0 + arad*t0^4
+//! B-field amplitude b0 from beta_target (GAS plasma-beta).  v=0 at IC, no (1-v^2):
+//!    b0 = sqrt(2 * p_gas / beta_target),   p_gas = rho0*t0
 //!
 //! Outer boundary: Dirichlet-to-uniform-reservoir (ReservoirBondi).
 //! Inside the horizon: primitives replaced by excision floors (dexcise, pexcise).
@@ -203,8 +203,13 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   // the BC is ever switched to pin a uniform B_z.
   if (pmbp->pmhd != nullptr) {
     Real beta_target = pin->GetOrAddReal("problem", "beta_target", 100.0);
-    Real ptot = bondi.rho0*bondi.t0 + bondi.arad*SQR(SQR(bondi.t0));
-    bondi.b0 = sqrt(2.0*ptot / beta_target);
+    // GAS plasma-beta:  beta_target = p_gas / (b^2/2)  ->  b0 = sqrt(2*p_gas/beta_target).
+    // Radiation is intentionally NOT in this balance, so beta_target equals the
+    // realized gas plasma-beta independent of density/radiation.  (For a total-pressure
+    // beta, add the radiation PRESSURE bondi.arad*SQR(SQR(bondi.t0))/3.0 -- NOTE the /3:
+    // arad*T^4 is the radiation ENERGY density, the pressure is one third of it.)
+    Real p_gas = bondi.rho0*bondi.t0;
+    bondi.b0 = sqrt(2.0*p_gas / beta_target);
   }
 
   // Return on restart AFTER the params above: the reservoir BC and history
@@ -310,7 +315,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   if (pmbp->pmhd != nullptr) {
     // Uniform vertical B_z via target plasma beta; bondi.b0 was already
     // computed above (before the restart return):
-    //   beta = p_gas / (b^2 / 2)  ->  b0 = sqrt(2 * p_tot / beta_target)
+    //   beta = p_gas / (b^2 / 2)  ->  b0 = sqrt(2 * p_gas / beta_target)
 
     // compute vector potential over all faces
     int ncells1 = indcs.nx1 + 2*(indcs.ng);
