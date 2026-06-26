@@ -650,13 +650,11 @@ void MySourceTerms(Mesh* pm, const Real bdt) {
     // capture variables for kernel
     MeshBlockPack *pmbp = pm->pmb_pack;
     auto &indcs = pm->mb_indcs;
-    int is = indcs.is, js = indcs.js, ks = indcs.ks;
+    int is = indcs.is, ie = indcs.ie;
+    int js = indcs.js, je = indcs.je;
+    int ks = indcs.ks, ke = indcs.ke;
     int nmb = pmbp->nmb_thispack;
     auto &size = pmbp->pmb->mb_size;
-
-    int n1m1 = indcs.nx1 + 2*indcs.ng - 1;
-    int n2m1 = (indcs.nx2 > 1) ? (indcs.nx2 + 2*indcs.ng - 1) : 0;
-    int n3m1 = (indcs.nx3 > 1) ? (indcs.nx3 + 2*indcs.ng - 1) : 0;
 
     // MHD variables
     DvceArray5D<Real> u0_ = pmbp->pmhd->u0;
@@ -680,7 +678,12 @@ void MySourceTerms(Mesh* pm, const Real bdt) {
     // Use alpha=1.0 to fully suppress lateral oscillations; tune down if too aggressive.
     const Real alpha = 0.3;
 
-    par_for("mask_vel_damp", DevExeSpace(), 0,nmb-1, 0,n3m1, 0,n2m1, 0,n1m1,
+    // Loop over ACTIVE cells only (is..ie, etc.).  The kernel reads i+-1/j+-1/
+    // k+-1 neighbors, so looping over ghost zones (0..nx+2ng-1) would read out
+    // of bounds at the array edges -> GPU segfault.  Active range keeps every
+    // neighbor access within [is-1,ie+1] (valid ghosts); all mask-edge cells
+    // are interior, so none are missed.
+    par_for("mask_vel_damp", DevExeSpace(), 0,nmb-1, ks,ke, js,je, is,ie,
     KOKKOS_LAMBDA(int m, int k, int j, int i) {
 
       // ----------------------------------------------------------------
