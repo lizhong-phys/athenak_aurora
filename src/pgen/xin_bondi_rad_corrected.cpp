@@ -60,6 +60,7 @@
 #include "coordinates/cartesian_ks.hpp"
 #include "coordinates/cell_locations.hpp"
 #include "eos/eos.hpp"
+#include "eos/ideal_c2p_mhd.hpp"   // SingleP2C_IdealGRMHD (used by MySourceTerms)
 #include "geodesic-grid/geodesic_grid.hpp"
 #include "geodesic-grid/spherical_grid.hpp"
 #include "hydro/hydro.hpp"
@@ -106,6 +107,10 @@ struct bondi_pgen {
   // divergence-free everywhere by construction (B = curl A on faces).
   // Set b0 = 0.0 to disable MHD initialization.
   Real b0;              // vertical field amplitude
+
+  // MySourceTerms: fraction of lateral velocity removed per step in the ring of
+  // active cells adjacent to the BH mask (0 = off, 1 = full damping).
+  Real veldamp_alpha;
 };
 
   bondi_pgen bondi;
@@ -205,6 +210,10 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   //   p           = rho * t0   (uniform T = t0)
   bondi.rho0 = pin->GetReal("problem", "rho0");
   bondi.t0   = pin->GetReal("problem", "t0");
+
+  // Velocity-damping strength for MySourceTerms.  Read BEFORE the restart return
+  // so the (device-captured) global bondi struct is populated on restart too.
+  bondi.veldamp_alpha = pin->GetOrAddReal("problem", "veldamp_alpha", 0.3);
 
   // excision parameters
   bondi.dexcise = coord.dexcise;
@@ -676,7 +685,8 @@ void MySourceTerms(Mesh* pm, const Real bdt) {
     // Lateral components are damped unconditionally as they drive the instability.
     // Radial component is left untouched entirely.
     // Use alpha=1.0 to fully suppress lateral oscillations; tune down if too aggressive.
-    const Real alpha = 0.3;
+    // Tunable via <problem> veldamp_alpha (default 0.3).
+    const Real alpha = bondi.veldamp_alpha;
 
     // Loop over ACTIVE cells only (is..ie, etc.).  The kernel reads i+-1/j+-1/
     // k+-1 neighbors, so looping over ghost zones (0..nx+2ng-1) would read out
@@ -754,58 +764,39 @@ void MySourceTerms(Mesh* pm, const Real bdt) {
       Real uu2_new = uu2 - alpha * uu2_lat;
       Real uu3_new = uu3 - alpha * uu3_lat;
 
-      w0_(m,IVX,k,j,i) = uu1_new;
-      w0_(m,IVY,k,j,i) = uu2_new;
-      w0_(m,IVZ,k,j,i) = uu3_new;
-
       // ----------------------------------------------------------------
-      // 6. Recompute conserved variables with full CKS metric to keep
-      //    primitives and conserved arrays consistent.
+      // 6. Apply the damping as a CONSERVATIVE INCREMENT to u0.
+      //    When this source term runs, u0 already carries the stage's
+      //    flux-divergence + gravitational-coordinate source (mhd_tasks.cpp
+      //    notes u0 is "partially updated"), so we must ADD an increment, not
+      //    overwrite.  Build the conserved state for the ORIGINAL and DAMPED
+      //    velocities (same metric / rho / e / B — only v differs) with the
+      //    canonical P2C, and add the difference.  This preserves the flux +
+      //    gravity update and stays conservative even at very low beta, where
+      //    overwriting u0 corrupts the c2p inversion (catastrophic cancellation
+      //    of the large magnetic terms) and blows up almost immediately.
       // ----------------------------------------------------------------
-      Real dens = w0_(m,IDN,k,j,i);
-      Real eint = w0_(m,IEN,k,j,i);
-      Real bcc1 = bcc0_(m,IBX,k,j,i);
-      Real bcc2 = bcc0_(m,IBY,k,j,i);
-      Real bcc3 = bcc0_(m,IBZ,k,j,i);
-
       Real glower[4][4], gupper[4][4];
       ComputeMetricAndInverse(x1v, x2v, x3v, flat_, bondi_dvce.spin, glower, gupper);
 
-      Real lapse  = sqrt(-1.0 / gupper[0][0]);
-      Real q      = glower[1][1]*SQR(uu1_new)
-                  + 2.0*glower[1][2]*uu1_new*uu2_new
-                  + 2.0*glower[1][3]*uu1_new*uu3_new
-                  + glower[2][2]*SQR(uu2_new)
-                  + 2.0*glower[2][3]*uu2_new*uu3_new
-                  + glower[3][3]*SQR(uu3_new);
-      Real lor    = sqrt(1.0 + q);
-      Real u0_con = lor / lapse;
-      Real u1_con = uu1_new - lapse * lor * gupper[0][1];
-      Real u2_con = uu2_new - lapse * lor * gupper[0][2];
-      Real u3_con = uu3_new - lapse * lor * gupper[0][3];
+      MHDPrim1D w_old;
+      w_old.d  = w0_(m,IDN,k,j,i);   w_old.e  = w0_(m,IEN,k,j,i);
+      w_old.bx = bcc0_(m,IBX,k,j,i); w_old.by = bcc0_(m,IBY,k,j,i);
+      w_old.bz = bcc0_(m,IBZ,k,j,i);
+      w_old.vx = uu1;      w_old.vy = uu2;      w_old.vz = uu3;      // original velocity
+      MHDPrim1D w_new = w_old;
+      w_new.vx = uu1_new;  w_new.vy = uu2_new;  w_new.vz = uu3_new;  // damped velocity
 
-      Real u_0 = glower[0][0]*u0_con + glower[0][1]*u1_con + glower[0][2]*u2_con + glower[0][3]*u3_con;
-      Real u_1 = glower[1][0]*u0_con + glower[1][1]*u1_con + glower[1][2]*u2_con + glower[1][3]*u3_con;
-      Real u_2 = glower[2][0]*u0_con + glower[2][1]*u1_con + glower[2][2]*u2_con + glower[2][3]*u3_con;
-      Real u_3 = glower[3][0]*u0_con + glower[3][1]*u1_con + glower[3][2]*u2_con + glower[3][3]*u3_con;
+      HydCons1D u_old, u_new;
+      Real gam = gm1 + 1.0;
+      SingleP2C_IdealGRMHD(glower, gupper, w_old, gam, u_old);
+      SingleP2C_IdealGRMHD(glower, gupper, w_new, gam, u_new);
 
-      Real b0_4 = u_1*bcc1 + u_2*bcc2 + u_3*bcc3;
-      Real b1_4 = (bcc1 + b0_4*u1_con) / u0_con;
-      Real b2_4 = (bcc2 + b0_4*u2_con) / u0_con;
-      Real b3_4 = (bcc3 + b0_4*u3_con) / u0_con;
-      Real b_0  = glower[0][0]*b0_4 + glower[0][1]*b1_4 + glower[0][2]*b2_4 + glower[0][3]*b3_4;
-      Real b_1  = glower[1][0]*b0_4 + glower[1][1]*b1_4 + glower[1][2]*b2_4 + glower[1][3]*b3_4;
-      Real b_2  = glower[2][0]*b0_4 + glower[2][1]*b1_4 + glower[2][2]*b2_4 + glower[2][3]*b3_4;
-      Real b_3  = glower[3][0]*b0_4 + glower[3][1]*b1_4 + glower[3][2]*b2_4 + glower[3][3]*b3_4;
-      Real b_sq = b0_4*b_0 + b1_4*b_1 + b2_4*b_2 + b3_4*b_3;
-
-      Real wtot = dens + (gm1+1.0)*eint + b_sq;
-
-      u0_(m,IDN,k,j,i) = dens * u0_con;
-      u0_(m,IEN,k,j,i) = wtot*u0_con*u_0 - b0_4*b_0 + (gm1*eint + 0.5*b_sq) + dens*u0_con;
-      u0_(m,IM1,k,j,i) = wtot*u0_con*u_1 - b0_4*b_1;
-      u0_(m,IM2,k,j,i) = wtot*u0_con*u_2 - b0_4*b_2;
-      u0_(m,IM3,k,j,i) = wtot*u0_con*u_3 - b0_4*b_3;
+      u0_(m,IDN,k,j,i) += (u_new.d  - u_old.d);   // ~0 (rho unchanged), kept for symmetry
+      u0_(m,IEN,k,j,i) += (u_new.e  - u_old.e);
+      u0_(m,IM1,k,j,i) += (u_new.mx - u_old.mx);
+      u0_(m,IM2,k,j,i) += (u_new.my - u_old.my);
+      u0_(m,IM3,k,j,i) += (u_new.mz - u_old.mz);
 
     }); // end par_for mask_vel_damp
   } // end vel damping
