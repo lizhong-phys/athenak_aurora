@@ -802,7 +802,7 @@ void MySourceTerms(Mesh* pm, const Real bdt) {
       Real wtot = dens + (gm1+1.0)*eint + b_sq;
 
       u0_(m,IDN,k,j,i) = dens * u0_con;
-      u0_(m,IEN,k,j,i) = wtot*u0_con*u0_con - b0_4*b_0 - (gm1*eint + 0.5*b_sq) - dens*u0_con;
+      u0_(m,IEN,k,j,i) = wtot*u0_con*u_0 - b0_4*b_0 + (gm1*eint + 0.5*b_sq) + dens*u0_con;
       u0_(m,IM1,k,j,i) = wtot*u0_con*u_1 - b0_4*b_1;
       u0_(m,IM2,k,j,i) = wtot*u0_con*u_2 - b0_4*b_2;
       u0_(m,IM3,k,j,i) = wtot*u0_con*u_3 - b0_4*b_3;
