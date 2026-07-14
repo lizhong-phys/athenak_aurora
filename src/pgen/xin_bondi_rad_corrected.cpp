@@ -108,9 +108,18 @@ struct bondi_pgen {
   // Set b0 = 0.0 to disable MHD initialization.
   Real b0;              // vertical field amplitude
 
-  // MySourceTerms: fraction of lateral velocity removed per step in the ring of
-  // active cells adjacent to the BH mask (0 = off, 1 = full damping).
+  // MySourceTerms: lateral-velocity relaxation RATE [1/M] in the ring of active
+  // cells adjacent to the BH mask.  Per substage the removed fraction is
+  // 1 - exp(-veldamp_alpha * bdt), which is time-scaled (independent of CFL /
+  // substage count / restart state) and bounded in [0,1) so it can never
+  // overshoot past zero (0 = off).
   Real veldamp_alpha;
+
+  // KO (Kreiss-Oliger) hyper-dissipation of the grid-scale velocity checkerboard
+  // in the near-horizon shell.  Independent on/off from the mask damping.
+  bool ko_on;          // master on/off for the KO block (default true)
+  Real ko_sigma;       // KO strength: fraction of the 2*dx mode removed / dir / substage
+  Real ko_radius;      // apply KO only inside this radius [M]
 };
 
   bondi_pgen bondi;
@@ -211,9 +220,22 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   bondi.rho0 = pin->GetReal("problem", "rho0");
   bondi.t0   = pin->GetReal("problem", "t0");
 
-  // Velocity-damping strength for MySourceTerms.  Read BEFORE the restart return
-  // so the (device-captured) global bondi struct is populated on restart too.
-  bondi.veldamp_alpha = pin->GetOrAddReal("problem", "veldamp_alpha", 0.3);
+  // Velocity-damping RATE [1/M] for MySourceTerms.  Read BEFORE the restart
+  // return so the (device-captured) global bondi struct is populated on restart
+  // too.  NOTE: units are now a per-time rate, NOT a per-stage fraction — the
+  // damped fraction per substage is 1 - exp(-alpha*bdt).  Default 20 /M removes
+  // ~0.3 of the lateral velocity per substage at the finest near-horizon step
+  // (dx_min~0.06M, cfl~0.3 -> bdt~0.02M), matching the old fixed-0.3 tuning but
+  // now CFL/restart-independent and non-overshooting.  Raise for stronger
+  // damping, lower toward 0 to disable.
+  bondi.veldamp_alpha = pin->GetOrAddReal("problem", "veldamp_alpha", 20.0);
+
+  // KO dissipation controls: independent on/off (ko_on) + strength + region.
+  // Read here (before the restart return) so the device-captured bondi struct is
+  // populated on restart too, like veldamp_alpha.
+  bondi.ko_on     = pin->GetOrAddBoolean("problem", "ko_on", true);
+  bondi.ko_sigma  = pin->GetOrAddReal("problem", "ko_sigma", 0.1);
+  bondi.ko_radius = pin->GetOrAddReal("problem", "ko_radius", 8.0);
 
   // excision parameters
   bondi.dexcise = coord.dexcise;
@@ -654,8 +676,8 @@ Real A3(struct bondi_pgen pgen, Real x1, Real x2, Real x3) {
 
 void MySourceTerms(Mesh* pm, const Real bdt) {
 
-  // damp gas velocity near BH mask
-  {
+  // Relax the meridional velocity in the mask ring (rate veldamp_alpha; 0 = off).
+  if (bondi.veldamp_alpha > 0.0) {
     // capture variables for kernel
     MeshBlockPack *pmbp = pm->pmb_pack;
     auto &indcs = pm->mb_indcs;
@@ -681,11 +703,16 @@ void MySourceTerms(Mesh* pm, const Real bdt) {
     Real gm1 = bondi.gamma_adi - 1.0;
     auto bondi_dvce = bondi;
 
-    // Damping coefficient [0, 1]: fraction of lateral velocity removed per timestep.
-    // Lateral components are damped unconditionally as they drive the instability.
-    // Radial component is left untouched entirely.
-    // Use alpha=1.0 to fully suppress lateral oscillations; tune down if too aggressive.
-    // Tunable via <problem> veldamp_alpha (default 0.3).
+    // Damping RATE [1/M]: the lateral velocity is relaxed toward zero at rate
+    // alpha, so the fraction removed this substage is frac = 1 - exp(-alpha*bdt)
+    // (computed per cell below, since bdt is the stage weight beta*dt).  Using
+    // bdt makes the damping time-scaled — independent of CFL, substage count and
+    // restart state — and frac is bounded in [0,1) so it can NEVER overshoot past
+    // zero (the old fixed-fraction form did, flipping the lateral velocity's sign
+    // and driving the very oscillation it was meant to kill; alpha=0.8 blew up on
+    // restart for exactly this reason).  Lateral components are damped
+    // unconditionally; the radial component is left untouched (free infall).
+    // Tunable via <problem> veldamp_alpha (default 20 /M).
     const Real alpha = bondi.veldamp_alpha;
 
     // Loop over ACTIVE cells only (is..ie, etc.).  The kernel reads i+-1/j+-1/
@@ -730,55 +757,64 @@ void MySourceTerms(Mesh* pm, const Real bdt) {
       Real drdy = r*x2v / denom;
       Real drdz = (r*x3v + a2*x3v/r) / denom;
 
-      // normalize to get radial unit vector
-      Real norm  = sqrt(SQR(drdx) + SQR(drdy) + SQR(drdz));
-      Real inv_n = 1.0 / fmax(norm, 1.0e-12);
-      Real nr_x  = drdx * inv_n;
-      Real nr_y  = drdy * inv_n;
-      Real nr_z  = drdz * inv_n;
-
       // ----------------------------------------------------------------
-      // 4. Current primitive velocity and decomposition into radial
-      //    and lateral components.
-      //    In GRMHD (Valencia formulation), w0_(IVX/IVY/IVZ) = u^i in
-      //    the normal frame. Free-fall target is u^i = 0.
-      // ----------------------------------------------------------------
-      Real uu1 = w0_(m,IVX,k,j,i);
-      Real uu2 = w0_(m,IVY,k,j,i);
-      Real uu3 = w0_(m,IVZ,k,j,i);
-
-      // radial component (positive = outward)
-      Real vr  = uu1*nr_x + uu2*nr_y + uu3*nr_z;
-
-      // lateral (tangential) components
-      Real uu1_lat = uu1 - vr*nr_x;
-      Real uu2_lat = uu2 - vr*nr_y;
-      Real uu3_lat = uu3 - vr*nr_z;
-
-      // ----------------------------------------------------------------
-      // 5. Damp lateral components unconditionally toward zero.
-      //    Radial component is left untouched entirely — only the lateral
-      //    oscillations are driving the numerical instability.
-      // ----------------------------------------------------------------
-      Real uu1_new = uu1 - alpha * uu1_lat;
-      Real uu2_new = uu2 - alpha * uu2_lat;
-      Real uu3_new = uu3 - alpha * uu3_lat;
-
-      // ----------------------------------------------------------------
-      // 6. Apply the damping as a CONSERVATIVE INCREMENT to u0.
-      //    When this source term runs, u0 already carries the stage's
-      //    flux-divergence + gravitational-coordinate source (mhd_tasks.cpp
-      //    notes u0 is "partially updated"), so we must ADD an increment, not
-      //    overwrite.  Build the conserved state for the ORIGINAL and DAMPED
-      //    velocities (same metric / rho / e / B — only v differs) with the
-      //    canonical P2C, and add the difference.  This preserves the flux +
-      //    gravity update and stays conservative even at very low beta, where
-      //    overwriting u0 corrupts the c2p inversion (catastrophic cancellation
-      //    of the large magnetic terms) and blows up almost immediately.
+      // 4. Metric-correct split of the velocity into radial (free infall) /
+      //    azimuthal (frame dragging) / meridional.  w0_(IVX/IVY/IVZ) = u^i
+      //    (Valencia normal frame).  We split with the Kerr metric g_ij, NOT a
+      //    flat dot product: near the a=0.9 horizon g_ij deviates strongly from
+      //    delta_ij, so a Euclidean split leaks radial<->lateral and mishandles
+      //    the frame-dragging azimuthal flow.
       // ----------------------------------------------------------------
       Real glower[4][4], gupper[4][4];
       ComputeMetricAndInverse(x1v, x2v, x3v, flat_, bondi_dvce.spin, glower, gupper);
 
+      Real uu1 = w0_(m,IVX,k,j,i);
+      Real uu2 = w0_(m,IVY,k,j,i);
+      Real uu3 = w0_(m,IVZ,k,j,i);
+
+      // Radial part: l_i = d r/d x^i is the spin-aware Kerr radial ONE-FORM
+      // (drdx,drdy,drdz above).  Raise with g^{ij} to get the radial vector.
+      Real l1 = drdx, l2 = drdy, l3 = drdz;
+      Real nrad1 = gupper[1][1]*l1 + gupper[1][2]*l2 + gupper[1][3]*l3;
+      Real nrad2 = gupper[1][2]*l1 + gupper[2][2]*l2 + gupper[2][3]*l3;
+      Real nrad3 = gupper[1][3]*l1 + gupper[2][3]*l2 + gupper[3][3]*l3;
+      Real Nr2   = l1*nrad1 + l2*nrad2 + l3*nrad3;              // |dr|_g^2
+      Real cr    = (uu1*l1 + uu2*l2 + uu3*l3) / fmax(Nr2, 1.0e-16);
+      Real ur1 = cr*nrad1, ur2 = cr*nrad2, ur3 = cr*nrad3;     // radial (PRESERVE)
+      Real ul1 = uu1 - ur1, ul2 = uu2 - ur2, ul3 = uu3 - ur3;  // lateral
+
+      // Azimuthal part about the SPIN AXIS (z): axial Killing vector
+      // eta^i = (-y, x, 0), lowered with the metric.  This is FRAME DRAGGING ->
+      // PRESERVE it (damping it fights the metric and sustains the very
+      // oscillation we want to kill).
+      Real e1 = -x2v, e2 = x1v, e3 = 0.0;
+      Real el1 = glower[1][1]*e1 + glower[1][2]*e2 + glower[1][3]*e3;
+      Real el2 = glower[1][2]*e1 + glower[2][2]*e2 + glower[2][3]*e3;
+      Real el3 = glower[1][3]*e1 + glower[2][3]*e2 + glower[3][3]*e3;
+      Real Ne2  = e1*el1 + e2*el2 + e3*el3;                    // |eta|_g^2
+      Real cphi = (ul1*el1 + ul2*el2 + ul3*el3) / fmax(Ne2, 1.0e-16);
+      Real up1 = cphi*e1, up2 = cphi*e2, up3 = cphi*e3;        // azimuthal (PRESERVE)
+
+      // Meridional (theta) lateral = the remainder -> DAMP ONLY THIS.
+      Real ut1 = ul1 - up1, ut2 = ul2 - up2, ut3 = ul3 - up3;
+
+      // ----------------------------------------------------------------
+      // 5. Relax ONLY the meridional component toward zero at rate alpha.
+      //    frac = 1 - exp(-alpha*bdt) is time-scaled and bounded in [0,1)
+      //    (CFL/substage/restart independent, non-overshooting).  Radial infall
+      //    and frame-dragging azimuthal flow are left untouched.
+      // ----------------------------------------------------------------
+      const Real frac = 1.0 - exp(-alpha * bdt);
+      Real uu1_new = uu1 - frac * ut1;
+      Real uu2_new = uu2 - frac * ut2;
+      Real uu3_new = uu3 - frac * ut3;
+
+      // ----------------------------------------------------------------
+      // 6. Apply the damping as a CONSERVATIVE INCREMENT to u0 (metric already
+      //    computed in step 4).  u0 is partially updated (flux + coord src), so
+      //    ADD the P2C difference between the original and damped velocity;
+      //    overwriting u0 corrupts the c2p inversion at low beta and blows up.
+      // ----------------------------------------------------------------
       MHDPrim1D w_old;
       w_old.d  = w0_(m,IDN,k,j,i);   w_old.e  = w0_(m,IEN,k,j,i);
       w_old.bx = bcc0_(m,IBX,k,j,i); w_old.by = bcc0_(m,IBY,k,j,i);
@@ -800,6 +836,91 @@ void MySourceTerms(Mesh* pm, const Real bdt) {
 
     }); // end par_for mask_vel_damp
   } // end vel damping
+
+  // ---- KO hyper-dissipation of the grid-scale (checkerboard) velocity noise --
+  // The blowup seeds as a 2*dx odd-even oscillation in v_r/v_phi/v_theta hugging
+  // the mask (visible for many outputs before it goes nonlinear).  A 5-point
+  // (D+D-)^2 KO on each velocity component removes exactly that mode (response
+  // 16*center for the 2*dx mode, ~0 for smooth flow), leaving radial infall AND
+  // frame dragging untouched.  Independent on/off via <problem> ko_on.
+  if (bondi.ko_on && bondi.ko_sigma > 0.0) {
+    MeshBlockPack *pmbp = pm->pmb_pack;
+    auto &indcs = pm->mb_indcs;
+    int is = indcs.is, ie = indcs.ie;
+    int js = indcs.js, je = indcs.je;
+    int ks = indcs.ks, ke = indcs.ke;
+    int nmb = pmbp->nmb_thispack;
+    auto &size = pmbp->pmb->mb_size;
+
+    DvceArray5D<Real> u0_   = pmbp->pmhd->u0;
+    DvceArray5D<Real> w0_   = pmbp->pmhd->w0;
+    DvceArray5D<Real> bcc0_ = pmbp->pmhd->bcc0;
+    auto &excision_floor_ = pmbp->pcoord->excision_floor;
+    auto &coord = pmbp->pcoord->coord_data;
+    bool flat_  = coord.is_minkowski;
+
+    auto bondi_dvce = bondi;
+    const Real gam   = bondi.gamma_adi;
+    const Real sigma = bondi.ko_sigma;
+    const Real r_ko2 = SQR(bondi.ko_radius);
+
+    // Active cells only: the +-2 stencil reads i+-2 neighbors, valid ghosts
+    // (nghost=4) keep every access in-bounds; the near-hole shell is interior.
+    par_for("mask_vel_ko", DevExeSpace(), 0,nmb-1, ks,ke, js,je, is,ie,
+    KOKKOS_LAMBDA(int m, int k, int j, int i) {
+      if (excision_floor_(m,k,j,i)) return;               // inside mask
+
+      Real x1v = CellCenterX(i-is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
+      Real x2v = CellCenterX(j-js, indcs.nx2, size.d_view(m).x2min, size.d_view(m).x2max);
+      Real x3v = CellCenterX(k-ks, indcs.nx3, size.d_view(m).x3min, size.d_view(m).x3max);
+      if (SQR(x1v)+SQR(x2v)+SQR(x3v) > r_ko2) return;     // only near-hole shell
+
+      // Require a full +-2 centered stencil clear of the mask (the 1-cell mask
+      // ring is handled by the meridional damping above); masked cells hold
+      // floor garbage that would poison the stencil.
+      if (excision_floor_(m,k,j,i-1)||excision_floor_(m,k,j,i+1)||
+          excision_floor_(m,k,j,i-2)||excision_floor_(m,k,j,i+2)||
+          excision_floor_(m,k,j-1,i)||excision_floor_(m,k,j+1,i)||
+          excision_floor_(m,k,j-2,i)||excision_floor_(m,k,j+2,i)||
+          excision_floor_(m,k-1,j,i)||excision_floor_(m,k+1,j,i)||
+          excision_floor_(m,k-2,j,i)||excision_floor_(m,k+2,j,i)) return;
+
+      // 5-point KO [1,-4,6,-4,1]; normalization: 2*dx mode -> 16*center, so
+      // 'sigma' is the fraction of that mode removed per direction per substage.
+      #define KOI(V) ((w0_(m,V,k,j,i-2)+w0_(m,V,k,j,i+2)) \
+                      - 4.0*(w0_(m,V,k,j,i-1)+w0_(m,V,k,j,i+1)) + 6.0*w0_(m,V,k,j,i))
+      #define KOJ(V) ((w0_(m,V,k,j-2,i)+w0_(m,V,k,j+2,i)) \
+                      - 4.0*(w0_(m,V,k,j-1,i)+w0_(m,V,k,j+1,i)) + 6.0*w0_(m,V,k,j,i))
+      #define KOK(V) ((w0_(m,V,k-2,j,i)+w0_(m,V,k+2,j,i)) \
+                      - 4.0*(w0_(m,V,k-1,j,i)+w0_(m,V,k+1,j,i)) + 6.0*w0_(m,V,k,j,i))
+      const Real c = -sigma/16.0;                         // dissipative sign
+      Real vx0 = w0_(m,IVX,k,j,i), vy0 = w0_(m,IVY,k,j,i), vz0 = w0_(m,IVZ,k,j,i);
+      Real vx_new = vx0 + c*(KOI(IVX)+KOJ(IVX)+KOK(IVX));
+      Real vy_new = vy0 + c*(KOI(IVY)+KOJ(IVY)+KOK(IVY));
+      Real vz_new = vz0 + c*(KOI(IVZ)+KOJ(IVZ)+KOK(IVZ));
+      #undef KOI
+      #undef KOJ
+      #undef KOK
+
+      // Conservative P2C increment (same pattern as the damping block).
+      Real glower[4][4], gupper[4][4];
+      ComputeMetricAndInverse(x1v, x2v, x3v, flat_, bondi_dvce.spin, glower, gupper);
+      MHDPrim1D w_old;
+      w_old.d  = w0_(m,IDN,k,j,i);   w_old.e  = w0_(m,IEN,k,j,i);
+      w_old.bx = bcc0_(m,IBX,k,j,i); w_old.by = bcc0_(m,IBY,k,j,i);
+      w_old.bz = bcc0_(m,IBZ,k,j,i);
+      w_old.vx = vx0;     w_old.vy = vy0;     w_old.vz = vz0;
+      MHDPrim1D w_new = w_old;
+      w_new.vx = vx_new;  w_new.vy = vy_new;  w_new.vz = vz_new;
+      HydCons1D u_old, u_new;
+      SingleP2C_IdealGRMHD(glower, gupper, w_old, gam, u_old);
+      SingleP2C_IdealGRMHD(glower, gupper, w_new, gam, u_new);
+      u0_(m,IEN,k,j,i) += (u_new.e  - u_old.e);
+      u0_(m,IM1,k,j,i) += (u_new.mx - u_old.mx);
+      u0_(m,IM2,k,j,i) += (u_new.my - u_old.my);
+      u0_(m,IM3,k,j,i) += (u_new.mz - u_old.mz);
+    }); // end par_for mask_vel_ko
+  } // end KO dissipation
 
   return;
 }
