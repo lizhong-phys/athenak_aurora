@@ -83,6 +83,10 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
   if (rad_source) {
     kappa_s = pin->GetReal("radiation","kappa_s");
     power_opacity = pin->GetOrAddBoolean("radiation","power_opacity",false);
+    // Initialize these even for power-law opacity because OpacityFunction receives
+    // them by value in both opacity modes.
+    kappa_a = 0.0;
+    kappa_p = 0.0;
     if (!(power_opacity)) {
       kappa_a = pin->GetReal("radiation","kappa_a");
       kappa_p = pin->GetReal("radiation","kappa_p");

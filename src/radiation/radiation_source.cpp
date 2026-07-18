@@ -351,9 +351,11 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
         Real mgas_rad_tet3 = wgas * urad_tet0 * urad_tet3;
 
         // calculate the gas-radiation coupling force
-        Real chi_p = wdn * (kappa_p_ + kappa_a_);
-        Real chi_s = wdn * kappa_s_;
-        Real chi_a = wdn * (kappa_a_ + kappa_s_);
+        // Use the same local inverse-length coefficients as the source update. These
+        // include unit conversion, power-law opacity, and opacity correction.
+        Real chi_p = sigma_a + sigma_p;
+        Real chi_s = sigma_s;
+        Real chi_a = sigma_a + sigma_s;
         Real emissivity = chi_p*arad_*SQR(SQR(tgas)) + chi_s*erad_f_;
         if (is_compton_enabled_) {
           Real trad = sqrt(sqrt(erad_f_/arad_));
