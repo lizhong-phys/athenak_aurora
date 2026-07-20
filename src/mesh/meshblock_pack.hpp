@@ -35,6 +35,7 @@ namespace z4c {class CCE;}
 namespace adm {class ADM;}
 namespace particles {class Particles;}
 namespace units {class Units;}
+class FailureTracker;
 
 //----------------------------------------------------------------------------------------
 //! \class MeshBlockPack
@@ -77,6 +78,9 @@ class MeshBlockPack {
 
   // units (needed to convert code units to cgs for, e.g., cooling or radiation)
   units::Units *punit=nullptr;
+
+  // observation-only debug failure tracker (nullptr unless <failure_tracker> enabled=true)
+  FailureTracker *pfail=nullptr;
 
   // map for task lists which operate over all MeshBlocks in this MeshBlockPack
   std::map<std::string, std::shared_ptr<TaskList>> tl_map;

@@ -30,6 +30,7 @@
 #include "srcterms/turb_driver.hpp"
 #include "particles/particles.hpp"
 #include "units/units.hpp"
+#include "utils/failure_tracker.hpp"
 #include "meshblock_pack.hpp"
 
 //----------------------------------------------------------------------------------------
@@ -71,6 +72,7 @@ MeshBlockPack::~MeshBlockPack() {
     pz4c_cce.resize(0);
   }
   if (ppart  != nullptr) {delete ppart;}
+  if (pfail  != nullptr) {delete pfail;}
   // must be last, since it calls ~BoundaryValues() which (MPI) uses pmy_pack->pmb->nnghbr
   delete pmb;
 }
@@ -238,6 +240,16 @@ void MeshBlockPack::AddPhysics(ParameterInput *pin) {
     nphysics++;
   } else {
     ppart = nullptr;
+  }
+
+  // (9) FAILURE TRACKER (observation-only debug subsystem; not a physics module).
+  // Construct only when explicitly enabled; register its snapshot task at the top of the
+  // cycle and its detection task after every stage.  Both early-return outside the window.
+  if (pin->DoesBlockExist("failure_tracker") &&
+      pin->GetOrAddBoolean("failure_tracker", "enabled", false)) {
+    pfail = new FailureTracker(this, pin);
+    tl_map["before_timeintegrator"]->AddTask(&FailureTracker::Snapshot, pfail, none);
+    tl_map["after_stagen"]->AddTask(&FailureTracker::Detect, pfail, none);
   }
 
   // Check that at least ONE is requested and initialized.
