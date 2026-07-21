@@ -460,13 +460,14 @@ void FailureTracker::WriteReport(int m, int k, int j, int i, Real rks,
                    ld_h(1,k,j,i), ld_h(2,k,j,i), ld_h(3,k,j,i),
                    ld_h(6,k,j,i), ld_h(7,k,j,i), ld_h(8,k,j,i));
     }
-    if (pmy_pack->prad->correct_radsrc_velocity) {
-      std::fprintf(fp, "# VELCORR (center): gate=%.0f E_rad_f=%.4e rho_h=%.4e | urad_W=%.4e "
-                       "vrad_sq_raw=%.4e rr_tet00=%.4e  (vrad_sq_raw>~0.9975 => radiation frame "
-                       "superluminal->clamped->gas over-accelerated)\n",
-                   ld_h(11,k,j,i), ld_h(9,k,j,i), ld_h(10,k,j,i),
-                   ld_h(12,k,j,i), ld_h(13,k,j,i), ld_h(14,k,j,i));
-    }
+    // VELCORR is recorded whenever the diag array exists (frame estimated even if the
+    // correction is NOT applied); applied=correct_radsrc_velocity says whether it acted.
+    std::fprintf(fp, "# VELCORR (center): applied=%d gate=%.0f E_rad_f=%.4e rho_h=%.4e | "
+                     "urad_W=%.4e vrad_sq_raw=%.4e rr_tet00=%.4e  (vrad_sq_raw>~0.9975 => "
+                     "radiation frame superluminal->would clamp gas to W=gamma_max)\n",
+                 static_cast<int>(pmy_pack->prad->correct_radsrc_velocity),
+                 ld_h(11,k,j,i), ld_h(9,k,j,i), ld_h(10,k,j,i),
+                 ld_h(12,k,j,i), ld_h(13,k,j,i), ld_h(14,k,j,i));
   }
 
   // generic per-cell printer (host generic lambda; not a device kernel).  Host arrays are

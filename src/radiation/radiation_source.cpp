@@ -310,8 +310,12 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
     // coordinate component n^0
     Real n0 = tt(m,0,0,k,j,i);
 
-    // Correct velocity in radiation-dominated regime (for details, see White 2023)
-    if (correct_radsrc_velocity_) {
+    // Radiation-frame estimate + velocity correction (White 2023).  The frame estimate and
+    // its diagnostics (limiter_diag slots 9-14) are computed whenever the diag array exists
+    // (limit_opacity || correct_radsrc_velocity), so a correct_radsrc_velocity=false CONTROL
+    // run still records what the correction WOULD do.  The actual velocity change is applied
+    // ONLY when correct_radsrc_velocity (it may HURT rather than help -- test on/off separately).
+    if (correct_radsrc_velocity_ || limit_opacity_) {
       // NOTE(@lzhang): In radiation-dominated regime, the gas-radiation momentum
       // coupling without accounting the change of the gas velocity can
       // result in an overestimated high gas temperature because the overestimated
@@ -397,6 +401,10 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
         Real urad_tet2 = urad_tet0 * vrad_tet2;
         Real urad_tet3 = urad_tet0 * vrad_tet3;
 
+        // Apply the actual velocity change ONLY if the correction is enabled.  The
+        // diagnostics above (d_uradW, d_vradsq, d_rr00) are recorded either way, so a
+        // correct_radsrc_velocity=false control run still shows the inferred radiation frame.
+        if (correct_radsrc_velocity_) {
         // calculate current fluid momentum
         Real wgas = wdn + wen + pgas;
         Real mgas_tet1 = wgas * u_tet[0] * u_tet[1];
@@ -450,6 +458,7 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
           u_tet[3] *= rescale;
           u_tet[0] = gamma_max_;
         }
+        } // endif apply (correct_radsrc_velocity_)
       } // endif (erad_f_ > wdn + wen)
       // record velocity-correction diagnostics (array allocated iff limit_opacity or
       // correct_radsrc_velocity; d_* are -1 when the radiation-dominance gate did not fire)
@@ -459,7 +468,7 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
       ldiag(m,12,k,j,i) = d_uradW;      // inferred radiation-frame W (=gamma_max if clamped)
       ldiag(m,13,k,j,i) = d_vradsq;     // raw radiation vrad^2 (>v_sq_max => superluminal)
       ldiag(m,14,k,j,i) = d_rr00;       // tetrad radiation energy (small/neg => corrupt)
-    } // endif (correct_radsrc_velocity_)
+    } // endif (correct_radsrc_velocity_ || limit_opacity_)
 
     // Calculate polynomial coefficients
     Real wght_sum = 0.0;
