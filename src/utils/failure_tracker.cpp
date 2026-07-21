@@ -445,6 +445,20 @@ void FailureTracker::WriteReport(int m, int k, int j, int i, Real rks,
                  Wb, Wm, Wa);
   }
 
+  // ---- opacity-limiter diagnostics for the center cell (if the limiter is enabled) ----
+  if (has_rad && pmy_pack->prad->limit_opacity &&
+      (pmy_pack->prad->limiter_diag.extent_int(0) > m)) {
+    auto ld_sub = Kokkos::subview(pmy_pack->prad->limiter_diag, m,
+                                  Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, Kokkos::ALL);
+    auto ld_h = Kokkos::create_mirror_view(ld_sub);
+    Kokkos::deep_copy(ld_h, ld_sub);
+    std::fprintf(fp, "# LIMITER (center): on_floor=%.0f active=%.0f hit_tcap=%.0f  "
+                     "Xi_raw=%.4e Xi_lim=%.4e T_eff=%.4e | sig_a=%.4e sig_p=%.4e sig_s=%.4e\n",
+                 ld_h(0,k,j,i), ld_h(4,k,j,i), ld_h(5,k,j,i),
+                 ld_h(1,k,j,i), ld_h(2,k,j,i), ld_h(3,k,j,i),
+                 ld_h(6,k,j,i), ld_h(7,k,j,i), ld_h(8,k,j,i));
+  }
+
   // generic per-cell printer (host generic lambda; not a device kernel).  Host arrays are
   // 4D (comp,k,j,i) for the winning block m; index with global (kk,jj,ii).
   auto dump_block = [&](auto &U, auto &W, auto &B, auto &RI) {

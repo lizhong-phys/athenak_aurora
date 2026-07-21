@@ -59,6 +59,9 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
   Real &dtrunc_max  = dens_trunc_max;
   Real &tau_trunc   = tau_truncation;
   Real &sigmoid_res = sigmoid_residual;
+  bool &limit_opacity_ = limit_opacity;
+  Real &xi_max_ = opacity_xi_max;
+  Real &tcap_   = opacity_tcap;
 
   // Extract coordinate/excision data
   auto &coord = pmy_pack->pcoord->coord_data;
@@ -85,22 +88,26 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
     inv_t_electron_ = temperature_scale_/pmy_pack->punit->electron_rest_mass_energy_cgs;
   }
 
-  // Extract adiabatic index
+  // Extract adiabatic index + floors (entropy floor params feed the opacity limiter)
   Real gm1, dfloor, v_sq_max, gamma_max_ = 1.0e30;
+  Real sfloor_ = 1.0e-30, sfloor1_ = 1.0e-30, sfloor2_ = 1.0e-30, rho1_ = 10.0, rho2_ = 1.0e3;
   if (is_hydro_enabled_) {
-    gm1 = pmy_pack->phydro->peos->eos_data.gamma - 1.0;
-    gamma_max_ = pmy_pack->phydro->peos->eos_data.gamma_max;
-    v_sq_max = 1.-1./SQR(gamma_max_);
-    dfloor = pmy_pack->phydro->peos->eos_data.dfloor;
+    auto &ed = pmy_pack->phydro->peos->eos_data;
+    gm1 = ed.gamma - 1.0;  gamma_max_ = ed.gamma_max;  v_sq_max = 1.-1./SQR(gamma_max_);
+    dfloor = ed.dfloor;
+    sfloor_ = ed.sfloor;  sfloor1_ = ed.sfloor1;  sfloor2_ = ed.sfloor2;
+    rho1_ = ed.rho1;  rho2_ = ed.rho2;
   } else if (is_mhd_enabled_) {
-    gm1 = pmy_pack->pmhd->peos->eos_data.gamma - 1.0;
-    gamma_max_ = pmy_pack->pmhd->peos->eos_data.gamma_max;
-    v_sq_max = 1.-1./SQR(gamma_max_);
-    dfloor = pmy_pack->pmhd->peos->eos_data.dfloor;
+    auto &ed = pmy_pack->pmhd->peos->eos_data;
+    gm1 = ed.gamma - 1.0;  gamma_max_ = ed.gamma_max;  v_sq_max = 1.-1./SQR(gamma_max_);
+    dfloor = ed.dfloor;
+    sfloor_ = ed.sfloor;  sfloor1_ = ed.sfloor1;  sfloor2_ = ed.sfloor2;
+    rho1_ = ed.rho1;  rho2_ = ed.rho2;
   }
 
   // Extract radiation, radiation frame, and radiation angular mesh data
   auto &i0_ = i0;
+  auto ldiag = limiter_diag;   // per-cell limiter diagnostics (written only if limit_opacity)
   Real &kappa_a_ = kappa_a;
   Real &kappa_s_ = kappa_s;
   Real &kappa_p_ = kappa_p;
@@ -240,6 +247,47 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
       sigma_s *= wdn_opacity/wdn;
       sigma_p *= wdn_opacity/wdn;
     } // endif correct_radsrc_opacity_
+
+    // --- opacity-aware stiffness limiter (EMERGENCY STABILIZER / opacity closure) ---
+    // On cells collapsed onto the density-dependent entropy floor, the Planck absorption
+    // (sigma_a+sigma_p ~ rho^2 T^-7/2) blows up and drives the density->cold->opaque->
+    // overshoot feedback.  Cap it at the opacity the gas would have at
+    //   T_eff = tgas * max[1, (Xi_abs/Xi_max)^(2/7)]   (capped at the virial tcap),
+    //   Xi_abs = dt*(sigma_a+sigma_p)/u0  (proper-time absorption stiffness).
+    // Rescale sigma_a,sigma_p (both ~T^-7/2); leave sigma_s (scattering) unchanged.
+    // NOTE: Xi_abs contains dt -> this is a timestep-dependent opacity closure, NOT a
+    // physical heating model (real heating is applied separately in C2P).  It also breaks
+    // exact opacity/source-function consistency while active (emission still uses tgas).
+    if (limit_opacity_ && power_opacity_) {   // 2/7 scaling is only valid for Kramers opacity
+      Real xi_abs = dt_*(sigma_a + sigma_p)/u0;           // raw absorption stiffness
+      Real lg_sfl = log10(sfloor1_) + (log10(wdn)-log10(rho1_))
+                  *(log10(sfloor2_)-log10(sfloor1_))/(log10(rho2_)-log10(rho1_));
+      Real sfloor_local = fmax(sfloor_, pow(10.0, lg_sfl));
+      Real t_entropy = sfloor_local*pow(wdn, gm1);        // entropy-floor T (~rho^0.928)
+      bool on_floor = (tgas < 1.02*t_entropy);
+      Real t_eff = tgas; bool active = false; bool hit_tcap = false;
+      if (isfinite(xi_abs) && on_floor && (xi_abs > xi_max_)) {
+        Real t_req = tgas*pow(xi_abs/xi_max_, 2.0/7.0);   // > tgas (since xi_abs > xi_max)
+        hit_tcap = (t_req > tcap_);
+        // clamp into [tgas, tcap] so we can only LOWER opacity (fac<=1), never raise it,
+        // even if tcap is misconfigured below tgas.
+        t_eff = fmax(tgas, fmin(t_req, tcap_));
+        Real fac = pow(tgas/t_eff, 3.5);                  // <= 1
+        sigma_a *= fac;
+        sigma_p *= fac;
+        active = true;
+      }
+      // record per-cell diagnostics (array is allocated iff limit_opacity)
+      ldiag(m,0,k,j,i) = on_floor ? 1.0 : 0.0;
+      ldiag(m,1,k,j,i) = xi_abs;                          // raw
+      ldiag(m,2,k,j,i) = dt_*(sigma_a + sigma_p)/u0;      // limited
+      ldiag(m,3,k,j,i) = t_eff;
+      ldiag(m,4,k,j,i) = active   ? 1.0 : 0.0;
+      ldiag(m,5,k,j,i) = hit_tcap ? 1.0 : 0.0;
+      ldiag(m,6,k,j,i) = sigma_a;
+      ldiag(m,7,k,j,i) = sigma_p;
+      ldiag(m,8,k,j,i) = sigma_s;
+    }
 
     Real dtcsiga = dt_*sigma_a;
     Real dtcsigs = dt_*sigma_s;

@@ -68,6 +68,9 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
   tau_truncation = pin->GetOrAddReal("radiation","tau_truncation",1e-100);
   sigmoid_residual = pin->GetOrAddReal("radiation","sigmoid_residual",1e-2);
   sigmoid_residual = fmin(sigmoid_residual, 1./3); // sigmoid residual must be less than 1./3
+  limit_opacity  = pin->GetOrAddBoolean("radiation","limit_opacity",false);
+  opacity_xi_max = pin->GetOrAddReal("radiation","opacity_xi_max",1e100);  // default: off
+  opacity_tcap   = pin->GetOrAddReal("radiation","opacity_tcap",1e100);    // default: no cap
 
   // Enable radiation source term (radiation+(M)HD) by default if hydro or mhd enabled
   // Otherwise, disable radiation source term.  The former can be overriden by
@@ -90,6 +93,19 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
     if (!(power_opacity)) {
       kappa_a = pin->GetReal("radiation","kappa_a");
       kappa_p = pin->GetReal("radiation","kappa_p");
+    }
+    // Validate the opacity-stiffness limiter: its 2/7 scaling assumes Kramers (T^-7/2)
+    // absorption, and its thresholds must be positive.  Disable it otherwise.
+    if (limit_opacity) {
+      if (!(power_opacity)) {
+        std::cout << "### WARNING: limit_opacity requires power_opacity=true (T^-7/2); "
+                  << "disabling limit_opacity." << std::endl;
+        limit_opacity = false;
+      } else if (opacity_xi_max <= 0.0 || opacity_tcap <= 0.0) {
+        std::cout << "### WARNING: limit_opacity requires opacity_xi_max>0 and "
+                  << "opacity_tcap>0; disabling limit_opacity." << std::endl;
+        limit_opacity = false;
+      }
     }
     is_compton_enabled = pin->GetOrAddBoolean("radiation","compton",false);
     if (is_compton_enabled && !(are_units_enabled)) {
@@ -131,6 +147,7 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
   int ncells3 = (indcs.nx3 > 1)? (indcs.nx3 + 2*(indcs.ng)) : 1;
   Kokkos::realloc(nh_c,prgeo->nangles,4);
   Kokkos::realloc(nh_f,prgeo->nangles,6,4);
+  if (limit_opacity) {Kokkos::realloc(limiter_diag,nmb,9,ncells3,ncells2,ncells1);}
   Kokkos::realloc(tet_c,nmb,4,4,ncells3,ncells2,ncells1);
   Kokkos::realloc(tetcov_c,nmb,4,4,ncells3,ncells2,ncells1);
   Kokkos::realloc(tet_d1_x1f,nmb,4,ncells3,ncells2,ncells1+1);

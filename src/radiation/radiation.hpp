@@ -112,6 +112,18 @@ class Radiation {
   Real dens_trunc_max;
   Real tau_truncation;
   Real sigmoid_residual; // sigmoid residual must be less than 1./3
+  // opacity-aware stiffness limiter (EMERGENCY STABILIZER / opacity closure, NOT a
+  // physics-preserving model): on cells collapsed onto the entropy floor, cap the Planck
+  // absorption (sigma_a+sigma_p, both ~T^-7/2) at the value the gas would have at T_eff =
+  // T*max[1,(Xi_abs/Xi_max)^(2/7)] (capped at the virial T).  Reverses the absorption
+  // density->cold->opaque->overshoot feedback.  Note Xi_abs contains dt (timestep-dependent).
+  bool limit_opacity;    // enable the limiter
+  Real opacity_xi_max;   // Xi_max: max proper-time absorption stiffness dt*(sig_a+sig_p)/u0
+  Real opacity_tcap;     // virial ceiling on the effective opacity temperature (code units)
+  // per-cell limiter diagnostics [nmb,9,k,j,i] (allocated iff limit_opacity); slots:
+  // 0 on_entropy_floor, 1 Xi_abs_raw, 2 Xi_abs_limited, 3 T_eff, 4 limiter_active,
+  // 5 limiter_hit_tcap, 6 sigma_a, 7 sigma_p, 8 sigma_s.
+  DvceArray5D<Real> limiter_diag;
 
   // radiation source term (i.e., beam)
   SourceTerms *psrc = nullptr;
