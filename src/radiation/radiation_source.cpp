@@ -86,14 +86,16 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
   }
 
   // Extract adiabatic index
-  Real gm1, dfloor, v_sq_max;
+  Real gm1, dfloor, v_sq_max, gamma_max_ = 1.0e30;
   if (is_hydro_enabled_) {
     gm1 = pmy_pack->phydro->peos->eos_data.gamma - 1.0;
-    v_sq_max = 1.-1./SQR(pmy_pack->phydro->peos->eos_data.gamma_max);
+    gamma_max_ = pmy_pack->phydro->peos->eos_data.gamma_max;
+    v_sq_max = 1.-1./SQR(gamma_max_);
     dfloor = pmy_pack->phydro->peos->eos_data.dfloor;
   } else if (is_mhd_enabled_) {
     gm1 = pmy_pack->pmhd->peos->eos_data.gamma - 1.0;
-    v_sq_max = 1.-1./SQR(pmy_pack->pmhd->peos->eos_data.gamma_max);
+    gamma_max_ = pmy_pack->pmhd->peos->eos_data.gamma_max;
+    v_sq_max = 1.-1./SQR(gamma_max_);
     dfloor = pmy_pack->pmhd->peos->eos_data.dfloor;
   }
 
@@ -381,6 +383,17 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
         u_tet[2] = (1.0-frac2)*u_tet[2] + frac2*urad_tet2;
         u_tet[3] = (1.0-frac3)*u_tet[3] + frac3*urad_tet3;
         u_tet[0] = sqrt(1.0 + SQR(u_tet[1]) + SQR(u_tet[2]) + SQR(u_tet[3]));
+
+        // The componentwise interpolation (different frac per axis) is NOT convex, so the
+        // combined u_tet[0] can exceed gamma_max even though the current and radiation-frame
+        // velocities are each below it.  Cap the combined Lorentz factor at gamma_max.
+        if (u_tet[0] > gamma_max_) {
+          Real rescale = sqrt((SQR(gamma_max_) - 1.0)/fmax(SQR(u_tet[0]) - 1.0, 1.0e-30));
+          u_tet[1] *= rescale;
+          u_tet[2] *= rescale;
+          u_tet[3] *= rescale;
+          u_tet[0] = gamma_max_;
+        }
       } // endif (erad_f_ > wdn + wen)
     } // endif (correct_radsrc_velocity_)
 
@@ -388,6 +401,11 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
     Real wght_sum = 0.0;
     Real suma1 = 0.0;
     Real suma2 = 0.0;
+    // denom == (1 - suma3), accumulated DIRECTLY as a sum of positive terms to avoid the
+    // catastrophic cancellation "1 - suma3" when scattering is enormous (suma3 -> 1).
+    // Algebra: 1 - (dtcsigs-dtcsigp)<n0_cm/(n0+(dtcsiga+dtcsigs)n0_cm)>
+    //        = <(n0 + (dtcsiga+dtcsigp)n0_cm)/(n0+(dtcsiga+dtcsigs)n0_cm)>.
+    Real denom = 0.0;
     for (int n=0; n<=nang1; ++n) {
       Real n_0 = tc(m,0,0,k,j,i)*nh_c_.d_view(n,0) + tc(m,1,0,k,j,i)*nh_c_.d_view(n,1) +
                  tc(m,2,0,k,j,i)*nh_c_.d_view(n,2) + tc(m,3,0,k,j,i)*nh_c_.d_view(n,3);
@@ -401,35 +419,45 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
       wght_sum += omega_cm;
       suma1 += omega_cm*vncsigma2;
       suma2 += ir_weight*n0*vncsigma;
+      denom += omega_cm*(n0 + (dtcsiga + dtcsigp)*n0_cm)*vncsigma;
     }
     suma1 /= wght_sum;
     suma2 /= wght_sum;
-    Real suma3 = suma1*(dtcsigs - dtcsigp);
+    denom /= wght_sum;                     // == 1 - suma3, cancellation-free
     suma1 *= (dtcsiga + dtcsigp);
 
-    // compute coefficients
-    Real coef[2];
-    coef[1] = (dtaucsiga+dtaucsigp-(dtaucsiga+dtaucsigp)*suma1/(1.0-suma3))*arad_*gm1/wdn;
-    coef[0] = -tgas-(dtaucsiga+dtaucsigp)*suma2*gm1/(wdn*(1.0-suma3));
+    // Reject the source update ONLY if the implicit denominator is degenerate (non-finite
+    // or non-positive) -- leaves the cell unchanged; the failure tracker will flag it.  A
+    // small-but-positive denom is PHYSICAL: for enormous scattering (dt*sigma_s ~ 1e17),
+    // denom ~ 1/(1+dt*sigma_s) ~ 3.5e-18 is the correct stiff value, which the direct sum
+    // recovers accurately (the old 1-suma3 rounded it to 0).  Keep it and SOLVE the update;
+    // any genuine overflow downstream is caught by the FourthPolyRoot isfinite guard.
+    bool badcell = (!isfinite(denom) || (denom <= 0.0));
 
-    // Calculate new gas temperature
+    // compute coefficients
+    Real coef[2] = {0.0, 0.0};
     Real tgasnew = tgas;
-    bool badcell = false;
-    if (fabs(coef[1]) > 1.0e-20) {
-      bool flag = FourthPolyRoot(coef[1], coef[0], tgasnew);
-      if (!(flag) || !(isfinite(tgasnew))) {
-        badcell = true;
-        tgasnew = tgas;
+    if (!(badcell)) {
+      coef[1] = (dtaucsiga+dtaucsigp-(dtaucsiga+dtaucsigp)*suma1/denom)*arad_*gm1/wdn;
+      coef[0] = -tgas-(dtaucsiga+dtaucsigp)*suma2*gm1/(wdn*denom);
+
+      // Calculate new gas temperature
+      if (fabs(coef[1]) > 1.0e-20) {
+        bool flag = FourthPolyRoot(coef[1], coef[0], tgasnew);
+        if (!(flag) || !(isfinite(tgasnew))) {
+          badcell = true;
+          tgasnew = tgas;
+        }
+      } else {
+        tgasnew = -coef[0];
       }
-    } else {
-      tgasnew = -coef[0];
     }
 
     // Update the specific intensity
     if (!(badcell)) {
       // Calculate emission coefficient and updated jr_cm
       Real emission = arad_*SQR(SQR(tgasnew));
-      Real jr_cm = (suma1*emission + suma2)/(1.0 - suma3);
+      Real jr_cm = (suma1*emission + suma2)/denom;
       Real m_old[4] = {0.0}; Real m_new[4] = {0.0};
       for (int n=0; n<=nang1; ++n) {
         // compute coordinate normal components

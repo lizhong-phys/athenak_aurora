@@ -249,6 +249,12 @@ void MeshBlockPack::AddPhysics(ParameterInput *pin) {
       pin->GetOrAddBoolean("failure_tracker", "enabled", false)) {
     pfail = new FailureTracker(this, pin);
     tl_map["before_timeintegrator"]->AddTask(&FailureTracker::Snapshot, pfail, none);
+    // SnapshotMid captures post-MHD / pre-radiation primitives.  Depends on rad_coupl so
+    // it runs after RadFluidCoupling (whose ConsToPrim left w0 = post-MHD state, unchanged
+    // by the coupling kernel) but before the final ConToPrim overwrites w0.
+    if (prad != nullptr) {
+      tl_map["stagen"]->AddTask(&FailureTracker::SnapshotMid, pfail, prad->id.rad_coupl);
+    }
     // Detect runs its blocking MPI reduction AFTER the existing comm-cleanup tasks, so the
     // new collective does not interleave with in-flight radiation/MHD send/recv clears.
     TaskID det_dep = none;

@@ -42,6 +42,10 @@ class FailureTracker {
 
   // Task 1: snapshot state at the top of each cycle (list "before_timeintegrator").
   TaskStatus Snapshot(Driver *pdrive, int stage);
+  // Task 1b: snapshot primitives right after the MHD update, before radiation coupling
+  // (depends on rad_coupl; w0 is unchanged by the coupling kernel).  Gives "W entering
+  // radiation coupling" so we can attribute a W jump to MHD vs radiation.
+  TaskStatus SnapshotMid(Driver *pdrive, int stage);
   // Task 2: scan for the first non-finite cell after every stage (list "after_stagen").
   TaskStatus Detect(Driver *pdrive, int stage);
 
@@ -69,7 +73,8 @@ class FailureTracker {
 
   // state
   bool snap_ready = false;    // snapshot buffers allocated
-  bool have_snap  = false;    // a snapshot was taken this cycle
+  bool have_snap  = false;    // a cycle-top snapshot was taken this cycle
+  bool have_snapm = false;    // a mid-stage (pre-radiation) snapshot was taken this cycle
   bool reported   = false;    // a failure has already been reported
 
   bool has_mhd, has_hyd, has_rad;
@@ -77,6 +82,8 @@ class FailureTracker {
   // "1 cycle before" snapshot buffers.  HOST-resident (host RAM is plentiful) so we do
   // NOT double the large device radiation array i0 in GPU memory during the window.
   DvceArray5D<Real>::HostMirror snap_u, snap_w, snap_b, snap_i;
+  // mid-stage primitives (post-MHD, pre-radiation), for the W-stage attribution
+  DvceArray5D<Real>::HostMirror snapm_w;
 
   bool InWindow() const;
   void AllocateSnapshots();

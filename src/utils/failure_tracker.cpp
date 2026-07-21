@@ -82,9 +82,13 @@ FailureTracker::FailureTracker(MeshBlockPack *ppack, ParameterInput *pin) :
   }
 
   if (enabled && global_variable::my_rank == 0) {
-    std::cout << "### FailureTracker ENABLED: window [" << start_time << ", " << stop_time
+    std::cout << "### FailureTracker ENABLED [v4]: window [" << start_time << ", " << stop_time
               << "], neighborhood=" << nghbr << ", scan_ghost=" << scan_ghost
               << ", abort_on_nonfinite=" << abort_on_nonfinite << std::endl;
+    std::cout << "###   runaway_detect=" << runaway_detect
+              << " temp=" << runaway_temp << " rho=" << runaway_rho
+              << " erad=" << runaway_erad << " wclamp=" << runaway_wclamp
+              << " wfrac=" << runaway_wfrac << " rmin=" << runaway_rmin << std::endl;
   }
 }
 
@@ -139,6 +143,25 @@ TaskStatus FailureTracker::Snapshot(Driver *pdrive, int stage) {
     Kokkos::deep_copy(snap_i, pmy_pack->prad->i0);
   }
   have_snap = true;
+  return TaskStatus::complete;
+}
+
+//----------------------------------------------------------------------------------------
+//! Snapshot primitives after the MHD update, before radiation coupling.  At this point w0
+//! holds the post-MHD primitives (RadFluidCoupling's own ConsToPrim already ran, and the
+//! coupling kernel does not touch w0), i.e. the state ENTERING the radiation source term.
+//! Registered with a dependency on rad_coupl, so it runs before the final ConToPrim.
+TaskStatus FailureTracker::SnapshotMid(Driver *pdrive, int stage) {
+  if (!enabled || reported || !InWindow()) return TaskStatus::complete;
+  if (!(has_mhd || has_hyd)) return TaskStatus::complete;         // need primitives for W
+  DvceArray5D<Real> w0 = has_mhd ? pmy_pack->pmhd->w0 : pmy_pack->phydro->w0;
+  if (snapm_w.extent(0) != w0.extent(0) || snapm_w.extent(1) != w0.extent(1) ||
+      snapm_w.extent(2) != w0.extent(2) || snapm_w.extent(3) != w0.extent(3) ||
+      snapm_w.extent(4) != w0.extent(4)) {
+    snapm_w = Kokkos::create_mirror_view(w0);
+  }
+  Kokkos::deep_copy(snapm_w, w0);                                 // device -> host
+  have_snapm = true;
   return TaskStatus::complete;
 }
 
@@ -398,6 +421,29 @@ void FailureTracker::WriteReport(int m, int k, int j, int i, Real rks,
                    "#            diagnostic proxy only); |I|max = max_n |i0(n)|\n");
   std::fprintf(fp, "# fields: rho eint pgas vx vy vz W | U(DN M1 M2 M3 EN) | "
                    "B1 B2 B3 sigma | sumI_raw |I|max | ex_floor ex_flux | bad(component list)\n");
+
+  // ---- W-stage attribution for the center cell: Lorentz factor at cycle-top, entering
+  // radiation coupling (post-MHD), and after the full stage.  A jump cycletop->pre_rad
+  // is the MHD update; pre_rad->post_stage is the radiation coupling.
+  if (have_fluid) {
+    Real x1c = CellCenterX(i-is, nx1, sz(m).x1min, sz(m).x1max);
+    Real x2c = CellCenterX(j-js, nx2, sz(m).x2min, sz(m).x2max);
+    Real x3c = CellCenterX(k-ks, nx3, sz(m).x3min, sz(m).x3max);
+    Real gl[4][4], gu[4][4];
+    ComputeMetricAndInverse(x1c, x2c, x3c, flat, spin, gl, gu);
+    auto Wq = [&](Real vx, Real vy, Real vz) {
+      Real q = gl[1][1]*vx*vx + 2.0*gl[1][2]*vx*vy + 2.0*gl[1][3]*vx*vz
+             + gl[2][2]*vy*vy + 2.0*gl[2][3]*vy*vz + gl[3][3]*vz*vz;
+      return std::sqrt(std::fmax(1.0 + q, 0.0));
+    };
+    Real Wb = have_snap  ? Wq(snap_w(m,IVX,k,j,i), snap_w(m,IVY,k,j,i), snap_w(m,IVZ,k,j,i))  : -1.0;
+    Real Wm = have_snapm ? Wq(snapm_w(m,IVX,k,j,i), snapm_w(m,IVY,k,j,i), snapm_w(m,IVZ,k,j,i)) : -1.0;
+    Real Wa = Wq(w_h(IVX,k,j,i), w_h(IVY,k,j,i), w_h(IVZ,k,j,i));
+    std::fprintf(fp, "# W-STAGE (center): W_cycletop=%.5g  W_pre_radiation=%.5g"
+                     "  W_post_stage=%.5g   (jump cycletop->pre_rad = MHD update;"
+                     " pre_rad->post_stage = radiation coupling; -1 = no snapshot)\n",
+                 Wb, Wm, Wa);
+  }
 
   // generic per-cell printer (host generic lambda; not a device kernel).  Host arrays are
   // 4D (comp,k,j,i) for the winning block m; index with global (kk,jj,ii).
