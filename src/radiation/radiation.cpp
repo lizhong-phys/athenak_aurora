@@ -71,9 +71,11 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
   limit_opacity  = pin->GetOrAddBoolean("radiation","limit_opacity",false);
   opacity_xi_max = pin->GetOrAddReal("radiation","opacity_xi_max",1e100);  // default: off
   opacity_tcap   = pin->GetOrAddReal("radiation","opacity_tcap",1e100);    // default: no cap
-  rad_dvlimit    = pin->GetOrAddBoolean("radiation","rad_dvlimit",false);
-  rad_max_density_drop     = pin->GetOrAddReal("radiation","rad_max_density_drop",2.0);
+  rad_dvlimit        = pin->GetOrAddBoolean("radiation","rad_dvlimit",false);
   rad_momentum_lambda_lock = pin->GetOrAddReal("radiation","rad_momentum_lambda_lock",5.0);
+  rad_dominance_lock = pin->GetOrAddReal("radiation","rad_dominance_lock",100.0);
+  rad_max_w_increase = pin->GetOrAddReal("radiation","rad_max_w_increase",1.5);
+  rad_w_hard         = pin->GetOrAddReal("radiation","rad_w_hard",10.0);
 
   // Enable radiation source term (radiation+(M)HD) by default if hydro or mhd enabled
   // Otherwise, disable radiation source term.  The former can be overriden by
@@ -110,13 +112,15 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
         limit_opacity = false;
       }
     }
-    // Validate the density-drop limiter.  It computes its own E_rad_f (the radiation-frame
-    // estimate runs whenever rad_dvlimit is on), so it is self-contained -- it only needs a
-    // physical drop factor (>1) and a positive stiffness threshold.
+    // Validate the velocity (W) limiter.  It computes its own E_rad_f (the radiation-frame
+    // estimate runs whenever rad_dvlimit is on), so it is self-contained -- it needs positive
+    // gates and physical W bounds (>1).
     if (rad_dvlimit) {
-      if (rad_max_density_drop <= 1.0 || rad_momentum_lambda_lock <= 0.0) {
-        std::cout << "### WARNING: rad_dvlimit requires rad_max_density_drop>1 and "
-                  << "rad_momentum_lambda_lock>0; disabling rad_dvlimit." << std::endl;
+      if (rad_max_w_increase <= 1.0 || rad_w_hard <= 1.0 ||
+          rad_momentum_lambda_lock <= 0.0 || rad_dominance_lock <= 0.0) {
+        std::cout << "### WARNING: rad_dvlimit requires rad_max_w_increase>1, rad_w_hard>1, "
+                  << "rad_momentum_lambda_lock>0, rad_dominance_lock>0; disabling rad_dvlimit."
+                  << std::endl;
         rad_dvlimit = false;
       }
     }
@@ -160,8 +164,11 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
   int ncells3 = (indcs.nx3 > 1)? (indcs.nx3 + 2*(indcs.ng)) : 1;
   Kokkos::realloc(nh_c,prgeo->nangles,4);
   Kokkos::realloc(nh_f,prgeo->nangles,6,4);
+  // Allocate iff ANY feature that enters the source-term diagnostics block writes limiter_diag
+  // (must match the outer condition in RadFluidCoupling: correct_radsrc_velocity || limit_opacity
+  // || rad_dvlimit), else those blocks write out of bounds.
   if (limit_opacity || correct_radsrc_velocity || rad_dvlimit) {
-    Kokkos::realloc(limiter_diag,nmb,17,ncells3,ncells2,ncells1);
+    Kokkos::realloc(limiter_diag,nmb,19,ncells3,ncells2,ncells1);
   }
   Kokkos::realloc(tet_c,nmb,4,4,ncells3,ncells2,ncells1);
   Kokkos::realloc(tetcov_c,nmb,4,4,ncells3,ncells2,ncells1);

@@ -469,15 +469,15 @@ void FailureTracker::WriteReport(int m, int k, int j, int i, Real rks,
                  static_cast<int>(pmy_pack->prad->correct_radsrc_velocity),
                  ld_h(11,k,j,i), ld_h(9,k,j,i), ld_h(10,k,j,i),
                  ld_h(12,k,j,i), ld_h(13,k,j,i), ld_h(14,k,j,i));
-    // DVLIMIT: density-drop limiter.  lambda<1 => the guard scaled the gas<->radiation exchange
-    // this step to cap the density drop at rad_max_density_drop (fires when Lambda_s>lambda_lock).
+    // WLIMIT: velocity (W) limiter.  Bounds the recovered post-coupling W by scaling the whole
+    // exchange by lambda.  W_post = cold-gas W at lambda=1; lambda<1 => it fired (W held at
+    // W_limit).  Lambda_s=0 => the radiation-dominance + stiffness gate did not open.
     if (pmy_pack->prad->rad_dvlimit) {
-      std::fprintf(fp, "# DVLIMIT (center): Lambda_s=%.4e lambda=%.4e  f_rho=%.3g lambda_lock=%.3g "
-                       " (lambda = min of scattering & Compton exchange scales; <1 => density-drop "
-                       "guard fired; Lambda_s=0 => radiation-dominance gate did not fire)\n",
-                   ld_h(15,k,j,i), ld_h(16,k,j,i),
-                   pmy_pack->prad->rad_max_density_drop,
-                   pmy_pack->prad->rad_momentum_lambda_lock);
+      std::fprintf(fp, "# WLIMIT (center): Lambda_s=%.4e lambda=%.4e | W_post(full)=%.4e "
+                       "W_limit=%.4e  gate: R_rad>%.3g & Lambda_s>%.3g  (fw=%.3g W_hard=%.3g)\n",
+                   ld_h(15,k,j,i), ld_h(16,k,j,i), ld_h(17,k,j,i), ld_h(18,k,j,i),
+                   pmy_pack->prad->rad_dominance_lock, pmy_pack->prad->rad_momentum_lambda_lock,
+                   pmy_pack->prad->rad_max_w_increase, pmy_pack->prad->rad_w_hard);
     }
   }
 

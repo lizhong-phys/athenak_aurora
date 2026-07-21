@@ -107,17 +107,20 @@ class Radiation {
 
   // Flags and parameters for ad hoc fixes
   bool correct_radsrc_velocity;
-  // Density-drop limiter (conservative overshoot guard; requires the radiation-frame estimate,
-  // i.e. correct_radsrc_velocity or limit_opacity, so E_rad_f is computed).  D=rho*u^0 is
-  // conserved across the radiation source substep, so rho_post/rho_pre = W_pre/W_post.  In the
-  // stiff, radiation-dominated regime (Lambda_s = (dt*sigma_s/u0)*(E_rad_f/rho_h) >
-  // rad_momentum_lambda_lock) the explicit momentum kick can drive W to the ceiling and collapse
-  // the density.  There we scale the WHOLE source exchange (intensities AND gas) by a scalar
-  // lambda<=1 chosen so the estimated density drop is <= rad_max_density_drop -- conservative
-  // (four-momentum preserving) and inactive elsewhere (physics unchanged).
-  bool rad_dvlimit;
-  Real rad_max_density_drop;      // f_rho: max rho_pre/rho_post per source update (>1)
-  Real rad_momentum_lambda_lock;  // Lambda_lock: stiffness*dominance above which the guard acts
+  // Velocity (W) limiter that bounds the RECOVERED post-coupling Lorentz factor (conservative;
+  // requires the radiation-frame estimate, i.e. correct_radsrc_velocity or limit_opacity, so
+  // E_rad_f is computed).  In the stiff, strongly radiation-dominated regime (R_rad =
+  // E_rad_f/(rho+e+p) > rad_dominance_lock AND Lambda_s = (dt*sigma_s/u0)*R_rad >
+  // rad_momentum_lambda_lock, all PRE-radiation) the explicit momentum exchange can drive W to
+  // the ceiling and collapse the density (rho_post/rho_pre = W_pre/W_post).  There we scale the
+  // WHOLE source exchange (intensities AND gas) by a scalar lambda<=1 chosen so the cold-gas
+  // recovered W = sqrt(1 + gamma^{ij} S_i S_j / D^2) stays <= W_limit = max[W_pre, min(W_hard,
+  // max_W_increase*W_pre)].  Four-momentum preserving; inactive elsewhere (physics unchanged).
+  bool rad_dvlimit;               // enable
+  Real rad_momentum_lambda_lock;  // Lambda_lock: stiffness*dominance gate
+  Real rad_dominance_lock;        // R_rad gate (radiation energy / gas enthalpy)
+  Real rad_max_w_increase;        // max_W_increase: max W_post/W_pre in the gated regime (>1)
+  Real rad_w_hard;                // W_hard: absolute Lorentz-factor ceiling in the gated regime (>1)
   bool correct_radsrc_opacity;
   Real dfloor_opacity;
   Real dens_trunc_max;
@@ -131,14 +134,14 @@ class Radiation {
   bool limit_opacity;    // enable the limiter
   Real opacity_xi_max;   // Xi_max: max proper-time absorption stiffness dt*(sig_a+sig_p)/u0
   Real opacity_tcap;     // virial ceiling on the effective opacity temperature (code units)
-  // per-cell radiation-source diagnostics [nmb,17,k,j,i] (alloc iff limit_opacity,
+  // per-cell radiation-source diagnostics [nmb,19,k,j,i] (alloc iff limit_opacity,
   // correct_radsrc_velocity, or rad_dvlimit).  Opacity limiter slots 0-8: 0 on_entropy_floor,
   // 1 Xi_abs_raw, 2 Xi_abs_limited, 3 T_eff, 4 limiter_active, 5 limiter_hit_tcap, 6 sigma_a,
   // 7 sigma_p, 8 sigma_s.  Velocity-correction slots 9-14: 9 E_rad_f, 10 rho_h,
   // 11 gate(erad_f>rho+e), 12 urad_W (inferred radiation-frame Lorentz factor), 13 vrad_sq_raw
   // (pre-clamp; >v_sq_max => superluminal/corrupted), 14 rr_tet00 (tetrad radiation energy;
-  // small/neg => corrupt).  Density-drop limiter slots 15-16: 15 Lambda_s (stiffness*dominance),
-  // 16 lambda (source-exchange scale; <1 => guard fired, 1 => untouched).
+  // small/neg => corrupt).  W limiter slots 15-18: 15 Lambda_s (stiffness*dominance), 16 lambda
+  // (source-exchange scale; <1 => fired, 1 => untouched), 17 W_post at lambda=1, 18 W_limit.
   DvceArray5D<Real> limiter_diag;
 
   // radiation source term (i.e., beam)
