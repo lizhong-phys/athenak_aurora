@@ -147,7 +147,9 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
   int ncells3 = (indcs.nx3 > 1)? (indcs.nx3 + 2*(indcs.ng)) : 1;
   Kokkos::realloc(nh_c,prgeo->nangles,4);
   Kokkos::realloc(nh_f,prgeo->nangles,6,4);
-  if (limit_opacity) {Kokkos::realloc(limiter_diag,nmb,9,ncells3,ncells2,ncells1);}
+  if (limit_opacity || correct_radsrc_velocity) {
+    Kokkos::realloc(limiter_diag,nmb,15,ncells3,ncells2,ncells1);
+  }
   Kokkos::realloc(tet_c,nmb,4,4,ncells3,ncells2,ncells1);
   Kokkos::realloc(tetcov_c,nmb,4,4,ncells3,ncells2,ncells1);
   Kokkos::realloc(tet_d1_x1f,nmb,4,ncells3,ncells2,ncells1+1);

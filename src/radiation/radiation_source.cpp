@@ -339,6 +339,11 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
       }
       erad_f_ *= omega_hat_tot/omega_cm_tot;
 
+      // diagnostics for the velocity correction (recorded into limiter_diag slots 9-14)
+      Real rho_h = wdn + wen + pgas;
+      bool vc_gate = (erad_f_ > wdn + wen);
+      Real d_uradW = -1.0, d_vradsq = -1.0, d_rr00 = -1.0;
+
       // apply velocity correction if radiation is dominated
       if (erad_f_ > wdn + wen) {
         // compute radiation moments in terad frame
@@ -377,6 +382,8 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
         Real vrad_tet2 = rr_tet02 / rr_tet00;
         Real vrad_tet3 = rr_tet03 / rr_tet00;
         Real vrad_sq = SQR(vrad_tet1) + SQR(vrad_tet2) + SQR(vrad_tet3);
+        d_vradsq = vrad_sq;                 // RAW (pre-clamp) radiation-frame velocity^2
+        d_rr00 = rr_tet00;                  // tetrad radiation energy (grazing-angle check)
         if (vrad_sq > v_sq_max) {
           Real ratio = sqrt(v_sq_max / vrad_sq);
           vrad_tet1 *= ratio;
@@ -385,6 +392,7 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
           vrad_sq = v_sq_max;
         }
         Real urad_tet0 = 1.0 / sqrt(1.0 - vrad_sq);
+        d_uradW = urad_tet0;                // inferred radiation-frame Lorentz factor
         Real urad_tet1 = urad_tet0 * vrad_tet1;
         Real urad_tet2 = urad_tet0 * vrad_tet2;
         Real urad_tet3 = urad_tet0 * vrad_tet3;
@@ -443,6 +451,14 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
           u_tet[0] = gamma_max_;
         }
       } // endif (erad_f_ > wdn + wen)
+      // record velocity-correction diagnostics (array allocated iff limit_opacity or
+      // correct_radsrc_velocity; d_* are -1 when the radiation-dominance gate did not fire)
+      ldiag(m, 9,k,j,i) = erad_f_;
+      ldiag(m,10,k,j,i) = rho_h;
+      ldiag(m,11,k,j,i) = vc_gate ? 1.0 : 0.0;
+      ldiag(m,12,k,j,i) = d_uradW;      // inferred radiation-frame W (=gamma_max if clamped)
+      ldiag(m,13,k,j,i) = d_vradsq;     // raw radiation vrad^2 (>v_sq_max => superluminal)
+      ldiag(m,14,k,j,i) = d_rr00;       // tetrad radiation energy (small/neg => corrupt)
     } // endif (correct_radsrc_velocity_)
 
     // Calculate polynomial coefficients

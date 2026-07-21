@@ -120,9 +120,12 @@ class Radiation {
   bool limit_opacity;    // enable the limiter
   Real opacity_xi_max;   // Xi_max: max proper-time absorption stiffness dt*(sig_a+sig_p)/u0
   Real opacity_tcap;     // virial ceiling on the effective opacity temperature (code units)
-  // per-cell limiter diagnostics [nmb,9,k,j,i] (allocated iff limit_opacity); slots:
-  // 0 on_entropy_floor, 1 Xi_abs_raw, 2 Xi_abs_limited, 3 T_eff, 4 limiter_active,
-  // 5 limiter_hit_tcap, 6 sigma_a, 7 sigma_p, 8 sigma_s.
+  // per-cell radiation-source diagnostics [nmb,15,k,j,i] (alloc iff limit_opacity or
+  // correct_radsrc_velocity).  Opacity limiter slots 0-8: 0 on_entropy_floor, 1 Xi_abs_raw,
+  // 2 Xi_abs_limited, 3 T_eff, 4 limiter_active, 5 limiter_hit_tcap, 6 sigma_a, 7 sigma_p,
+  // 8 sigma_s.  Velocity-correction slots 9-14: 9 E_rad_f, 10 rho_h, 11 gate(erad_f>rho+e),
+  // 12 urad_W (inferred radiation-frame Lorentz factor), 13 vrad_sq_raw (pre-clamp; >v_sq_max
+  // => superluminal/corrupted), 14 rr_tet00 (tetrad radiation energy; small/neg => corrupt).
   DvceArray5D<Real> limiter_diag;
 
   // radiation source term (i.e., beam)
