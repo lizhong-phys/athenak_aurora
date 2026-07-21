@@ -56,6 +56,17 @@ class FailureTracker {
   bool scan_ghost;
   bool abort_on_nonfinite;
 
+  // precursor "runaway-onset" trigger: fire on the first cell whose gas temperature
+  // exceeds runaway_temp AND (optionally) whose Lorentz factor is at the ceiling.
+  bool runaway_detect;
+  // onset is any of these OR-signals (each 0/false disables); whichever fires first wins:
+  Real runaway_temp;          // tgas = (gamma-1)*eint/rho threshold  (thermal runaway)
+  Real runaway_rho;           // rho threshold                        (density runaway)
+  Real runaway_erad;          // raw sum|i0| threshold                (radiation runaway)
+  bool runaway_wclamp;        // W >= runaway_wfrac*gamma_max         (velocity-clamp)
+  Real runaway_wfrac;         // W-fraction for the velocity-clamp signal
+  Real runaway_rmin;          // ignore runaway candidates with rks < this (excise-edge shell)
+
   // state
   bool snap_ready = false;    // snapshot buffers allocated
   bool have_snap  = false;    // a snapshot was taken this cycle
@@ -69,8 +80,10 @@ class FailureTracker {
 
   bool InWindow() const;
   void AllocateSnapshots();
-  // dump neighborhood of cell (m,k,j,i) both live ("after") and from snapshot ("before")
-  void WriteReport(int m, int k, int j, int i, Real rks, int cycle, int stage);
+  // dump neighborhood of cell (m,k,j,i) both live ("after") and from snapshot ("before").
+  // trigger: 0 = non-finite value, 1 = runaway-onset.  win_ghost: winner is a ghost cell.
+  void WriteReport(int m, int k, int j, int i, Real rks, int cycle, int stage,
+                   int trigger, bool win_ghost);
 };
 
 #endif // UTILS_FAILURE_TRACKER_HPP_

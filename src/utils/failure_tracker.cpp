@@ -46,7 +46,9 @@ Real SksRadiusLocal(Real x, Real y, Real z, Real a) {
   Real a2 = a*a;
   return sqrt((rad2 - a2 + sqrt((rad2 - a2)*(rad2 - a2) + 4.0*a2*z*z))*0.5);
 }
-constexpr Real kBig = 1.0e300;
+constexpr Real kBig   = 1.0e300;  // "no candidate" sentinel
+constexpr Real kCat   = 1.0e12;   // category offset: runaway keys = kCat + rks (rks << kCat)
+constexpr Real kGhost = 1.0e6;    // ghost-zone penalty: active cells always win a tie
 }  // namespace
 
 //----------------------------------------------------------------------------------------
@@ -58,6 +60,15 @@ FailureTracker::FailureTracker(MeshBlockPack *ppack, ParameterInput *pin) :
   nghbr              = pin->GetOrAddInteger("failure_tracker", "neighborhood", 2);
   scan_ghost         = pin->GetOrAddBoolean("failure_tracker", "scan_ghost", true);
   abort_on_nonfinite = pin->GetOrAddBoolean("failure_tracker", "abort_on_nonfinite", true);
+  runaway_detect     = pin->GetOrAddBoolean("failure_tracker", "runaway_detect", false);
+  runaway_temp       = pin->GetOrAddReal("failure_tracker", "runaway_temp", 100.0);
+  runaway_rho        = pin->GetOrAddReal("failure_tracker", "runaway_rho", 0.0);
+  runaway_erad       = pin->GetOrAddReal("failure_tracker", "runaway_erad", 0.0);
+  // The fatal cell is a THERMAL runaway (tgas~1e45) at W~1.3, but is bordered by the
+  // velocity-clamped (W=gamma_max) population -> offer W-clamp as its OWN onset signal.
+  runaway_wclamp     = pin->GetOrAddBoolean("failure_tracker", "runaway_wclamp", false);
+  runaway_wfrac      = pin->GetOrAddReal("failure_tracker", "runaway_wfrac", 0.99);
+  runaway_rmin       = pin->GetOrAddReal("failure_tracker", "runaway_rmin", 0.0);
 
   has_mhd = (pmy_pack->pmhd != nullptr);
   has_hyd = (pmy_pack->phydro != nullptr);
@@ -152,6 +163,18 @@ TaskStatus FailureTracker::Detect(Driver *pdrive, int stage) {
   int nx1 = indcs.nx1, nx2 = indcs.nx2, nx3 = indcs.nx3;
   auto size = pmy_pack->pmb->mb_size;
   Real spin = pmy_pack->pcoord->coord_data.bh_spin;
+  bool flat = pmy_pack->pcoord->coord_data.is_minkowski;
+
+  // runaway-onset trigger parameters (captured into the device lambda)
+  bool run_detect = runaway_detect && have_fluid;
+  Real run_temp = runaway_temp, run_wfrac = runaway_wfrac, run_rmin = runaway_rmin;
+  Real run_rho = runaway_rho, run_erad = runaway_erad;
+  bool run_wclamp = runaway_wclamp;
+  Real gm1 = 5.0/3.0 - 1.0, gamma_max = 1.0e30;
+  if (has_mhd)      { gm1 = pmy_pack->pmhd->peos->eos_data.gamma - 1.0;
+                      gamma_max = pmy_pack->pmhd->peos->eos_data.gamma_max; }
+  else if (has_hyd) { gm1 = pmy_pack->phydro->peos->eos_data.gamma - 1.0;
+                      gamma_max = pmy_pack->phydro->peos->eos_data.gamma_max; }
 
   int nmb = pmy_pack->nmb_thispack;
   int nc1 = ref.extent_int(4), nc2 = ref.extent_int(3), nc3 = ref.extent_int(2);
@@ -167,6 +190,7 @@ TaskStatus FailureTracker::Detect(Driver *pdrive, int stage) {
   int ni = iu-il+1, nj = ju-jl+1, nk = ku-kl+1;
   long ncells = static_cast<long>(nmb)*nk*nj*ni;
 
+  Real big = kBig, cat = kCat, ghost_pen = kGhost;   // captured into the device lambda
   using minloc_t = Kokkos::MinLoc<Real, long>;
   minloc_t::value_type res;
   res.val = kBig; res.loc = -1;
@@ -187,21 +211,54 @@ TaskStatus FailureTracker::Detect(Driver *pdrive, int stage) {
     }
     if (hmhd) { for (int v = 0; v < nb; ++v) { if (!isfinite(bcc0(m,v,kk,jj,ii))) bad = true; } }
     if (hrad) { for (int v = 0; v < na; ++v) { if (!isfinite(i0(m,v,kk,jj,ii)))   bad = true; } }
-    if (!bad) return;
 
     Real x1v = CellCenterX(ii-is, nx1, size.d_view(m).x1min, size.d_view(m).x1max);
     Real x2v = CellCenterX(jj-js, nx2, size.d_view(m).x2min, size.d_view(m).x2max);
     Real x3v = CellCenterX(kk-ks, nx3, size.d_view(m).x3min, size.d_view(m).x3max);
     Real rks = SksRadiusLocal(x1v, x2v, x3v, spin);
-    if (rks < lmin.val) { lmin.val = rks; lmin.loc = idx; }
+    // ghost-zone cells are copies of an active cell on another block; penalize them so
+    // the originating ACTIVE cell always wins a same-radius tie.
+    bool is_ghost = (ii < is || ii > ie || jj < js || jj > je || kk < ks || kk > ke);
+    Real gpen = is_ghost ? ghost_pen : static_cast<Real>(0.0);
+
+    // category-encoded key: non-finite (priority) sorts below runaway; within a category,
+    // active before ghost, then by min rks.
+    Real key = big;
+    if (bad) {
+      key = gpen + rks;                                 // category 0: non-finite
+    } else if (run_detect && rks >= run_rmin) {
+      Real wdn = w0(m,IDN,kk,jj,ii);
+      Real wen = w0(m,IEN,kk,jj,ii);
+      Real tgas = gm1*wen/fmax(wdn, static_cast<Real>(1.0e-300));
+      // multi-signal onset: thermal OR density OR (raw) radiation runaway
+      bool sig = false;
+      if (run_temp > 0.0 && isfinite(tgas) && tgas > run_temp) { sig = true; }
+      if (run_rho  > 0.0 && isfinite(wdn)  && wdn  > run_rho)  { sig = true; }
+      if (!sig && run_erad > 0.0 && hrad) {
+        Real sumI = 0.0;
+        for (int n = 0; n < na; ++n) { sumI += fabs(i0(m,n,kk,jj,ii)); }
+        if (isfinite(sumI) && sumI > run_erad) { sig = true; }
+      }
+      if (!sig && run_wclamp) {   // velocity-ceiling-saturated cell as its own signal
+        Real gl[4][4], gu[4][4];
+        ComputeMetricAndInverse(x1v, x2v, x3v, flat, spin, gl, gu);
+        Real vx = w0(m,IVX,kk,jj,ii), vy = w0(m,IVY,kk,jj,ii), vz = w0(m,IVZ,kk,jj,ii);
+        Real q = gl[1][1]*vx*vx + 2.0*gl[1][2]*vx*vy + 2.0*gl[1][3]*vx*vz
+               + gl[2][2]*vy*vy + 2.0*gl[2][3]*vy*vz + gl[3][3]*vz*vz;
+        Real Wlor = sqrt(1.0 + q);
+        if (isfinite(Wlor) && Wlor >= run_wfrac*gamma_max) { sig = true; }
+      }
+      if (sig) { key = cat + gpen + rks; }              // category 1: runaway-onset
+    }
+    if (key < big && key < lmin.val) { lmin.val = key; lmin.loc = idx; }
   }, minloc_t(res));
 
-  bool local_bad = (res.val < kBig) && (res.loc >= 0);
-  Real local_min = local_bad ? res.val : kBig;
+  bool local_hit = (res.val < kBig) && (res.loc >= 0);
+  Real local_key = local_hit ? res.val : kBig;
 
   // decode winner (m,k,j,i) on host
   int wm = -1, wk = -1, wj = -1, wi = -1;
-  if (local_bad) {
+  if (local_hit) {
     long idx = res.loc;
     wi = il + static_cast<int>(idx % ni);
     long t = idx / ni;
@@ -211,30 +268,41 @@ TaskStatus FailureTracker::Detect(Driver *pdrive, int stage) {
     wm = static_cast<int>(t / nk);
   }
 
-  // select globally-first cell (smallest rks; MPI_MINLOC breaks ties by lowest rank)
-  bool any = local_bad;
-  int win_rank = local_bad ? global_variable::my_rank : -1;
+  // select globally-first cell.  Key encodes category (non-finite < runaway) then rks,
+  // so MPI_MINLOC picks non-finite over runaway, and min-radius within a category.
+  bool any = local_hit;
+  int win_rank = local_hit ? global_variable::my_rank : -1;
+  Real win_key = local_key;
 #if MPI_PARALLEL_ENABLED
   struct { double v; int r; } in, out;
-  in.v = local_min;
-  in.r = local_bad ? global_variable::my_rank : (global_variable::nranks + 1);
+  in.v = local_key;
+  in.r = local_hit ? global_variable::my_rank : (global_variable::nranks + 1);
   MPI_Allreduce(&in, &out, 1, MPI_DOUBLE_INT, MPI_MINLOC, MPI_COMM_WORLD);
   any = (out.v < kBig);
   win_rank = out.r;
+  win_key = out.v;
 #endif
 
   if (any) {
     int cycle = pmy_pack->pmesh->ncycle;
-    if (local_bad && global_variable::my_rank == win_rank) {
-      WriteReport(wm, wk, wj, wi, local_min, cycle, stage);
+    int trigger = (win_key >= kCat) ? 1 : 0;                // 0=non-finite, 1=runaway
+    Real k2 = (trigger == 1) ? win_key - kCat : win_key;    // strip category offset
+    bool win_ghost = (k2 >= kGhost);                        // ghost-zone winner?
+    Real rrks = win_ghost ? k2 - kGhost : k2;               // strip ghost penalty -> rks
+    const char *what = (trigger == 0) ? "non-finite" : "runaway-onset";
+    if (local_hit && global_variable::my_rank == win_rank) {
+      WriteReport(wm, wk, wj, wi, rrks, cycle, stage, trigger, win_ghost);
     }
     reported = true;
 #if MPI_PARALLEL_ENABLED
     MPI_Barrier(MPI_COMM_WORLD);
 #endif
-    if (abort_on_nonfinite) {
+    // A runaway-onset hit always stops the run (its purpose is to catch the seed); a
+    // non-finite hit stops only if abort_on_nonfinite.
+    if (trigger == 1 || abort_on_nonfinite) {
       if (global_variable::my_rank == win_rank) {
-        std::cout << "### FailureTracker: first non-finite cell at rks=" << local_min
+        std::cout << "### FailureTracker: first " << what << " cell at rks=" << rrks
+                  << (win_ghost ? " [GHOST zone -> no active cell matched]" : "")
                   << " (cycle=" << cycle << ", stage=" << stage << ", rank=" << win_rank
                   << ") -> report written; ABORTING." << std::endl;
       }
@@ -252,7 +320,7 @@ TaskStatus FailureTracker::Detect(Driver *pdrive, int stage) {
 //! Dump the (2*nghbr+1)^3 stencil around the failing cell, "after" (live) and "before"
 //! (start-of-cycle snapshot), to a human-readable text file on the owning rank.
 void FailureTracker::WriteReport(int m, int k, int j, int i, Real rks,
-                                 int cycle, int stage) {
+                                 int cycle, int stage, int trigger, bool win_ghost) {
   bool have_fluid = has_mhd || has_hyd;
 
   // Live device arrays (fluid preferred, else radiation for shape).
@@ -307,16 +375,29 @@ void FailureTracker::WriteReport(int m, int k, int j, int i, Real rks,
   std::fprintf(fp, "# AthenaK FailureTracker report\n");
   std::fprintf(fp, "# time=%.10e dt=%.6e cycle=%d stage=%d\n",
                pmy_pack->pmesh->time, pmy_pack->pmesh->dt, cycle, stage);
-  std::fprintf(fp, "# Earliest stage with a non-finite value this cycle; representative\n"
-                   "# cell = minimum SKS radius among non-finite cells (not necessarily\n"
-                   "# the temporally-first, since cells within a stage update concurrently).\n");
-  std::fprintf(fp, "# rank=%d gid=%d m=%d (k,j,i)=(%d,%d,%d) rks=%.6e\n",
-               global_variable::my_rank, gid, m, k, j, i, rks);
+  if (trigger == 1) {
+    std::fprintf(fp, "# TRIGGER = RUNAWAY-ONSET: first cell (rks>=%.3g) matching ANY enabled\n"
+                     "# signal, all values still FINITE.  Signals (0/off = disabled):\n"
+                     "#   tgas>%.3e | rho>%.3e | sum|i0|>%.3e | wclamp(W>=%.3g*gmax)=%d\n",
+                 runaway_rmin, runaway_temp, runaway_rho, runaway_erad,
+                 runaway_wfrac, static_cast<int>(runaway_wclamp));
+  } else {
+    std::fprintf(fp, "# TRIGGER = NON-FINITE value.\n");
+  }
+  std::fprintf(fp, "# Earliest stage this cycle; representative cell = minimum SKS radius\n"
+                   "# among matching cells (not necessarily the temporally-first, since\n"
+                   "# cells within a stage update concurrently).\n");
+  std::fprintf(fp, "# rank=%d gid=%d m=%d (k,j,i)=(%d,%d,%d) rks=%.6e%s\n",
+               global_variable::my_rank, gid, m, k, j, i, rks,
+               win_ghost ? "  [WINNER IS A GHOST CELL: no active cell matched -> likely "
+                           "introduced by communication/prolongation]" : "");
   std::fprintf(fp, "# neighborhood half-width=%d  have_before_snapshot=%d  nangles=%d\n",
                nghbr, static_cast<int>(have_snap), na);
   std::fprintf(fp, "# sigma = b^mu b_mu / rho (GR magnetization, metric-correct)\n");
+  std::fprintf(fp, "# sumI_raw = sum_n |i0(n)| (RAW angle sum, NOT physical/comoving Erad;\n"
+                   "#            diagnostic proxy only); |I|max = max_n |i0(n)|\n");
   std::fprintf(fp, "# fields: rho eint pgas vx vy vz W | U(DN M1 M2 M3 EN) | "
-                   "B1 B2 B3 sigma | Erad_sum |I|max | ex_floor ex_flux | bad(component list)\n");
+                   "B1 B2 B3 sigma | sumI_raw |I|max | ex_floor ex_flux | bad(component list)\n");
 
   // generic per-cell printer (host generic lambda; not a device kernel).  Host arrays are
   // 4D (comp,k,j,i) for the winning block m; index with global (kk,jj,ii).
