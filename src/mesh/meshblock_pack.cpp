@@ -249,7 +249,11 @@ void MeshBlockPack::AddPhysics(ParameterInput *pin) {
       pin->GetOrAddBoolean("failure_tracker", "enabled", false)) {
     pfail = new FailureTracker(this, pin);
     tl_map["before_timeintegrator"]->AddTask(&FailureTracker::Snapshot, pfail, none);
-    tl_map["after_stagen"]->AddTask(&FailureTracker::Detect, pfail, none);
+    // Detect runs its blocking MPI reduction AFTER the existing comm-cleanup tasks, so the
+    // new collective does not interleave with in-flight radiation/MHD send/recv clears.
+    TaskID det_dep = none;
+    if (prad != nullptr) { det_dep = prad->id.rad_crecv | prad->id.mhd_crecv; }
+    tl_map["after_stagen"]->AddTask(&FailureTracker::Detect, pfail, det_dep);
   }
 
   // Check that at least ONE is requested and initialized.

@@ -61,10 +61,11 @@ class FailureTracker {
   bool have_snap  = false;    // a snapshot was taken this cycle
   bool reported   = false;    // a failure has already been reported
 
-  bool has_mhd, has_rad;
+  bool has_mhd, has_hyd, has_rad;
 
-  // "1 cycle before" snapshot buffers (device), matching u0/w0/bcc0/i0 shapes
-  DvceArray5D<Real> snap_u, snap_w, snap_b, snap_i;
+  // "1 cycle before" snapshot buffers.  HOST-resident (host RAM is plentiful) so we do
+  // NOT double the large device radiation array i0 in GPU memory during the window.
+  DvceArray5D<Real>::HostMirror snap_u, snap_w, snap_b, snap_i;
 
   bool InWindow() const;
   void AllocateSnapshots();

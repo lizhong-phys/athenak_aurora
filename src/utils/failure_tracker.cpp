@@ -60,7 +60,15 @@ FailureTracker::FailureTracker(MeshBlockPack *ppack, ParameterInput *pin) :
   abort_on_nonfinite = pin->GetOrAddBoolean("failure_tracker", "abort_on_nonfinite", true);
 
   has_mhd = (pmy_pack->pmhd != nullptr);
+  has_hyd = (pmy_pack->phydro != nullptr);
   has_rad = (pmy_pack->prad != nullptr);
+  if (enabled && !has_mhd && !has_hyd && !has_rad) {
+    if (global_variable::my_rank == 0) {
+      std::cout << "### FailureTracker: no mhd/hydro/radiation present -> disabling."
+                << std::endl;
+    }
+    enabled = false;
+  }
 
   if (enabled && global_variable::my_rank == 0) {
     std::cout << "### FailureTracker ENABLED: window [" << start_time << ", " << stop_time
@@ -80,21 +88,20 @@ bool FailureTracker::InWindow() const {
 
 //----------------------------------------------------------------------------------------
 void FailureTracker::AllocateSnapshots() {
-  // (Re)allocate to match the live arrays; tolerant of a mid-window AMR remesh, since
-  // deep_copy requires exactly matching extents.
-  auto match = [](DvceArray5D<Real> &dst, DvceArray5D<Real> &src) {
+  // (Re)allocate host mirrors to match the live device arrays; tolerant of a mid-window
+  // AMR remesh, since deep_copy requires exactly matching extents.
+  auto match = [](DvceArray5D<Real>::HostMirror &dst, DvceArray5D<Real> &src) {
     if (dst.extent(0) != src.extent(0) || dst.extent(1) != src.extent(1) ||
         dst.extent(2) != src.extent(2) || dst.extent(3) != src.extent(3) ||
         dst.extent(4) != src.extent(4)) {
-      Kokkos::realloc(dst, src.extent(0), src.extent(1), src.extent(2),
-                      src.extent(3), src.extent(4));
+      dst = Kokkos::create_mirror_view(src);
     }
   };
   if (has_mhd) {
     match(snap_u, pmy_pack->pmhd->u0);
     match(snap_w, pmy_pack->pmhd->w0);
     match(snap_b, pmy_pack->pmhd->bcc0);
-  } else {
+  } else if (has_hyd) {
     match(snap_u, pmy_pack->phydro->u0);
     match(snap_w, pmy_pack->phydro->w0);
   }
@@ -110,10 +117,10 @@ TaskStatus FailureTracker::Snapshot(Driver *pdrive, int stage) {
   if (!enabled || reported || !InWindow()) return TaskStatus::complete;
   AllocateSnapshots();
   if (has_mhd) {
-    Kokkos::deep_copy(snap_u, pmy_pack->pmhd->u0);
+    Kokkos::deep_copy(snap_u, pmy_pack->pmhd->u0);      // device -> host
     Kokkos::deep_copy(snap_w, pmy_pack->pmhd->w0);
     Kokkos::deep_copy(snap_b, pmy_pack->pmhd->bcc0);
-  } else {
+  } else if (has_hyd) {
     Kokkos::deep_copy(snap_u, pmy_pack->phydro->u0);
     Kokkos::deep_copy(snap_w, pmy_pack->phydro->w0);
   }
@@ -129,11 +136,16 @@ TaskStatus FailureTracker::Snapshot(Driver *pdrive, int stage) {
 TaskStatus FailureTracker::Detect(Driver *pdrive, int stage) {
   if (!enabled || reported || !InWindow()) return TaskStatus::complete;
 
-  // fluid + radiation arrays (captured by value into the device lambda)
+  // fluid + radiation arrays (captured by value into the device lambda).  Empty views
+  // (nu=nw=0) are simply not scanned, so radiation-only runs are handled gracefully.
   DvceArray5D<Real> u0, w0, bcc0, i0;
-  if (has_mhd) { u0 = pmy_pack->pmhd->u0; w0 = pmy_pack->pmhd->w0; bcc0 = pmy_pack->pmhd->bcc0; }
-  else         { u0 = pmy_pack->phydro->u0; w0 = pmy_pack->phydro->w0; }
+  if (has_mhd)      { u0 = pmy_pack->pmhd->u0;   w0 = pmy_pack->pmhd->w0; bcc0 = pmy_pack->pmhd->bcc0; }
+  else if (has_hyd) { u0 = pmy_pack->phydro->u0; w0 = pmy_pack->phydro->w0; }
   if (has_rad) { i0 = pmy_pack->prad->i0; }
+
+  // dimensions/extents come from whichever array exists (fluid preferred, else radiation)
+  bool have_fluid = (has_mhd || has_hyd);
+  auto &ref = have_fluid ? u0 : i0;
 
   auto &indcs = pmy_pack->pmesh->mb_indcs;
   int is = indcs.is, ie = indcs.ie, js = indcs.js, je = indcs.je, ks = indcs.ks, ke = indcs.ke;
@@ -142,12 +154,12 @@ TaskStatus FailureTracker::Detect(Driver *pdrive, int stage) {
   Real spin = pmy_pack->pcoord->coord_data.bh_spin;
 
   int nmb = pmy_pack->nmb_thispack;
-  int nc1 = u0.extent_int(4), nc2 = u0.extent_int(3), nc3 = u0.extent_int(2);
-  int nu = u0.extent_int(1);
-  int nw = w0.extent_int(1);
+  int nc1 = ref.extent_int(4), nc2 = ref.extent_int(3), nc3 = ref.extent_int(2);
+  int nu = have_fluid ? u0.extent_int(1) : 0;
+  int nw = have_fluid ? w0.extent_int(1) : 0;
   int nb = has_mhd ? bcc0.extent_int(1) : 0;
   int na = has_rad ? i0.extent_int(1) : 0;
-  bool hmhd = has_mhd, hrad = has_rad;
+  bool hfld = have_fluid, hmhd = has_mhd, hrad = has_rad;
 
   int il, iu, jl, ju, kl, ku;
   if (scan_ghost) { il = 0; iu = nc1-1; jl = 0; ju = nc2-1; kl = 0; ku = nc3-1; }
@@ -169,8 +181,10 @@ TaskStatus FailureTracker::Detect(Driver *pdrive, int stage) {
     int m  = static_cast<int>(t / nk);
 
     bool bad = false;
-    for (int v = 0; v < nu; ++v) { if (!isfinite(u0(m,v,kk,jj,ii))) { bad = true; } }
-    for (int v = 0; v < nw; ++v) { if (!isfinite(w0(m,v,kk,jj,ii))) { bad = true; } }
+    if (hfld) {
+      for (int v = 0; v < nu; ++v) { if (!isfinite(u0(m,v,kk,jj,ii))) { bad = true; } }
+      for (int v = 0; v < nw; ++v) { if (!isfinite(w0(m,v,kk,jj,ii))) { bad = true; } }
+    }
     if (hmhd) { for (int v = 0; v < nb; ++v) { if (!isfinite(bcc0(m,v,kk,jj,ii))) bad = true; } }
     if (hrad) { for (int v = 0; v < na; ++v) { if (!isfinite(i0(m,v,kk,jj,ii)))   bad = true; } }
     if (!bad) return;
@@ -239,32 +253,29 @@ TaskStatus FailureTracker::Detect(Driver *pdrive, int stage) {
 //! (start-of-cycle snapshot), to a human-readable text file on the owning rank.
 void FailureTracker::WriteReport(int m, int k, int j, int i, Real rks,
                                  int cycle, int stage) {
-  // live arrays -> host mirrors
+  bool have_fluid = has_mhd || has_hyd;
+
+  // Live device arrays (fluid preferred, else radiation for shape).
   DvceArray5D<Real> u0, w0, bcc0, i0;
-  if (has_mhd) { u0 = pmy_pack->pmhd->u0; w0 = pmy_pack->pmhd->w0; bcc0 = pmy_pack->pmhd->bcc0; }
-  else         { u0 = pmy_pack->phydro->u0; w0 = pmy_pack->phydro->w0; }
+  if (has_mhd)      { u0 = pmy_pack->pmhd->u0;   w0 = pmy_pack->pmhd->w0; bcc0 = pmy_pack->pmhd->bcc0; }
+  else if (has_hyd) { u0 = pmy_pack->phydro->u0; w0 = pmy_pack->phydro->w0; }
   if (has_rad) { i0 = pmy_pack->prad->i0; }
+  DvceArray5D<Real> &ref = have_fluid ? u0 : i0;
 
-  auto u_h = Kokkos::create_mirror_view(u0);  Kokkos::deep_copy(u_h, u0);
-  auto w_h = Kokkos::create_mirror_view(w0);  Kokkos::deep_copy(w_h, w0);
-  auto b_h = Kokkos::create_mirror_view(has_mhd ? bcc0 : u0);
-  if (has_mhd) { Kokkos::deep_copy(b_h, bcc0); }
-  auto ri_h = Kokkos::create_mirror_view(has_rad ? i0 : u0);
-  if (has_rad) { Kokkos::deep_copy(ri_h, i0); }
+  // Gather ONLY the winning block m to host (host RAM), not all blocks / the whole i0.
+  // Each host array is 4D (comp,k,j,i); global (k,j,i) indexing is preserved.
+  auto gather = [](DvceArray5D<Real> &dev, int mm) {
+    auto sub = Kokkos::subview(dev, mm, Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, Kokkos::ALL);
+    auto h = Kokkos::create_mirror_view(sub);
+    Kokkos::deep_copy(h, sub);
+    return h;
+  };
+  auto u_h  = gather(have_fluid ? u0   : ref, m);
+  auto w_h  = gather(have_fluid ? w0   : ref, m);
+  auto b_h  = gather(has_mhd    ? bcc0 : ref, m);
+  auto ri_h = gather(has_rad    ? i0   : ref, m);
 
-  // snapshot mirrors
-  auto su_h = Kokkos::create_mirror_view(snap_u);
-  auto sw_h = Kokkos::create_mirror_view(snap_w);
-  auto sb_h = Kokkos::create_mirror_view(has_mhd ? snap_b : snap_u);
-  auto si_h = Kokkos::create_mirror_view(has_rad ? snap_i : snap_u);
-  if (have_snap) {
-    Kokkos::deep_copy(su_h, snap_u);
-    Kokkos::deep_copy(sw_h, snap_w);
-    if (has_mhd) { Kokkos::deep_copy(sb_h, snap_b); }
-    if (has_rad) { Kokkos::deep_copy(si_h, snap_i); }
-  }
-
-  // excision masks -> host mirrors
+  // Excision masks (bool; the full host mirror is tiny).
   auto exfl = Kokkos::create_mirror_view(pmy_pack->pcoord->excision_floor);
   auto exfx = Kokkos::create_mirror_view(pmy_pack->pcoord->excision_flux);
   Kokkos::deep_copy(exfl, pmy_pack->pcoord->excision_floor);
@@ -273,17 +284,16 @@ void FailureTracker::WriteReport(int m, int k, int j, int i, Real rks,
   auto &indcs = pmy_pack->pmesh->mb_indcs;
   int is = indcs.is, js = indcs.js, ks = indcs.ks;
   int nx1 = indcs.nx1, nx2 = indcs.nx2, nx3 = indcs.nx3;
-  int nc1 = u0.extent_int(4), nc2 = u0.extent_int(3), nc3 = u0.extent_int(2);
+  int nc1 = ref.extent_int(4), nc2 = ref.extent_int(3), nc3 = ref.extent_int(2);
   int na  = has_rad ? i0.extent_int(1) : 0;
   auto &sz = pmy_pack->pmb->mb_size.h_view;
   Real spin = pmy_pack->pcoord->coord_data.bh_spin;
   bool flat = pmy_pack->pcoord->coord_data.is_minkowski;
   bool excise = pmy_pack->pcoord->coord_data.bh_excise;  // excision arrays sized only if true
   Real gm1 = (has_mhd ? pmy_pack->pmhd->peos->eos_data.gamma
-                      : pmy_pack->phydro->peos->eos_data.gamma) - 1.0;
+              : (has_hyd ? pmy_pack->phydro->peos->eos_data.gamma : 5.0/3.0)) - 1.0;
   int gid = pmy_pack->gids + m;
 
-  // open output file
   char fname[256];
   std::snprintf(fname, sizeof(fname),
                 "failure_tracker.rank_%05d.cycle_%08d.stage_%d.txt",
@@ -297,17 +307,20 @@ void FailureTracker::WriteReport(int m, int k, int j, int i, Real rks,
   std::fprintf(fp, "# AthenaK FailureTracker report\n");
   std::fprintf(fp, "# time=%.10e dt=%.6e cycle=%d stage=%d\n",
                pmy_pack->pmesh->time, pmy_pack->pmesh->dt, cycle, stage);
-  std::fprintf(fp, "# FIRST non-finite cell: rank=%d gid=%d m=%d (k,j,i)=(%d,%d,%d) rks=%.6e\n",
+  std::fprintf(fp, "# Earliest stage with a non-finite value this cycle; representative\n"
+                   "# cell = minimum SKS radius among non-finite cells (not necessarily\n"
+                   "# the temporally-first, since cells within a stage update concurrently).\n");
+  std::fprintf(fp, "# rank=%d gid=%d m=%d (k,j,i)=(%d,%d,%d) rks=%.6e\n",
                global_variable::my_rank, gid, m, k, j, i, rks);
   std::fprintf(fp, "# neighborhood half-width=%d  have_before_snapshot=%d  nangles=%d\n",
                nghbr, static_cast<int>(have_snap), na);
+  std::fprintf(fp, "# sigma = b^mu b_mu / rho (GR magnetization, metric-correct)\n");
   std::fprintf(fp, "# fields: rho eint pgas vx vy vz W | U(DN M1 M2 M3 EN) | "
-                   "B1 B2 B3 sigma=B^2/rho | Erad_sum |I|max | ex_floor ex_flux | bad\n");
+                   "B1 B2 B3 sigma | Erad_sum |I|max | ex_floor ex_flux | bad(component list)\n");
 
-  // generic per-cell printer (host generic lambda; not a device kernel)
-  auto dump_block = [&](const char *label, auto &U, auto &W, auto &B, auto &RI, bool valid) {
-    std::fprintf(fp, "\n=== %s ===\n", label);
-    if (!valid) { std::fprintf(fp, "(no data)\n"); return; }
+  // generic per-cell printer (host generic lambda; not a device kernel).  Host arrays are
+  // 4D (comp,k,j,i) for the winning block m; index with global (kk,jj,ii).
+  auto dump_block = [&](auto &U, auto &W, auto &B, auto &RI) {
     for (int dk = -nghbr; dk <= nghbr; ++dk) {
     for (int dj = -nghbr; dj <= nghbr; ++dj) {
     for (int di = -nghbr; di <= nghbr; ++di) {
@@ -318,51 +331,77 @@ void FailureTracker::WriteReport(int m, int k, int j, int i, Real rks,
       Real x2v = CellCenterX(jj-js, nx2, sz(m).x2min, sz(m).x2max);
       Real x3v = CellCenterX(kk-ks, nx3, sz(m).x3min, sz(m).x3max);
 
-      Real rho = W(m,IDN,kk,jj,ii), eint = W(m,IEN,kk,jj,ii);
-      Real vx = W(m,IVX,kk,jj,ii), vy = W(m,IVY,kk,jj,ii), vz = W(m,IVZ,kk,jj,ii);
+      Real rho = 0.0, eint = 0.0, vx = 0.0, vy = 0.0, vz = 0.0;
+      if (have_fluid) {
+        rho = W(IDN,kk,jj,ii); eint = W(IEN,kk,jj,ii);
+        vx = W(IVX,kk,jj,ii); vy = W(IVY,kk,jj,ii); vz = W(IVZ,kk,jj,ii);
+      }
       Real pgas = gm1*eint;
 
-      // Lorentz factor from the CKS metric
+      // metric, Lorentz factor
       Real gl[4][4], gu[4][4];
       ComputeMetricAndInverse(x1v, x2v, x3v, flat, spin, gl, gu);
       Real q = gl[1][1]*vx*vx + 2.0*gl[1][2]*vx*vy + 2.0*gl[1][3]*vx*vz
              + gl[2][2]*vy*vy + 2.0*gl[2][3]*vy*vz + gl[3][3]*vz*vz;
       Real W_lor = std::sqrt(std::fmax(1.0 + q, 0.0));
 
+      // GR magnetization sigma = b^mu b_mu / rho (matches radiation_source.cpp)
       Real b1 = 0.0, b2 = 0.0, b3 = 0.0, sigma = 0.0;
       if (has_mhd) {
-        b1 = B(m,IBX,kk,jj,ii); b2 = B(m,IBY,kk,jj,ii); b3 = B(m,IBZ,kk,jj,ii);
-        sigma = (b1*b1 + b2*b2 + b3*b3)/std::fmax(rho, 1.0e-300);
+        b1 = B(IBX,kk,jj,ii); b2 = B(IBY,kk,jj,ii); b3 = B(IBZ,kk,jj,ii);
+        Real alpha = std::sqrt(-1.0/gu[0][0]);
+        Real uu0 = W_lor/alpha;
+        Real uu1 = vx - alpha*W_lor*gu[0][1];
+        Real uu2 = vy - alpha*W_lor*gu[0][2];
+        Real uu3 = vz - alpha*W_lor*gu[0][3];
+        Real u_1 = gl[1][0]*uu0+gl[1][1]*uu1+gl[1][2]*uu2+gl[1][3]*uu3;
+        Real u_2 = gl[2][0]*uu0+gl[2][1]*uu1+gl[2][2]*uu2+gl[2][3]*uu3;
+        Real u_3 = gl[3][0]*uu0+gl[3][1]*uu1+gl[3][2]*uu2+gl[3][3]*uu3;
+        Real bb0 = u_1*b1 + u_2*b2 + u_3*b3;
+        Real bb1 = (b1 + bb0*uu1)/uu0;
+        Real bb2 = (b2 + bb0*uu2)/uu0;
+        Real bb3 = (b3 + bb0*uu3)/uu0;
+        Real b_0 = gl[0][0]*bb0+gl[0][1]*bb1+gl[0][2]*bb2+gl[0][3]*bb3;
+        Real b_1 = gl[1][0]*bb0+gl[1][1]*bb1+gl[1][2]*bb2+gl[1][3]*bb3;
+        Real b_2 = gl[2][0]*bb0+gl[2][1]*bb1+gl[2][2]*bb2+gl[2][3]*bb3;
+        Real b_3 = gl[3][0]*bb0+gl[3][1]*bb1+gl[3][2]*bb2+gl[3][3]*bb3;
+        Real b_sq = bb0*b_0 + bb1*b_1 + bb2*b_2 + bb3*b_3;
+        sigma = b_sq/std::fmax(rho, 1.0e-300);
       }
 
       Real erad = 0.0, imax = 0.0;
       if (has_rad) {
         for (int n = 0; n < na; ++n) {
-          Real iv = RI(m,n,kk,jj,ii);
+          Real iv = RI(n,kk,jj,ii);
           erad += iv;
           if (std::fabs(iv) > imax) imax = std::fabs(iv);
         }
       }
 
-      // which fields are non-finite
-      char bad[64]; int bl = 0; bad[0] = '\0';
-      auto flag = [&](bool cond, const char *tag) {
-        if (cond && bl < 50) { bl += std::snprintf(bad+bl, sizeof(bad)-bl, "%s ", tag); }
+      // EXACT non-finite components at this cell (rescan every stored variable/angle)
+      char bad[512]; int bl = 0; bad[0] = '\0';
+      auto add = [&](const char *fmt, int idx) {
+        if (bl < 480) { bl += std::snprintf(bad+bl, sizeof(bad)-bl, fmt, idx); }
       };
-      flag(!std::isfinite(rho), "rho"); flag(!std::isfinite(eint), "eint");
-      flag(!std::isfinite(vx)||!std::isfinite(vy)||!std::isfinite(vz), "v");
-      flag(!std::isfinite(U(m,IEN,kk,jj,ii)), "uEN");
-      flag(has_mhd && (!std::isfinite(b1)||!std::isfinite(b2)||!std::isfinite(b3)), "B");
-      flag(has_rad && !std::isfinite(erad), "I");
+      if (have_fluid) {
+        for (int v = 0; v < U.extent_int(0); ++v) { if (!std::isfinite(U(v,kk,jj,ii))) add("u%d ", v); }
+        for (int v = 0; v < W.extent_int(0); ++v) { if (!std::isfinite(W(v,kk,jj,ii))) add("w%d ", v); }
+      }
+      if (has_mhd) { for (int v = 0; v < B.extent_int(0);  ++v) { if (!std::isfinite(B(v,kk,jj,ii)))  add("b%d ", v); } }
+      if (has_rad) { for (int n = 0; n < RI.extent_int(0); ++n) { if (!std::isfinite(RI(n,kk,jj,ii))) add("i%d ", n); } }
 
       const char *mark = (dk==0 && dj==0 && di==0) ? " *" : "  ";
+      Real uDN = have_fluid ? U(IDN,kk,jj,ii) : 0.0;
+      Real uM1 = have_fluid ? U(IM1,kk,jj,ii) : 0.0;
+      Real uM2 = have_fluid ? U(IM2,kk,jj,ii) : 0.0;
+      Real uM3 = have_fluid ? U(IM3,kk,jj,ii) : 0.0;
+      Real uEN = have_fluid ? U(IEN,kk,jj,ii) : 0.0;
       std::fprintf(fp,
         "%s (k,j,i)=(%d,%d,%d) rks=%.4e | %.5e %.5e %.5e %.4e %.4e %.4e %.5e | "
-        "%.5e %.5e %.5e %.5e %.5e | %.4e %.4e %.5e | %.5e %.4e | %d %d | %s\n",
+        "%.5e %.5e %.5e %.5e %.5e | %.4e %.4e %.4e %.5e | %.5e %.4e | %d %d | %s\n",
         mark, kk, jj, ii, SksRadiusLocal(x1v,x2v,x3v,spin),
         rho, eint, pgas, vx, vy, vz, W_lor,
-        U(m,IDN,kk,jj,ii), U(m,IM1,kk,jj,ii), U(m,IM2,kk,jj,ii),
-        U(m,IM3,kk,jj,ii), U(m,IEN,kk,jj,ii),
+        uDN, uM1, uM2, uM3, uEN,
         b1, b2, b3, sigma, erad, imax,
         (excise ? static_cast<int>(exfl(m,kk,jj,ii)) : -1),
         (excise ? static_cast<int>(exfx(m,kk,jj,ii)) : -1),
@@ -370,8 +409,23 @@ void FailureTracker::WriteReport(int m, int k, int j, int i, Real rks,
     }}}
   };
 
-  dump_block("AFTER (failure, live state)", u_h, w_h, b_h, ri_h, true);
-  dump_block("BEFORE (start of failing cycle)", su_h, sw_h, sb_h, si_h, have_snap);
+  std::fprintf(fp, "\n=== AFTER (failure, live state) ===\n");
+  dump_block(u_h, w_h, b_h, ri_h);
+  std::fprintf(fp, "\n=== BEFORE (start of failing cycle) ===\n");
+  if (have_snap) {
+    // snapshot is already HOST-resident: subview block m (no copy)
+    auto su_h = Kokkos::subview(have_fluid ? snap_u : snap_i, m,
+                                Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, Kokkos::ALL);
+    auto sw_h = Kokkos::subview(have_fluid ? snap_w : snap_i, m,
+                                Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, Kokkos::ALL);
+    auto sb_h = Kokkos::subview(has_mhd ? snap_b : snap_u, m,
+                                Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, Kokkos::ALL);
+    auto si_h = Kokkos::subview(has_rad ? snap_i : snap_u, m,
+                                Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, Kokkos::ALL);
+    dump_block(su_h, sw_h, sb_h, si_h);
+  } else {
+    std::fprintf(fp, "(no snapshot: failure occurred before first in-window cycle top)\n");
+  }
 
   std::fclose(fp);
   std::cout << "### FailureTracker: wrote " << fname << std::endl;
