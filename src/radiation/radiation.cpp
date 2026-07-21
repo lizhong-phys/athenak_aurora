@@ -71,6 +71,9 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
   limit_opacity  = pin->GetOrAddBoolean("radiation","limit_opacity",false);
   opacity_xi_max = pin->GetOrAddReal("radiation","opacity_xi_max",1e100);  // default: off
   opacity_tcap   = pin->GetOrAddReal("radiation","opacity_tcap",1e100);    // default: no cap
+  rad_dvlimit    = pin->GetOrAddBoolean("radiation","rad_dvlimit",false);
+  rad_max_density_drop     = pin->GetOrAddReal("radiation","rad_max_density_drop",2.0);
+  rad_momentum_lambda_lock = pin->GetOrAddReal("radiation","rad_momentum_lambda_lock",5.0);
 
   // Enable radiation source term (radiation+(M)HD) by default if hydro or mhd enabled
   // Otherwise, disable radiation source term.  The former can be overriden by
@@ -105,6 +108,16 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
         std::cout << "### WARNING: limit_opacity requires opacity_xi_max>0 and "
                   << "opacity_tcap>0; disabling limit_opacity." << std::endl;
         limit_opacity = false;
+      }
+    }
+    // Validate the density-drop limiter.  It computes its own E_rad_f (the radiation-frame
+    // estimate runs whenever rad_dvlimit is on), so it is self-contained -- it only needs a
+    // physical drop factor (>1) and a positive stiffness threshold.
+    if (rad_dvlimit) {
+      if (rad_max_density_drop <= 1.0 || rad_momentum_lambda_lock <= 0.0) {
+        std::cout << "### WARNING: rad_dvlimit requires rad_max_density_drop>1 and "
+                  << "rad_momentum_lambda_lock>0; disabling rad_dvlimit." << std::endl;
+        rad_dvlimit = false;
       }
     }
     is_compton_enabled = pin->GetOrAddBoolean("radiation","compton",false);
@@ -147,8 +160,8 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
   int ncells3 = (indcs.nx3 > 1)? (indcs.nx3 + 2*(indcs.ng)) : 1;
   Kokkos::realloc(nh_c,prgeo->nangles,4);
   Kokkos::realloc(nh_f,prgeo->nangles,6,4);
-  if (limit_opacity || correct_radsrc_velocity) {
-    Kokkos::realloc(limiter_diag,nmb,15,ncells3,ncells2,ncells1);
+  if (limit_opacity || correct_radsrc_velocity || rad_dvlimit) {
+    Kokkos::realloc(limiter_diag,nmb,17,ncells3,ncells2,ncells1);
   }
   Kokkos::realloc(tet_c,nmb,4,4,ncells3,ncells2,ncells1);
   Kokkos::realloc(tetcov_c,nmb,4,4,ncells3,ncells2,ncells1);

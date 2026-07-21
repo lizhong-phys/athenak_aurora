@@ -107,6 +107,17 @@ class Radiation {
 
   // Flags and parameters for ad hoc fixes
   bool correct_radsrc_velocity;
+  // Density-drop limiter (conservative overshoot guard; requires the radiation-frame estimate,
+  // i.e. correct_radsrc_velocity or limit_opacity, so E_rad_f is computed).  D=rho*u^0 is
+  // conserved across the radiation source substep, so rho_post/rho_pre = W_pre/W_post.  In the
+  // stiff, radiation-dominated regime (Lambda_s = (dt*sigma_s/u0)*(E_rad_f/rho_h) >
+  // rad_momentum_lambda_lock) the explicit momentum kick can drive W to the ceiling and collapse
+  // the density.  There we scale the WHOLE source exchange (intensities AND gas) by a scalar
+  // lambda<=1 chosen so the estimated density drop is <= rad_max_density_drop -- conservative
+  // (four-momentum preserving) and inactive elsewhere (physics unchanged).
+  bool rad_dvlimit;
+  Real rad_max_density_drop;      // f_rho: max rho_pre/rho_post per source update (>1)
+  Real rad_momentum_lambda_lock;  // Lambda_lock: stiffness*dominance above which the guard acts
   bool correct_radsrc_opacity;
   Real dfloor_opacity;
   Real dens_trunc_max;
@@ -120,12 +131,14 @@ class Radiation {
   bool limit_opacity;    // enable the limiter
   Real opacity_xi_max;   // Xi_max: max proper-time absorption stiffness dt*(sig_a+sig_p)/u0
   Real opacity_tcap;     // virial ceiling on the effective opacity temperature (code units)
-  // per-cell radiation-source diagnostics [nmb,15,k,j,i] (alloc iff limit_opacity or
-  // correct_radsrc_velocity).  Opacity limiter slots 0-8: 0 on_entropy_floor, 1 Xi_abs_raw,
-  // 2 Xi_abs_limited, 3 T_eff, 4 limiter_active, 5 limiter_hit_tcap, 6 sigma_a, 7 sigma_p,
-  // 8 sigma_s.  Velocity-correction slots 9-14: 9 E_rad_f, 10 rho_h, 11 gate(erad_f>rho+e),
-  // 12 urad_W (inferred radiation-frame Lorentz factor), 13 vrad_sq_raw (pre-clamp; >v_sq_max
-  // => superluminal/corrupted), 14 rr_tet00 (tetrad radiation energy; small/neg => corrupt).
+  // per-cell radiation-source diagnostics [nmb,17,k,j,i] (alloc iff limit_opacity,
+  // correct_radsrc_velocity, or rad_dvlimit).  Opacity limiter slots 0-8: 0 on_entropy_floor,
+  // 1 Xi_abs_raw, 2 Xi_abs_limited, 3 T_eff, 4 limiter_active, 5 limiter_hit_tcap, 6 sigma_a,
+  // 7 sigma_p, 8 sigma_s.  Velocity-correction slots 9-14: 9 E_rad_f, 10 rho_h,
+  // 11 gate(erad_f>rho+e), 12 urad_W (inferred radiation-frame Lorentz factor), 13 vrad_sq_raw
+  // (pre-clamp; >v_sq_max => superluminal/corrupted), 14 rr_tet00 (tetrad radiation energy;
+  // small/neg => corrupt).  Density-drop limiter slots 15-16: 15 Lambda_s (stiffness*dominance),
+  // 16 lambda (source-exchange scale; <1 => guard fired, 1 => untouched).
   DvceArray5D<Real> limiter_diag;
 
   // radiation source term (i.e., beam)

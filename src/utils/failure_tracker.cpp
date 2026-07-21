@@ -447,7 +447,8 @@ void FailureTracker::WriteReport(int m, int k, int j, int i, Real rks,
 
   // ---- radiation-source diagnostics for the center cell (opacity limiter + velocity corr) ----
   if (has_rad &&
-      (pmy_pack->prad->limit_opacity || pmy_pack->prad->correct_radsrc_velocity) &&
+      (pmy_pack->prad->limit_opacity || pmy_pack->prad->correct_radsrc_velocity ||
+       pmy_pack->prad->rad_dvlimit) &&
       (pmy_pack->prad->limiter_diag.extent_int(0) > m)) {
     auto ld_sub = Kokkos::subview(pmy_pack->prad->limiter_diag, m,
                                   Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, Kokkos::ALL);
@@ -468,6 +469,16 @@ void FailureTracker::WriteReport(int m, int k, int j, int i, Real rks,
                  static_cast<int>(pmy_pack->prad->correct_radsrc_velocity),
                  ld_h(11,k,j,i), ld_h(9,k,j,i), ld_h(10,k,j,i),
                  ld_h(12,k,j,i), ld_h(13,k,j,i), ld_h(14,k,j,i));
+    // DVLIMIT: density-drop limiter.  lambda<1 => the guard scaled the gas<->radiation exchange
+    // this step to cap the density drop at rad_max_density_drop (fires when Lambda_s>lambda_lock).
+    if (pmy_pack->prad->rad_dvlimit) {
+      std::fprintf(fp, "# DVLIMIT (center): Lambda_s=%.4e lambda=%.4e  f_rho=%.3g lambda_lock=%.3g "
+                       " (lambda = min of scattering & Compton exchange scales; <1 => density-drop "
+                       "guard fired; Lambda_s=0 => radiation-dominance gate did not fire)\n",
+                   ld_h(15,k,j,i), ld_h(16,k,j,i),
+                   pmy_pack->prad->rad_max_density_drop,
+                   pmy_pack->prad->rad_momentum_lambda_lock);
+    }
   }
 
   // generic per-cell printer (host generic lambda; not a device kernel).  Host arrays are
