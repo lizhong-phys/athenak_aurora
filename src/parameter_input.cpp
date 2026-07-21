@@ -105,7 +105,8 @@ void ParameterInput::CheckBlockNames() {
     "coord", "adm", "shearing_box",
     "time", "problem", "output", "units", 
     "hydro", "mhd", "ion-neutral", "radiation", "z4c", "z4c_amr", "cce",
-    "rad_srcterms", "hydro_srcterms", "mhd_srcterms"
+    "rad_srcterms", "hydro_srcterms", "mhd_srcterms",
+    "failure_tracker"
     };
 
   for (auto it1 = block.begin(); it1 != block.end(); ++it1) {
