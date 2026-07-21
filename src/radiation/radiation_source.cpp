@@ -429,44 +429,29 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
             dvlimit_gate = (dvlimit_lambda_s > lambda_lock_);
           }
 
-          // ---- velocity correction (White 2023 frac blend), applied only if enabled -------
+          // ---- velocity correction: implicit relaxation of the fluid velocity toward the ----
+          // radiation rest frame (urad), applied only if enabled.  Replaces the White (2023)
+          // componentwise frac blend, which relaxes each axis by a different, force-based,
+          // sign-clampable fraction and so leaves u_tet != urad -- the residual, times the huge
+          // E_rad, is the scattering momentum kick that overshoots the gas to the W-ceiling.
+          //
+          // The radiation drag obeys dv/dt = -k (v - v_rad); its EXACT implicit-in-dt solution
+          // moves v a fraction theta = dt*k/(1+dt*k) of the way to v_rad, with a SINGLE scalar
+          // theta in [0,1] (no per-axis sign traps).  The proper-time drag stiffness dt*k is
+          // exactly Lambda_s = (dt*sigma_s/u0)*(E_rad_f/rho_h).  Stiff cell (Lambda_s>>1) =>
+          // theta->1 => u_tet->urad => the comoving frame IS the radiation flux-frame, so the
+          // scattering feedback (m_old-m_new) vanishes and the gas coasts at its bounded
+          // pre-radiation velocity instead of being flung to gamma_max.  Weak coupling
+          // (Lambda_s<<1) => theta->0 => unchanged.
           if (correct_radsrc_velocity_) {
-            // gas momentum + radiation four-force in the tetrad frame (pre-blend u_tet)
-            Real mgas_tet1 = wgas * u_tet[0] * u_tet[1];
-            Real mgas_tet2 = wgas * u_tet[0] * u_tet[2];
-            Real mgas_tet3 = wgas * u_tet[0] * u_tet[3];
-            Real chi_p = sigma_a + sigma_p;
-            Real chi_s = sigma_s;
-            Real chi_a = sigma_a + sigma_s;
-            Real emissivity = chi_p*arad_*SQR(SQR(tgas)) + chi_s*erad_f_;
-            if (is_compton_enabled_) {
-              Real trad = sqrt(sqrt(erad_f_/arad_));
-              emissivity += chi_s*4*(tgas-trad)*inv_t_electron_*erad_f_;
-            }
-            Real gg_tet1 = -emissivity*u_tet[1] - chi_a*(-u_tet[0]*rr_tet01 + u_tet[1]*rr_tet11 + u_tet[2]*rr_tet12 + u_tet[3]*rr_tet13);
-            Real gg_tet2 = -emissivity*u_tet[2] - chi_a*(-u_tet[0]*rr_tet02 + u_tet[1]*rr_tet12 + u_tet[2]*rr_tet22 + u_tet[3]*rr_tet23);
-            Real gg_tet3 = -emissivity*u_tet[3] - chi_a*(-u_tet[0]*rr_tet03 + u_tet[1]*rr_tet13 + u_tet[2]*rr_tet23 + u_tet[3]*rr_tet33);
-            Real dmgas_tet1 = gg_tet1 * dt_ / u_tet[0];
-            Real dmgas_tet2 = gg_tet2 * dt_ / u_tet[0];
-            Real dmgas_tet3 = gg_tet3 * dt_ / u_tet[0];
-            // fluid momentum if accelerated to the radiation frame
-            Real mgas_rad_tet1 = wgas * urad_tet0 * urad_tet1;
-            Real mgas_rad_tet2 = wgas * urad_tet0 * urad_tet2;
-            Real mgas_rad_tet3 = wgas * urad_tet0 * urad_tet3;
-            Real frac1 = (mgas_rad_tet1==mgas_tet1) ? 0.0 : dmgas_tet1 / (mgas_rad_tet1 - mgas_tet1);
-            Real frac2 = (mgas_rad_tet2==mgas_tet2) ? 0.0 : dmgas_tet2 / (mgas_rad_tet2 - mgas_tet2);
-            Real frac3 = (mgas_rad_tet3==mgas_tet3) ? 0.0 : dmgas_tet3 / (mgas_rad_tet3 - mgas_tet3);
-            frac1 = fmin(fmax(frac1, 0.0), 1.0);
-            frac2 = fmin(fmax(frac2, 0.0), 1.0);
-            frac3 = fmin(fmax(frac3, 0.0), 1.0);
-            u_tet[1] = (1.0-frac1)*u_tet[1] + frac1*urad_tet1;
-            u_tet[2] = (1.0-frac2)*u_tet[2] + frac2*urad_tet2;
-            u_tet[3] = (1.0-frac3)*u_tet[3] + frac3*urad_tet3;
+            Real lambda_s = dtaucsigs * erad_f_ / fmax(wgas, 1.0e-300);
+            Real theta = lambda_s / (1.0 + lambda_s);       // implicit relaxation fraction, 0..1
+            u_tet[1] = (1.0-theta)*u_tet[1] + theta*urad_tet1;
+            u_tet[2] = (1.0-theta)*u_tet[2] + theta*urad_tet2;
+            u_tet[3] = (1.0-theta)*u_tet[3] + theta*urad_tet3;
             u_tet[0] = sqrt(1.0 + SQR(u_tet[1]) + SQR(u_tet[2]) + SQR(u_tet[3]));
-
-            // The componentwise interpolation (different frac per axis) is NOT convex, so the
-            // combined u_tet[0] can exceed gamma_max even though the current and radiation-frame
-            // velocities are each below it.  Cap the combined Lorentz factor at gamma_max.
+            // urad is already sub-gamma_max (vrad_sq clamp), and a convex blend of two
+            // sub-gamma_max states is sub-gamma_max, so no further cap is needed; keep a guard.
             if (u_tet[0] > gamma_max_) {
               Real rescale = sqrt((SQR(gamma_max_) - 1.0)/fmax(SQR(u_tet[0]) - 1.0, 1.0e-30));
               u_tet[1] *= rescale;
