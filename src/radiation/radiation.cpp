@@ -68,6 +68,15 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
   tau_truncation = pin->GetOrAddReal("radiation","tau_truncation",1e-100);
   sigmoid_residual = pin->GetOrAddReal("radiation","sigmoid_residual",1e-2);
   sigmoid_residual = fmin(sigmoid_residual, 1./3); // sigmoid residual must be less than 1./3
+  // C2P-based W limiter (default off; MHD-only in the kernel)
+  rad_wlimit    = pin->GetOrAddBoolean("radiation","rad_wlimit",false);
+  rad_wlimit_fw = pin->GetOrAddReal("radiation","rad_wlimit_fw",1.5);
+  rad_w_hard    = pin->GetOrAddReal("radiation","rad_w_hard",10.0);
+  if (rad_wlimit && (rad_wlimit_fw <= 1.0 || rad_w_hard <= 1.0)) {
+    std::cout << "### WARNING: rad_wlimit requires rad_wlimit_fw>1 and rad_w_hard>1; "
+              << "disabling rad_wlimit." << std::endl;
+    rad_wlimit = false;
+  }
 
   // Enable radiation source term (radiation+(M)HD) by default if hydro or mhd enabled
   // Otherwise, disable radiation source term.  The former can be overriden by

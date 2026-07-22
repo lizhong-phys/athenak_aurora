@@ -113,6 +113,12 @@ class Radiation {
   Real tau_truncation;
   Real sigmoid_residual; // sigmoid residual must be less than 1./3
 
+  // C2P-based velocity (W) limiter: backtrack each gas<->radiation exchange so the real GRMHD
+  // C2P recovers W <= W_limit = max[W_pre, min(W_hard, fw*W_pre)].  MHD-only; default off.
+  bool rad_wlimit;
+  Real rad_wlimit_fw;      // fw: max W_post/W_pre per exchange (>1)
+  Real rad_w_hard;         // W_hard: absolute Lorentz-factor ceiling (>1)
+
   // radiation source term (i.e., beam)
   SourceTerms *psrc = nullptr;
 
