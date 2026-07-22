@@ -469,15 +469,31 @@ void FailureTracker::WriteReport(int m, int k, int j, int i, Real rks,
                  static_cast<int>(pmy_pack->prad->correct_radsrc_velocity),
                  ld_h(11,k,j,i), ld_h(9,k,j,i), ld_h(10,k,j,i),
                  ld_h(12,k,j,i), ld_h(13,k,j,i), ld_h(14,k,j,i));
-    // WLIMIT: velocity (W) limiter.  Bounds the recovered post-coupling W by scaling the whole
-    // exchange by lambda.  W_post = cold-gas W at lambda=1; lambda<1 => it fired (W held at
-    // W_limit).  Lambda_s=0 => the radiation-dominance + stiffness gate did not open.
+    // WLIMIT: velocity (W) limiter.  candidate = the cheap R_rad/Lambda_mom gate opened (where the
+    // preview ran); overshoot = the limiter ACTED (lambda_scat<1, i.e. the previewed |S| exceeded
+    // the W budget).  A HEALTHY radiation-dominated cell shows candidate=1, overshoot=0, lambda=1;
+    // a RUNAWAY shows overshoot=1, lambda<1.  W_cold_full is the SCATTERING preview at lambda=1
+    // (does not include the subsequent Compton exchange).
     if (pmy_pack->prad->rad_dvlimit) {
-      std::fprintf(fp, "# WLIMIT (center): Lambda_s=%.4e lambda=%.4e | W_post(full)=%.4e "
-                       "W_limit=%.4e  gate: R_rad>%.3g & Lambda_s>%.3g  (fw=%.3g W_hard=%.3g)\n",
-                   ld_h(15,k,j,i), ld_h(16,k,j,i), ld_h(17,k,j,i), ld_h(18,k,j,i),
+      const int cand = (ld_h(20,k,j,i) > pmy_pack->prad->rad_dominance_lock &&
+                        ld_h(15,k,j,i) > pmy_pack->prad->rad_momentum_lambda_lock) ? 1 : 0;
+      const int over = (ld_h(16,k,j,i) < 1.0) ? 1 : 0;   // limiter acted (lambda_scat<1)
+      std::fprintf(fp, "# WLIMIT (center): R_rad=%.4e Lambda_mom=%.4e candidate=%d | W_pre=%.4e "
+                       "W_cold_full(scat)=%.4e W_limit=%.4e overshoot=%d | lambda_scat=%.4e "
+                       "lambda_compton=%.4e  (gate R_rad>%.3g & Lambda_mom>%.3g; fw=%.3g W_hard=%.3g)\n",
+                   ld_h(20,k,j,i), ld_h(15,k,j,i), cand, ld_h(21,k,j,i),
+                   ld_h(17,k,j,i), ld_h(18,k,j,i), over, ld_h(16,k,j,i), ld_h(19,k,j,i),
                    pmy_pack->prad->rad_dominance_lock, pmy_pack->prad->rad_momentum_lambda_lock,
                    pmy_pack->prad->rad_max_w_increase, pmy_pack->prad->rad_w_hard);
+      // Frame diagnostic.  Gamma_rel_pre is the exact PRE-coupling relative gas<->radiation Lorentz
+      // factor (=1 comoving; physical drag reduces it).  beyond_mag is only a MAGNITUDE heuristic
+      // (W_cold_full > 2 urad_W) -- it does NOT prove the gas crossed the frame (scalar magnitudes
+      // carry no direction); a rigorous test needs the predicted POST-exchange relative Lorentz
+      // factor, not computed here.
+      const int beyond_mag = (ld_h(12,k,j,i) > 0.0 && ld_h(17,k,j,i) > 2.0*ld_h(12,k,j,i)) ? 1 : 0;
+      std::fprintf(fp, "# WLIMIT-FRAME (center): Gamma_rel_pre=%.4e urad_W=%.4e W_cold_full=%.4e "
+                       "beyond_mag=%d  (heuristic only; not a directional crossing test)\n",
+                   ld_h(22,k,j,i), ld_h(12,k,j,i), ld_h(17,k,j,i), beyond_mag);
     }
   }
 

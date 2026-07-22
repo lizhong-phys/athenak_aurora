@@ -73,7 +73,7 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
   opacity_tcap   = pin->GetOrAddReal("radiation","opacity_tcap",1e100);    // default: no cap
   rad_dvlimit        = pin->GetOrAddBoolean("radiation","rad_dvlimit",false);
   rad_momentum_lambda_lock = pin->GetOrAddReal("radiation","rad_momentum_lambda_lock",5.0);
-  rad_dominance_lock = pin->GetOrAddReal("radiation","rad_dominance_lock",100.0);
+  rad_dominance_lock = pin->GetOrAddReal("radiation","rad_dominance_lock",1.0);
   rad_max_w_increase = pin->GetOrAddReal("radiation","rad_max_w_increase",1.5);
   rad_w_hard         = pin->GetOrAddReal("radiation","rad_w_hard",10.0);
 
@@ -168,7 +168,7 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
   // (must match the outer condition in RadFluidCoupling: correct_radsrc_velocity || limit_opacity
   // || rad_dvlimit), else those blocks write out of bounds.
   if (limit_opacity || correct_radsrc_velocity || rad_dvlimit) {
-    Kokkos::realloc(limiter_diag,nmb,19,ncells3,ncells2,ncells1);
+    Kokkos::realloc(limiter_diag,nmb,23,ncells3,ncells2,ncells1);
   }
   Kokkos::realloc(tet_c,nmb,4,4,ncells3,ncells2,ncells1);
   Kokkos::realloc(tetcov_c,nmb,4,4,ncells3,ncells2,ncells1);

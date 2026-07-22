@@ -324,9 +324,12 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
     Real dvlimit_lambda_c = 1.0;       // scale for the Compton exchange (shares the SAME budget)
     Real dvlimit_budget_sq = 0.0;      // |S|^2 that recovers W = W_limit (max allowed post |S|^2)
     bool dvlimit_gate = false;
-    Real dvlimit_lambda_s = 0.0;       // diag: Lambda_s (stiffness*dominance)
+    Real dvlimit_rrad = 0.0;           // diag: R_rad = E_rad_f/(rho h)
+    Real dvlimit_lambda_s = 0.0;       // diag: Lambda_mom = dt(sigma_a+sigma_s)/u0 * R_rad
+    Real dvlimit_wpre  = 0.0;          // diag: cold-gas pre-radiation W
     Real dvlimit_wpost = 0.0;          // diag: recovered W_post at lambda=1
     Real dvlimit_wlim  = 0.0;          // diag: W_limit
+    Real dvlimit_grel  = 0.0;          // diag: pre-coupling Gamma_rel = -u_gas . u_rad
 
     // Radiation-frame estimate + velocity correction (White 2023).  The frame estimate and
     // its diagnostics (limiter_diag slots 9-14) are computed whenever the diag array exists
@@ -432,20 +435,59 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
         Real urad_tet1 = urad_tet0 * vrad_tet1;
         Real urad_tet2 = urad_tet0 * vrad_tet2;
         Real urad_tet3 = urad_tet0 * vrad_tet3;
+        // Relative gas<->radiation Lorentz factor Gamma_rel = -u_gas . u_rad (orthonormal tetrad,
+        // PRE-correction gas velocity).  =1 when comoving; physical drag REDUCES it (gas moves
+        // toward the radiation frame).  If the coupling instead drives the gas THROUGH and beyond
+        // the radiation frame (W_cold_full >> urad_W), that is the numerical-overshoot signature.
+        dvlimit_grel = u_tet[0]*urad_tet0
+                     - (u_tet[1]*urad_tet1 + u_tet[2]*urad_tet2 + u_tet[3]*urad_tet3);
 
         // Density-drop limiter and velocity correction (both need the gas enthalpy; the
         // correction additionally needs the tetrad momentum + radiation force).
         if (correct_radsrc_velocity_ || rad_dvlimit_) {
           Real wgas = wdn + wen + pgas;
 
-          // ---- density-drop limiter: only OPEN the gate here (lambda is decided in the -----
-          // coupling loop below from the ACTUAL implicit moment exchange, with the FINAL
-          // post-correction u_tet, so the explicit force estimate is not used).  Gate:
-          // Lambda_s = (dt*sigma_s/u0)*(E_rad_f/rho_h) = stiffness * radiation dominance.
+          // ---- W limiter, CHEAP CANDIDATE gate only (decides WHERE to run the preview) -------
+          // R_rad = E_rad_f/(rho h) measures AVAILABLE radiation energy, NOT the momentum
+          // transferred, so it cannot by itself distinguish a healthy low-density radiation-
+          // dominated cell (radiation comoving/isotropic => small dS) from a runaway.  So use a
+          // broad candidate here (R_rad > rad_dom_lock, Lambda_mom = dt(sigma_a+sigma_s)/u0 *
+          // R_rad > lambda_lock) and let the DECISIVE test -- the previewed cold-gas W_full >
+          // W_limit in the coupling loop -- decide whether the limiter actually acts.
           if (rad_dvlimit_) {
-            Real r_rad = erad_f_ / fmax(wgas, 1.0e-300);      // radiation dominance E_rad_f/(rho h)
-            dvlimit_lambda_s = dtaucsigs * r_rad;             // Lambda_s = (dt sigma_s/u0) R_rad
+            Real r_rad = erad_f_ / fmax(wgas, 1.0e-300);              // radiation / gas enthalpy
+            dvlimit_lambda_s = (dtaucsiga + dtaucsigs) * r_rad;       // Lambda_mom (a+s opacity)
+            dvlimit_rrad = r_rad;                                     // diag
             dvlimit_gate = (r_rad > rad_dom_lock_) && (dvlimit_lambda_s > lambda_lock_);
+            if (dvlimit_gate) {
+              // Pre-radiation W budget, computed HERE (from pre-radiation quantities) so a failed
+              // absorption/scattering solve cannot leave it 0 for the Compton sub-step.  Cap the
+              // cold-gas W GROWTH factor at r_w = W_limit/W_pre, with W_pre = PRIMITIVE gamma (not
+              // the cold-gas |S|/D estimate, which over-reads in hot/magnetized cells).  Because
+              // this bounds a RATIO, it needs no special case for zero momentum (Mpre_sq=0 => a
+              // stationary cell is allowed, budget = D^2(r_w^2-1) >= 0).  |S_post|^2 <= budget
+              // enforces cold-gas W_post/W_pre_cold <= r_w, i.e. true W_post <~ W_limit.
+              Real ig00  = 1.0/gupper[0][0];
+              Real gam11 = gupper[1][1] - gupper[0][1]*gupper[0][1]*ig00;
+              Real gam22 = gupper[2][2] - gupper[0][2]*gupper[0][2]*ig00;
+              Real gam33 = gupper[3][3] - gupper[0][3]*gupper[0][3]*ig00;
+              Real gam12 = gupper[1][2] - gupper[0][1]*gupper[0][2]*ig00;
+              Real gam13 = gupper[1][3] - gupper[0][1]*gupper[0][3]*ig00;
+              Real gam23 = gupper[2][3] - gupper[0][2]*gupper[0][3]*ig00;
+              Real M1 = u0_(m,IM1,k,j,i), M2 = u0_(m,IM2,k,j,i), M3 = u0_(m,IM3,k,j,i);
+              Real mpre_sq = gam11*M1*M1 + gam22*M2*M2 + gam33*M3*M3
+                           + 2.0*(gam12*M1*M2 + gam13*M1*M3 + gam23*M2*M3);
+              Real d_cons = u0_(m,IDN,k,j,i);
+              Real w_lim  = fmax(gamma, fmin(w_hard_, fw_*gamma));   // max[W_pre,min(W_hard,fw*W_pre)]
+              Real r_w    = w_lim / fmax(gamma, 1.0e-300);           // allowed cold-gas growth factor
+              if (!(d_cons > 0.0) || !isfinite(mpre_sq) || mpre_sq < 0.0) {
+                dvlimit_budget_sq = -1.0;   // sentinel -> fail closed in the previews
+              } else {
+                dvlimit_budget_sq = SQR(r_w)*(SQR(d_cons) + mpre_sq) - SQR(d_cons);
+              }
+              dvlimit_wpre = gamma;   // primitive pre-radiation W (design reference)
+              dvlimit_wlim = w_lim;
+            }
           }
 
           // ---- velocity correction: implicit relaxation of the fluid velocity toward the ----
@@ -462,7 +504,9 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
           // scattering feedback (m_old-m_new) vanishes and the gas coasts at its bounded
           // pre-radiation velocity instead of being flung to gamma_max.  Weak coupling
           // (Lambda_s<<1) => theta->0 => unchanged.
-          if (correct_radsrc_velocity_) {
+          // Skip the correction entirely on a bad radiation frame (rr_tet00<=0/nonfinite): urad
+          // is undefined, so relaxing toward it (tetrad rest) would be wrong -- leave u_tet alone.
+          if (correct_radsrc_velocity_ && !bad_frame) {
             Real lambda_s = dtaucsigs * erad_f_ / fmax(wgas, 1.0e-300);
             Real theta = lambda_s / (1.0 + lambda_s);       // implicit relaxation fraction, 0..1
             u_tet[1] = (1.0-theta)*u_tet[1] + theta*urad_tet1;
@@ -600,28 +644,29 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
                      + gam12*(M1*dm2+M2*dm1) + gam13*(M1*dm3+M3*dm1) + gam23*(M2*dm3+M3*dm2);
         Real dS_sq   = gam11*dm1*dm1 + gam22*dm2*dm2 + gam33*dm3*dm3
                      + 2.0*(gam12*dm1*dm2 + gam13*dm1*dm3 + gam23*dm2*dm3);
-        // Cold-gas Lorentz factor W = sqrt(1 + gamma^{ij} S_i S_j / D^2) (h=1; for h>1 this
-        // OVER-estimates W, so bounding it is strictly conservative).  D = u0(IDN) is conserved
-        // across the substep.  This bounds the RECOVERED post-coupling W directly -- no |S|->W
-        // guess and no (metric-entangled) energy convention -- unlike the frame/norm limiters.
+        // Cold-gas |S_post|^2 = gamma^{ij}(M+dS)_i(M+dS)_j; the W budget (dvlimit_budget_sq) was
+        // set in the gate block from pre-radiation quantities.  W_full = sqrt(1+|S_post|^2/D^2)
+        // (h=1; for h>1 it over-reads, so bounding it is conservative) is diagnostic only.
         Real d_cons = u0_(m,IDN,k,j,i);
         Real inv_d2 = 1.0/fmax(SQR(d_cons), 1.0e-300);
-        Real w_pre  = sqrt(1.0 + fmax(Mpre_sq,0.0)*inv_d2);        // cold-gas pre-radiation W
-        Real w_lim  = fmax(w_pre, fmin(w_hard_, fw_*w_pre));       // max[W_pre,min(W_hard,fw*W_pre)]
-        Real ptgt_sq = SQR(d_cons)*(SQR(w_lim) - 1.0);            // |S|^2 that recovers W = W_limit
         Real full_sq = Mpre_sq + 2.0*cross + dS_sq;               // |S_post(lambda=1)|^2
-        Real w_full = sqrt(1.0 + fmax(full_sq,0.0)*inv_d2);       // W_post at lambda=1 (diag)
+        Real w_full = sqrt(1.0 + fmax(full_sq,0.0)*inv_d2);       // recovered W at lambda=1 (diag)
         Real lam;
         if (!isfinite(full_sq) || !isfinite(dS_sq) || !isfinite(cross)
-            || Mpre_sq <= 0.0 || !(d_cons > 0.0)) {
+            || dvlimit_budget_sq < 0.0) {                         // (Mpre_sq=0 is ALLOWED: rest gas)
           lam = 0.0;   // FAIL CLOSED: unreliable norm/density in a flagged cell -> freeze
-        } else if (full_sq > ptgt_sq) {
-          // solve |S_pre + lam*dS|^2 = ptgt_sq  ->  a lam^2 + b lam + c = 0
-          Real a = dS_sq, b = 2.0*cross, c = Mpre_sq - ptgt_sq;   // c < 0 => one root in (0,1)
-          lam = 1.0;
-          if (a > 1.0e-300) {
-            Real disc = b*b - 4.0*a*c;
-            lam = (disc >= 0.0) ? (-b + sqrt(disc))/(2.0*a) : 0.0;
+        } else if (full_sq > dvlimit_budget_sq) {
+          // solve |S_pre + lam*dS|^2 = budget  ->  a lam^2 + b lam + c = 0, c<0<a (one root 0..1),
+          // via the numerically STABLE root (avoids cancellation in (-b+sqrt(disc))/(2a)).
+          Real a = dS_sq, b = 2.0*cross, c = Mpre_sq - dvlimit_budget_sq;
+          Real disc = b*b - 4.0*a*c;
+          lam = 0.0;
+          if (a > 1.0e-300 && disc >= 0.0) {
+            Real sgnb = (b >= 0.0) ? 1.0 : -1.0;
+            Real q = -0.5*(b + sgnb*sqrt(disc));                 // stable; roots q/a and c/q
+            Real r1 = q/a;
+            Real r2 = (fabs(q) > 1.0e-300) ? c/q : r1;
+            lam = fmax(r1, r2);                                  // the positive root (c/a < 0)
           } else if (fabs(b) > 1.0e-300) {
             lam = -c/b;
           }
@@ -630,9 +675,7 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
           lam = 1.0;   // full kick already within the W budget
         }
         dvlimit_lambda = lam;
-        dvlimit_budget_sq = ptgt_sq;   // shared with the Compton sub-step (same W budget)
-        dvlimit_wpost = w_full;        // diag: recovered W at lambda=1
-        dvlimit_wlim  = w_lim;         // diag: W_limit
+        dvlimit_wpost = w_full;        // diag: recovered W at lambda=1 (W_pre, W_limit set in gate)
       }
 
       Real m_old[4] = {0.0}; Real m_new[4] = {0.0};
@@ -784,14 +827,21 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
                        + 2.0*(gam12*dm1*dm2 + gam13*dm1*dm3 + gam23*dm2*dm3);
           Real full_sq = Mcur_sq + 2.0*cross + dS_sq;
           Real lamc;
-          if (!isfinite(full_sq) || !isfinite(dS_sq) || !isfinite(cross)) {
+          if (!isfinite(full_sq) || !isfinite(dS_sq) || !isfinite(cross)
+              || dvlimit_budget_sq < 0.0) {
             lamc = 0.0;   // fail closed
           } else if (full_sq > dvlimit_budget_sq) {
+            // c = Mcur_sq - budget <= 0 in practice (scattering already capped |S| <= budget),
+            // so one root in (0,1); use the numerically STABLE root.
             Real a = dS_sq, b = 2.0*cross, c = Mcur_sq - dvlimit_budget_sq;
-            lamc = 1.0;
-            if (a > 1.0e-300) {
-              Real disc = b*b - 4.0*a*c;
-              lamc = (disc >= 0.0) ? (-b + sqrt(disc))/(2.0*a) : 0.0;
+            Real disc = b*b - 4.0*a*c;
+            lamc = 0.0;
+            if (a > 1.0e-300 && disc >= 0.0) {
+              Real sgnb = (b >= 0.0) ? 1.0 : -1.0;
+              Real q = -0.5*(b + sgnb*sqrt(disc));               // stable; roots q/a and c/q
+              Real r1 = q/a;
+              Real r2 = (fabs(q) > 1.0e-300) ? c/q : r1;
+              lamc = fmax(r1, r2);
             } else if (fabs(b) > 1.0e-300) {
               lamc = -c/b;
             }
@@ -872,10 +922,14 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
     // paths, where the previews above did not run).  Slot 16 = the most restrictive scale
     // actually applied this step (scattering vs Compton; both default to 1 when nothing fired).
     if (rad_dvlimit_) {
-      ldiag(m,15,k,j,i) = dvlimit_lambda_s;                        // Lambda_s
-      ldiag(m,16,k,j,i) = fmin(dvlimit_lambda, dvlimit_lambda_c);  // applied lambda (min of the two)
-      ldiag(m,17,k,j,i) = dvlimit_wpost;                           // recovered W_post at lambda=1
-      ldiag(m,18,k,j,i) = dvlimit_wlim;                            // W_limit
+      ldiag(m,15,k,j,i) = dvlimit_lambda_s;   // Lambda_mom = dt(sigma_a+sigma_s)/u0 * R_rad
+      ldiag(m,16,k,j,i) = dvlimit_lambda;     // lambda_scattering
+      ldiag(m,17,k,j,i) = dvlimit_wpost;      // W_cold_full (recovered W at lambda=1)
+      ldiag(m,18,k,j,i) = dvlimit_wlim;       // W_limit
+      ldiag(m,19,k,j,i) = dvlimit_lambda_c;   // lambda_compton
+      ldiag(m,20,k,j,i) = dvlimit_rrad;       // R_rad = E_rad_f/(rho h)
+      ldiag(m,21,k,j,i) = dvlimit_wpre;       // cold-gas pre-radiation W
+      ldiag(m,22,k,j,i) = dvlimit_grel;       // pre-coupling Gamma_rel = -u_gas.u_rad
     }
   });
 
