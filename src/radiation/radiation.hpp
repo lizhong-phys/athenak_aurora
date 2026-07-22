@@ -121,7 +121,8 @@ class Radiation {
   Real rad_wlimit_fw;      // fw: max W_post/W_pre in the gated regime (>1)
   Real rad_w_hard;         // W_hard: absolute Lorentz-factor ceiling (>1)
   Real rad_wlimit_kick;    // gate: run trial-C2P only if |dM|^2 > kick^2 |M_gas|^2 (Euclidean)
-  DvceArray5D<Real> wlim_diag;   // [nmb,4,...] : 0 W_pre, 1 W_full(lam=1), 2 W_limit, 3 lambda
+  DvceArray5D<Real> wlim_diag;   // [nmb,8,...] : 0 W_pre, 1 W_full(lam=1), 2 W_limit, 3 lambda,
+                                 //               4 bad_exchange, 5 rho_pre, 6 D_pre, 7 sigma_pre
 
   // radiation source term (i.e., beam)
   SourceTerms *psrc = nullptr;

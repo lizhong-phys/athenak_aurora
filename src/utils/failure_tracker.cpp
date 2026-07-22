@@ -445,14 +445,20 @@ void FailureTracker::WriteReport(int m, int k, int j, int i, Real rks,
                  Wb, Wm, Wa);
   }
 
-  // ---- C2P W-limiter diagnostics for the center cell (4 values: W_pre, W_full, W_limit, lambda)
+  // ---- C2P W-limiter diagnostics for the center cell (8 values: W_pre, W_full, W_limit, lambda,
+  //      bad_exchange, and the PRE-radiation rho/D/sigma).  bad=1 => pass A produced a nonfinite
+  //      i0_upd/dU and the exchange failed CLOSED (gas+rad left untouched, no 0*NaN).  The pre-
+  //      radiation rho/D/sigma establish ordering: if they are healthy here, the failure is
+  //      inside the radiation source step, not upstream MHD advection into an evacuated cell.
   if (has_rad && pmy_pack->prad->rad_wlimit &&
       pmy_pack->prad->wlim_diag.extent_int(0) > m) {
     auto wl_h = gather(pmy_pack->prad->wlim_diag, m);
-    std::fprintf(fp, "# WLIMIT (center): W_pre=%.5g W_full=%.5g W_limit=%.5g lambda=%.5g  "
-                     "(lambda<1 => C2P backtracked the exchange; W_full = recovered W at "
-                     "lambda=1, so W_full>W_limit is the caught overshoot)\n",
-                 wl_h(0,k,j,i), wl_h(1,k,j,i), wl_h(2,k,j,i), wl_h(3,k,j,i));
+    std::fprintf(fp, "# WLIMIT (center): W_pre=%.5g W_full=%.5g W_limit=%.5g lambda=%.5g bad=%.0f  "
+                     "rho_pre=%.5g D_pre=%.5g sigma_pre=%.5g  "
+                     "(lambda<1 => C2P backtracked; W_full>W_limit = caught overshoot; bad=1 => "
+                     "pass A nonfinite, failed closed; *_pre = state BEFORE the radiation source)\n",
+                 wl_h(0,k,j,i), wl_h(1,k,j,i), wl_h(2,k,j,i), wl_h(3,k,j,i),
+                 wl_h(4,k,j,i), wl_h(5,k,j,i), wl_h(6,k,j,i), wl_h(7,k,j,i));
   }
 
   // generic per-cell printer (host generic lambda; not a device kernel).  Host arrays are

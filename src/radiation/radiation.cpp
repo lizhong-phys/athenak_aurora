@@ -163,7 +163,7 @@ Radiation::Radiation(MeshBlockPack *ppack, ParameterInput *pin) :
   int ncells2 = (indcs.nx2 > 1)? (indcs.nx2 + 2*(indcs.ng)) : 1;
   int ncells3 = (indcs.nx3 > 1)? (indcs.nx3 + 2*(indcs.ng)) : 1;
   Kokkos::realloc(i0,nmb,prgeo->nangles,ncells3,ncells2,ncells1);
-  if (rad_wlimit) { Kokkos::realloc(wlim_diag,nmb,4,ncells3,ncells2,ncells1); }
+  if (rad_wlimit) { Kokkos::realloc(wlim_diag,nmb,8,ncells3,ncells2,ncells1); }
   }
 
   // allocate memory for conserved variables on coarse mesh
