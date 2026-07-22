@@ -445,58 +445,6 @@ void FailureTracker::WriteReport(int m, int k, int j, int i, Real rks,
                  Wb, Wm, Wa);
   }
 
-  // ---- radiation-source diagnostics for the center cell (opacity limiter + velocity corr) ----
-  if (has_rad &&
-      (pmy_pack->prad->limit_opacity || pmy_pack->prad->correct_radsrc_velocity ||
-       pmy_pack->prad->rad_dvlimit) &&
-      (pmy_pack->prad->limiter_diag.extent_int(0) > m)) {
-    auto ld_sub = Kokkos::subview(pmy_pack->prad->limiter_diag, m,
-                                  Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, Kokkos::ALL);
-    auto ld_h = Kokkos::create_mirror_view(ld_sub);
-    Kokkos::deep_copy(ld_h, ld_sub);
-    if (pmy_pack->prad->limit_opacity) {
-      std::fprintf(fp, "# LIMITER (center): on_floor=%.0f active=%.0f hit_tcap=%.0f  "
-                       "Xi_raw=%.4e Xi_lim=%.4e T_eff=%.4e | sig_a=%.4e sig_p=%.4e sig_s=%.4e\n",
-                   ld_h(0,k,j,i), ld_h(4,k,j,i), ld_h(5,k,j,i),
-                   ld_h(1,k,j,i), ld_h(2,k,j,i), ld_h(3,k,j,i),
-                   ld_h(6,k,j,i), ld_h(7,k,j,i), ld_h(8,k,j,i));
-    }
-    // VELCORR is recorded whenever the diag array exists (frame estimated even if the
-    // correction is NOT applied); applied=correct_radsrc_velocity says whether it acted.
-    std::fprintf(fp, "# VELCORR (center): applied=%d gate=%.0f E_rad_f=%.4e rho_h=%.4e | "
-                     "urad_W=%.4e vrad_sq_raw=%.4e rr_tet00=%.4e  (vrad_sq_raw>~0.9975 => "
-                     "radiation frame superluminal->would clamp gas to W=gamma_max)\n",
-                 static_cast<int>(pmy_pack->prad->correct_radsrc_velocity),
-                 ld_h(11,k,j,i), ld_h(9,k,j,i), ld_h(10,k,j,i),
-                 ld_h(12,k,j,i), ld_h(13,k,j,i), ld_h(14,k,j,i));
-    // WLIMIT: velocity (W) limiter.  candidate = the cheap R_rad/Lambda_mom gate opened (where the
-    // preview ran); overshoot = the limiter ACTED (lambda_scat<1, i.e. the previewed |S| exceeded
-    // the W budget).  A HEALTHY radiation-dominated cell shows candidate=1, overshoot=0, lambda=1;
-    // a RUNAWAY shows overshoot=1, lambda<1.  W_cold_full is the SCATTERING preview at lambda=1
-    // (does not include the subsequent Compton exchange).
-    if (pmy_pack->prad->rad_dvlimit) {
-      const int cand = (ld_h(20,k,j,i) > pmy_pack->prad->rad_dominance_lock &&
-                        ld_h(15,k,j,i) > pmy_pack->prad->rad_momentum_lambda_lock) ? 1 : 0;
-      const int over = (ld_h(16,k,j,i) < 1.0) ? 1 : 0;   // limiter acted (lambda_scat<1)
-      std::fprintf(fp, "# WLIMIT (center): R_rad=%.4e Lambda_mom=%.4e candidate=%d | W_pre=%.4e "
-                       "W_cold_full(scat)=%.4e W_limit=%.4e overshoot=%d | lambda_scat=%.4e "
-                       "lambda_compton=%.4e  (gate R_rad>%.3g & Lambda_mom>%.3g; fw=%.3g W_hard=%.3g)\n",
-                   ld_h(20,k,j,i), ld_h(15,k,j,i), cand, ld_h(21,k,j,i),
-                   ld_h(17,k,j,i), ld_h(18,k,j,i), over, ld_h(16,k,j,i), ld_h(19,k,j,i),
-                   pmy_pack->prad->rad_dominance_lock, pmy_pack->prad->rad_momentum_lambda_lock,
-                   pmy_pack->prad->rad_max_w_increase, pmy_pack->prad->rad_w_hard);
-      // Frame diagnostic.  Gamma_rel_pre is the exact PRE-coupling relative gas<->radiation Lorentz
-      // factor (=1 comoving; physical drag reduces it).  beyond_mag is only a MAGNITUDE heuristic
-      // (W_cold_full > 2 urad_W) -- it does NOT prove the gas crossed the frame (scalar magnitudes
-      // carry no direction); a rigorous test needs the predicted POST-exchange relative Lorentz
-      // factor, not computed here.
-      const int beyond_mag = (ld_h(12,k,j,i) > 0.0 && ld_h(17,k,j,i) > 2.0*ld_h(12,k,j,i)) ? 1 : 0;
-      std::fprintf(fp, "# WLIMIT-FRAME (center): Gamma_rel_pre=%.4e urad_W=%.4e W_cold_full=%.4e "
-                       "beyond_mag=%d  (heuristic only; not a directional crossing test)\n",
-                   ld_h(22,k,j,i), ld_h(12,k,j,i), ld_h(17,k,j,i), beyond_mag);
-    }
-  }
-
   // generic per-cell printer (host generic lambda; not a device kernel).  Host arrays are
   // 4D (comp,k,j,i) for the winning block m; index with global (kk,jj,ii).
   auto dump_block = [&](auto &U, auto &W, auto &B, auto &RI) {

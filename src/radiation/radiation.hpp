@@ -107,46 +107,11 @@ class Radiation {
 
   // Flags and parameters for ad hoc fixes
   bool correct_radsrc_velocity;
-  // Velocity (W) limiter that bounds the RECOVERED post-coupling Lorentz factor (conservative;
-  // requires the radiation-frame estimate, i.e. correct_radsrc_velocity or limit_opacity, so
-  // E_rad_f is computed).  TWO-STAGE gate: a CHEAP CANDIDATE (R_rad = E_rad_f/(rho+e+p) >
-  // rad_dominance_lock AND Lambda_mom = dt(sigma_a+sigma_s)/u0 * R_rad > rad_momentum_lambda_lock,
-  // pre-radiation) only decides WHERE to run the preview -- R_rad measures available radiation
-  // energy, not transferred momentum, so it cannot by itself tell a healthy low-density
-  // radiation-dominated cell from a runaway.  The DECISIVE test is the previewed cold-gas
-  // W = sqrt(1 + gamma^{ij} S_i S_j / D^2) at lambda=1: only if it exceeds W_limit = max[W_pre,
-  // min(W_hard, max_W_increase*W_pre)] is the WHOLE source exchange (intensities AND gas) scaled
-  // by a scalar lambda<=1 so the recovered W lands at W_limit.  Four-momentum preserving; inactive
-  // (lambda=1, physics unchanged) on healthy cells and everywhere the preview does not overshoot.
-  bool rad_dvlimit;               // enable
-  Real rad_momentum_lambda_lock;  // CANDIDATE Lambda_mom gate (broad)
-  Real rad_dominance_lock;        // CANDIDATE R_rad gate (broad; ~1)
-  Real rad_max_w_increase;        // max_W_increase: max W_post/W_pre in the gated regime (>1)
-  Real rad_w_hard;                // W_hard: absolute Lorentz-factor ceiling in the gated regime (>1)
   bool correct_radsrc_opacity;
   Real dfloor_opacity;
   Real dens_trunc_max;
   Real tau_truncation;
   Real sigmoid_residual; // sigmoid residual must be less than 1./3
-  // opacity-aware stiffness limiter (EMERGENCY STABILIZER / opacity closure, NOT a
-  // physics-preserving model): on cells collapsed onto the entropy floor, cap the Planck
-  // absorption (sigma_a+sigma_p, both ~T^-7/2) at the value the gas would have at T_eff =
-  // T*max[1,(Xi_abs/Xi_max)^(2/7)] (capped at the virial T).  Reverses the absorption
-  // density->cold->opaque->overshoot feedback.  Note Xi_abs contains dt (timestep-dependent).
-  bool limit_opacity;    // enable the limiter
-  Real opacity_xi_max;   // Xi_max: max proper-time absorption stiffness dt*(sig_a+sig_p)/u0
-  Real opacity_tcap;     // virial ceiling on the effective opacity temperature (code units)
-  // per-cell radiation-source diagnostics [nmb,23,k,j,i] (alloc iff limit_opacity,
-  // correct_radsrc_velocity, or rad_dvlimit).  Opacity limiter slots 0-8: 0 on_entropy_floor,
-  // 1 Xi_abs_raw, 2 Xi_abs_limited, 3 T_eff, 4 limiter_active, 5 limiter_hit_tcap, 6 sigma_a,
-  // 7 sigma_p, 8 sigma_s.  Velocity-correction slots 9-14: 9 E_rad_f, 10 rho_h,
-  // 11 gate(erad_f>rho+e), 12 urad_W (inferred radiation-frame Lorentz factor), 13 vrad_sq_raw
-  // (pre-clamp; >v_sq_max => superluminal/corrupted), 14 rr_tet00 (tetrad radiation energy;
-  // small/neg => corrupt).  W limiter slots 15-21: 15 Lambda_mom (dt(sig_a+sig_s)/u0 * R_rad),
-  // 16 lambda_scattering (<1 => fired), 17 W_cold_full (recovered W at lambda=1), 18 W_limit,
-  // 19 lambda_compton, 20 R_rad (E_rad_f/rho_h), 21 W_pre (cold-gas pre-radiation Lorentz),
-  // 22 Gamma_rel (pre-coupling -u_gas.u_rad; =1 comoving, drag reduces it, overshoot crosses it).
-  DvceArray5D<Real> limiter_diag;
 
   // radiation source term (i.e., beam)
   SourceTerms *psrc = nullptr;
