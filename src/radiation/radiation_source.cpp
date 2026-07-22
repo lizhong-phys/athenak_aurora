@@ -33,6 +33,11 @@ bool FourthPolyRoot(const Real coef4, const Real tconst, Real &root);
 //! the exact evolution path (TransformToSRMHD -> SingleC2P_IdealSRMHD) on U_old + lambda*dU,
 //! so no proxy for the recovered W is used.
 
+// Sentinel W returned when the trial C2P produced a nonfinite state: larger than any physical
+// W_limit yet finite (so it never seeds a NaN downstream).  RadAdmissible rejects it via W>w_limit
+// and the diagnostic W_full shows ~1e30, unambiguously flagging "trial C2P failed here".
+namespace { constexpr Real kRadWBad = 1.0e30; }
+
 //! Raw metric-correct Lorentz factor (BEFORE any gamma_max ceiling) + C2P status flags for a
 //! trial gas conserved state with unchanged cell-centered B.  u is a LOCAL copy (C2P may modify
 //! it via floors).
@@ -49,8 +54,12 @@ Real RadTrialW(Real d, Real m1, Real m2, Real m3, Real e, Real bx, Real by, Real
   int iter = 0;
   cfail = false; dfl = false; efl = false;
   SingleC2P_IdealSRMHD(u_sr, eos, s2, b2, rpar, w, dfl, efl, cfail, iter);
+  // Reject a nonfinite recovered state BEFORE fmax: fmax(NaN,0)=0 would otherwise masquerade as a
+  // healthy W=1 and let a garbage exchange through.
+  if (cfail || !isfinite(w.vx) || !isfinite(w.vy) || !isfinite(w.vz)) { return kRadWBad; }
   Real tmp = glower[1][1]*SQR(w.vx) + glower[2][2]*SQR(w.vy) + glower[3][3]*SQR(w.vz)
            + 2.0*(glower[1][2]*w.vx*w.vy + glower[1][3]*w.vx*w.vz + glower[2][3]*w.vy*w.vz);
+  if (!isfinite(tmp)) { return kRadWBad; }
   return sqrt(1.0 + fmax(tmp, 0.0));               // raw W (pre-gamma_max), metric-correct
 }
 
@@ -71,19 +80,20 @@ bool RadAdmissible(Real lam, Real d, Real m1, Real m2, Real m3, Real e,
   return true;
 }
 
-//! Largest lambda in [0,1] whose trial C2P is admissible.  Try lambda=1; if rejected, halve to
-//! bracket an accepted value, then bisect the accept/reject bracket.  W(lambda) is not formally
-//! monotonic, so this is conservative backtracking (not a global bisection).  Returns 0 (freeze
+//! Largest lambda in [0,1] whose trial C2P is admissible.  The lambda=0 baseline floor flags
+//! (b_df/b_ef) and the FULL lambda=1 trial (W1, cf1, df1, ef1) are computed ONCE by the caller and
+//! passed in, so the common "lambda=1 accepted" path costs NO C2P here (2 total per substep, not
+//! 3).  If lambda=1 is rejected, halve to bracket an accepted value then bisect (these recompute).
+//! W(lambda) is not formally monotonic, so this is conservative backtracking.  Returns 0 (freeze
 //! the whole exchange) if nothing short of no-exchange is admissible.
 KOKKOS_INLINE_FUNCTION
 Real RadBacktrackLambda(Real d, Real m1, Real m2, Real m3, Real e,
                         Real dm1, Real dm2, Real dm3, Real de,
                         Real bx, Real by, Real bz, Real glower[][4], Real gupper[][4],
-                        const EOS_Data &eos, Real w_limit) {
-  bool b_cf, b_df, b_ef;
-  RadTrialW(d, m1, m2, m3, e, bx, by, bz, glower, gupper, eos, b_cf, b_df, b_ef);  // lambda=0
-  if (RadAdmissible(1.0, d,m1,m2,m3,e, dm1,dm2,dm3,de, bx,by,bz,
-                    glower,gupper,eos,w_limit,b_df,b_ef)) {
+                        const EOS_Data &eos, Real w_limit, bool b_df, bool b_ef,
+                        Real W1, bool cf1, bool df1, bool ef1) {
+  // lambda=1 admissibility from the caller's precomputed trial (no extra C2P)
+  if (!(cf1 || !isfinite(W1) || W1 > w_limit || (df1 && !b_df) || (ef1 && !b_ef))) {
     return 1.0;
   }
   Real lam = 0.5, lam_acc = 0.0, lam_rej = 1.0;
@@ -525,6 +535,10 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
     // compute coefficients
     Real coef[2] = {0.0, 0.0};
     Real tgasnew = tgas;
+    // Fraction of the absorption exchange actually accepted this cell (0 if skipped / failed
+    // closed, <1 if the limiter backtracked).  Compton must use the CONSISTENT partially-updated
+    // gas temperature, tgas + lam_abs*(tgasnew - tgas), not the full lambda=1 solution.
+    Real lam_abs = 0.0;
     if (!(badcell)) {
       coef[1] = (dtaucsiga+dtaucsigp-(dtaucsiga+dtaucsigp)*suma1/denom)*arad_*gm1/wdn;
       coef[0] = -tgas-(dtaucsiga+dtaucsigp)*suma2*gm1/(wdn*denom);
@@ -593,8 +607,10 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
 
       // ---- decide lambda.  FAIL CLOSED if pass A was invalid (skip the update entirely; do NOT
       //      compute 0*NaN).  Otherwise ALWAYS run the full C2P trial -- no momentum gate, so an
-      //      energy-only overshoot cannot slip past. ----
+      //      energy-only overshoot cannot slip past.  wfull_sub is THIS substep's recovered W at
+      //      lambda=1; it is committed to the diag paired with THIS substep's lambda (below). ----
       Real lam;
+      Real wfull_sub = gamma;
       if (bad_exchange) {
         lam = 0.0;                            // diagnostic only; update below is skipped
       } else {
@@ -603,15 +619,22 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
           Real D = u0_(m,IDN,k,j,i), M1 = u0_(m,IM1,k,j,i), M2 = u0_(m,IM2,k,j,i),
                M3 = u0_(m,IM3,k,j,i), E = u0_(m,IEN,k,j,i);
           Real bx = bcc0_(m,IBX,k,j,i), by = bcc0_(m,IBY,k,j,i), bz = bcc0_(m,IBZ,k,j,i);
-          bool cf, df, ef;
-          wl_wfull = RadTrialW(D, M1+dM1, M2+dM2, M3+dM3, E+dE, bx,by,bz,
-                               glower, gupper, eos_, cf, df, ef);
+          bool cf0, df0, ef0, cf1, df1, ef1;
+          RadTrialW(D, M1, M2, M3, E, bx,by,bz, glower,gupper,eos_, cf0,df0,ef0);   // baseline
+          wfull_sub = RadTrialW(D, M1+dM1, M2+dM2, M3+dM3, E+dE, bx,by,bz,          // lambda=1
+                                glower,gupper,eos_, cf1,df1,ef1);
           lam = RadBacktrackLambda(D, M1, M2, M3, E, dM1, dM2, dM3, dE, bx, by, bz,
-                                   glower, gupper, eos_, wl_wlim);
+                                   glower, gupper, eos_, wl_wlim, df0,ef0, wfull_sub,cf1,df1,ef1);
+          // HARD backstop: never let an out-of-range/nonfinite lambda multiply dU (a prior build
+          // produced lambda=-4.29e155 despite the math confining it to [0,1]).  Also fail closed if
+          // the lambda=0 BASELINE C2P itself failed (cf0) -- the reference state is untrustworthy.
+          if (cf0 || !isfinite(lam) || lam < 0.0 || lam > 1.0) { lam = 0.0; bad_exchange = true; }
         }
       }
-      wl_lam = fmin(wl_lam, lam);
+      // pair W_full with the MINIMUM lambda across substeps (<= so lambda=1 still records its W)
+      if (lam <= wl_lam) { wl_lam = lam; wl_wfull = wfull_sub; }
       if (bad_exchange) { wl_bad = 1.0; }
+      lam_abs = bad_exchange ? 0.0 : lam;    // accepted absorption fraction (for Compton's tgas)
 
       // ---- pass B + gas feedback: ONLY if pass A was finite.  If bad_exchange, the whole
       //      substep is skipped, so i0 and u0 keep their pre-substep (finite) values. ----
@@ -645,8 +668,11 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
 
     // compton scattering
     if (is_compton_enabled_) {
-      // use partially updated gas temperature
-      tgas = tgasnew;
+      // use the CONSISTENT partially-updated gas temperature: only lam_abs of the absorption
+      // energy exchange was actually accepted, so blend rather than taking the full lambda=1
+      // solution tgasnew (which would over-heat Compton when the limiter backtracked or failed
+      // closed).  lam_abs=0 => absorption skipped => Compton sees the unchanged temperature.
+      tgas = tgas + lam_abs*(tgasnew - tgas);
 
       // compute polynomial coefficients using partially updated gas temp and intensity
       suma1 = 0.0;
@@ -722,6 +748,7 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
         // Fail CLOSED: if pass A was nonfinite, leave gas AND radiation untouched (lambda=0) and
         // never form 0*NaN.  Otherwise ALWAYS run the full C2P trial (no momentum-ratio gate).
         Real lam;
+        Real wfull_sub = gamma;
         if (bad_exchange) {
           lam = 0.0;
         } else {
@@ -730,14 +757,19 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
             Real M1 = u0_(m,IM1,k,j,i), M2 = u0_(m,IM2,k,j,i), M3 = u0_(m,IM3,k,j,i);
             Real D = u0_(m,IDN,k,j,i), E = u0_(m,IEN,k,j,i);
             Real bx = bcc0_(m,IBX,k,j,i), by = bcc0_(m,IBY,k,j,i), bz = bcc0_(m,IBZ,k,j,i);
-            bool cf, df, ef;
-            wl_wfull = RadTrialW(D, M1+dM1, M2+dM2, M3+dM3, E+dE, bx, by, bz,
-                                 glower, gupper, eos_, cf, df, ef);
+            bool cf0, df0, ef0, cf1, df1, ef1;
+            RadTrialW(D, M1, M2, M3, E, bx,by,bz, glower,gupper,eos_, cf0,df0,ef0);   // baseline
+            wfull_sub = RadTrialW(D, M1+dM1, M2+dM2, M3+dM3, E+dE, bx,by,bz,          // lambda=1
+                                  glower,gupper,eos_, cf1,df1,ef1);
             lam = RadBacktrackLambda(D, M1, M2, M3, E, dM1, dM2, dM3, dE, bx, by, bz,
-                                     glower, gupper, eos_, wl_wlim);
+                                     glower, gupper, eos_, wl_wlim, df0,ef0, wfull_sub,cf1,df1,ef1);
+            // HARD backstop (same as absorption): reject an out-of-range/nonfinite lambda before it
+            // can multiply dU, and fail closed if the baseline C2P (cf0) was untrustworthy.
+            if (cf0 || !isfinite(lam) || lam < 0.0 || lam > 1.0) { lam = 0.0; bad_exchange = true; }
           }
         }
-        wl_lam = fmin(wl_lam, lam);
+        // pair W_full with the MINIMUM lambda across substeps (<= keeps them from the SAME substep)
+        if (lam <= wl_lam) { wl_lam = lam; wl_wfull = wfull_sub; }
         if (bad_exchange) { wl_bad = 1.0; }
 
         // ---- pass B: write lambda-blended intensity + excision (SKIP if pass A was nonfinite) ----
