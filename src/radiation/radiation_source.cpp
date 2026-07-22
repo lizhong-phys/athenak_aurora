@@ -13,6 +13,7 @@
 #include "coordinates/cell_locations.hpp"
 #include "geodesic-grid/geodesic_grid.hpp"
 #include "eos/eos.hpp"
+#include "eos/ideal_c2p_mhd.hpp"   // TransformToSRMHD + SingleC2P_IdealSRMHD (the evolution C2P)
 #include "hydro/hydro.hpp"
 #include "mhd/mhd.hpp"
 #include "units/units.hpp"
@@ -25,6 +26,81 @@ namespace radiation {
 
 KOKKOS_INLINE_FUNCTION
 bool FourthPolyRoot(const Real coef4, const Real tconst, Real &root);
+
+//----------------------------------------------------------------------------------------
+//! C2P-based backtracking limiter (see RadFluidCoupling).  A radiation<->gas exchange dU is
+//! admissible only if the REAL GRMHD C2P recovers a physical, sub-W_limit state.  These trial
+//! the exact evolution path (TransformToSRMHD -> SingleC2P_IdealSRMHD) on U_old + lambda*dU,
+//! so no proxy for the recovered W is used.
+
+//! Raw metric-correct Lorentz factor (BEFORE any gamma_max ceiling) + C2P status flags for a
+//! trial gas conserved state with unchanged cell-centered B.  u is a LOCAL copy (C2P may modify
+//! it via floors).
+KOKKOS_INLINE_FUNCTION
+Real RadTrialW(Real d, Real m1, Real m2, Real m3, Real e, Real bx, Real by, Real bz,
+               Real glower[][4], Real gupper[][4], const EOS_Data &eos,
+               bool &cfail, bool &dfl, bool &efl) {
+  MHDCons1D u;
+  u.d = d; u.mx = m1; u.my = m2; u.mz = m3; u.e = e; u.bx = bx; u.by = by; u.bz = bz;
+  MHDCons1D u_sr;
+  Real s2, b2, rpar;
+  TransformToSRMHD(u, glower, gupper, s2, b2, rpar, u_sr);
+  HydPrim1D w;
+  int iter = 0;
+  cfail = false; dfl = false; efl = false;
+  SingleC2P_IdealSRMHD(u_sr, eos, s2, b2, rpar, w, dfl, efl, cfail, iter);
+  Real tmp = glower[1][1]*SQR(w.vx) + glower[2][2]*SQR(w.vy) + glower[3][3]*SQR(w.vz)
+           + 2.0*(glower[1][2]*w.vx*w.vy + glower[1][3]*w.vx*w.vz + glower[2][3]*w.vy*w.vz);
+  return sqrt(1.0 + fmax(tmp, 0.0));               // raw W (pre-gamma_max), metric-correct
+}
+
+//! Admissible iff C2P succeeds, W is finite and <= w_limit, and NO new density/energy floor is
+//! introduced relative to the lambda=0 baseline (b_df/b_ef).  A cell already on a floor stays
+//! admissible (only NEWLY triggered floors are rejected).
+KOKKOS_INLINE_FUNCTION
+bool RadAdmissible(Real lam, Real d, Real m1, Real m2, Real m3, Real e,
+                   Real dm1, Real dm2, Real dm3, Real de,
+                   Real bx, Real by, Real bz, Real glower[][4], Real gupper[][4],
+                   const EOS_Data &eos, Real w_limit, bool b_df, bool b_ef) {
+  bool cf, df, ef;
+  Real W = RadTrialW(d, m1 + lam*dm1, m2 + lam*dm2, m3 + lam*dm3, e + lam*de,
+                     bx, by, bz, glower, gupper, eos, cf, df, ef);
+  if (cf || !isfinite(W) || W > w_limit) return false;
+  if (df && !b_df) return false;                  // newly triggered density floor
+  if (ef && !b_ef) return false;                  // newly triggered energy/entropy floor
+  return true;
+}
+
+//! Largest lambda in [0,1] whose trial C2P is admissible.  Try lambda=1; if rejected, halve to
+//! bracket an accepted value, then bisect the accept/reject bracket.  W(lambda) is not formally
+//! monotonic, so this is conservative backtracking (not a global bisection).  Returns 0 (freeze
+//! the whole exchange) if nothing short of no-exchange is admissible.
+KOKKOS_INLINE_FUNCTION
+Real RadBacktrackLambda(Real d, Real m1, Real m2, Real m3, Real e,
+                        Real dm1, Real dm2, Real dm3, Real de,
+                        Real bx, Real by, Real bz, Real glower[][4], Real gupper[][4],
+                        const EOS_Data &eos, Real w_limit) {
+  bool b_cf, b_df, b_ef;
+  RadTrialW(d, m1, m2, m3, e, bx, by, bz, glower, gupper, eos, b_cf, b_df, b_ef);  // lambda=0
+  if (RadAdmissible(1.0, d,m1,m2,m3,e, dm1,dm2,dm3,de, bx,by,bz,
+                    glower,gupper,eos,w_limit,b_df,b_ef)) {
+    return 1.0;
+  }
+  Real lam = 0.5, lam_acc = 0.0, lam_rej = 1.0;
+  for (int it = 0; it < 8; ++it) {
+    if (RadAdmissible(lam, d,m1,m2,m3,e, dm1,dm2,dm3,de, bx,by,bz,
+                      glower,gupper,eos,w_limit,b_df,b_ef)) { lam_acc = lam; break; }
+    lam_rej = lam; lam *= 0.5;
+  }
+  if (lam_acc <= 0.0) return 0.0;                  // fail closed
+  Real lo = lam_acc, hi = lam_rej;                // [accepted, rejected]
+  for (int it = 0; it < 16; ++it) {
+    Real mid = 0.5*(lo + hi);
+    if (RadAdmissible(mid, d,m1,m2,m3,e, dm1,dm2,dm3,de, bx,by,bz,
+                      glower,gupper,eos,w_limit,b_df,b_ef)) { lo = mid; } else { hi = mid; }
+  }
+  return lo;
+}
 
 //----------------------------------------------------------------------------------------
 //! \fn TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage)
@@ -98,6 +174,17 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
     v_sq_max = 1.-1./SQR(gamma_max_);
     dfloor = pmy_pack->pmhd->peos->eos_data.dfloor;
   }
+
+  // C2P-based W limiter: params, the EOS used by the trial C2P, and the 4-slot diag.  MHD-only
+  // for now (the trial uses SingleC2P_IdealSRMHD); captured by value into the device kernel.
+  bool rad_wlimit_ = rad_wlimit && is_mhd_enabled_;
+  Real fw_ = rad_wlimit_fw;
+  Real whard_ = rad_w_hard;
+  Real wkick2_ = SQR(rad_wlimit_kick);
+  auto wlim_diag_ = wlim_diag;
+  EOS_Data eos_ = (is_mhd_enabled_) ? pmy_pack->pmhd->peos->eos_data
+                                    : (is_hydro_enabled_ ? pmy_pack->phydro->peos->eos_data
+                                                         : EOS_Data());
 
   // Extract radiation, radiation frame, and radiation angular mesh data
   auto &i0_ = i0;
@@ -453,14 +540,21 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
       }
     }
 
+    // C2P W-limiter per-cell state.  W_pre = gamma (pre-radiation Lorentz factor); W_limit is
+    // the SAME absolute ceiling for BOTH substeps, so the cumulative recovered W stays <= it.
+    Real wl_wpre = gamma;
+    Real wl_wlim = fmax(gamma, fmin(whard_, fw_*gamma));
+    Real wl_wfull = gamma, wl_lam = 1.0;
+
     // Update the specific intensity
     if (!(badcell)) {
       // Calculate emission coefficient and updated jr_cm
       Real emission = arad_*SQR(SQR(tgasnew));
       Real jr_cm = (suma1*emission + suma2)/denom;
+
+      // ---- pass A: compute the FULL proposed exchange dU=(m_old-m_new), WITHOUT writing i0 ----
       Real m_old[4] = {0.0}; Real m_new[4] = {0.0};
       for (int n=0; n<=nang1; ++n) {
-        // compute coordinate normal components
         Real n_0 = tc(m,0,0,k,j,i)*nh_c_.d_view(n,0) + tc(m,1,0,k,j,i)*nh_c_.d_view(n,1)
                  + tc(m,2,0,k,j,i)*nh_c_.d_view(n,2) + tc(m,3,0,k,j,i)*nh_c_.d_view(n,3);
         Real n_1 = tc(m,0,1,k,j,i)*nh_c_.d_view(n,0) + tc(m,1,1,k,j,i)*nh_c_.d_view(n,1)
@@ -469,48 +563,69 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
                  + tc(m,2,2,k,j,i)*nh_c_.d_view(n,2) + tc(m,3,2,k,j,i)*nh_c_.d_view(n,3);
         Real n_3 = tc(m,0,3,k,j,i)*nh_c_.d_view(n,0) + tc(m,1,3,k,j,i)*nh_c_.d_view(n,1)
                  + tc(m,2,3,k,j,i)*nh_c_.d_view(n,2) + tc(m,3,3,k,j,i)*nh_c_.d_view(n,3);
-
-        // compute moments before coupling
-        m_old[0] += (    i0_(m,n,k,j,i)    *solid_angles_.d_view(n));
-        m_old[1] += (n_1*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
-        m_old[2] += (n_2*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
-        m_old[3] += (n_3*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
-
-        // update intensity
+        Real i0_old = i0_(m,n,k,j,i);
+        m_old[0] += (    i0_old    *solid_angles_.d_view(n));
+        m_old[1] += (n_1*i0_old/n_0*solid_angles_.d_view(n));
+        m_old[2] += (n_2*i0_old/n_0*solid_angles_.d_view(n));
+        m_old[3] += (n_3*i0_old/n_0*solid_angles_.d_view(n));
         Real n0_cm = (u_tet[0]*nh_c_.d_view(n,0) - u_tet[1]*nh_c_.d_view(n,1) -
                       u_tet[2]*nh_c_.d_view(n,2) - u_tet[3]*nh_c_.d_view(n,3));
-        Real intensity_cm = 4.0*M_PI*(i0_(m,n,k,j,i)/(n0*n_0))*SQR(SQR(n0_cm));
-        Real vncsigma = 1.0/(n0 + (dtcsiga + dtcsigs)*n0_cm);
-        Real vncsigma2 = n0_cm*vncsigma;
-        Real di_cm = ( ((dtcsigs-dtcsigp)*jr_cm
-                      + (dtcsiga+dtcsigp)*emission
+        Real intensity_cm = 4.0*M_PI*(i0_old/(n0*n_0))*SQR(SQR(n0_cm));
+        Real vncsigma2 = n0_cm/(n0 + (dtcsiga + dtcsigs)*n0_cm);
+        Real di_cm = ( ((dtcsigs-dtcsigp)*jr_cm + (dtcsiga+dtcsigp)*emission
                       - (dtcsigs+dtcsiga)*intensity_cm)*vncsigma2 );
-        i0_(m,n,k,j,i) = n0*n_0*fmax(i0_(m,n,k,j,i)/(n0*n_0) +
-                                     di_cm/(4.0*M_PI*SQR(SQR(n0_cm))), 0.0);
+        Real i0_upd = n0*n_0*fmax(i0_old/(n0*n_0) + di_cm/(4.0*M_PI*SQR(SQR(n0_cm))), 0.0);
+        m_new[0] += (    i0_upd    *solid_angles_.d_view(n));
+        m_new[1] += (n_1*i0_upd/n_0*solid_angles_.d_view(n));
+        m_new[2] += (n_2*i0_upd/n_0*solid_angles_.d_view(n));
+        m_new[3] += (n_3*i0_upd/n_0*solid_angles_.d_view(n));
+      }
+      Real dE = m_old[0]-m_new[0], dM1 = m_old[1]-m_new[1],
+           dM2 = m_old[2]-m_new[2], dM3 = m_old[3]-m_new[3];
 
-        // compute moments after coupling
-        m_new[0] += (    i0_(m,n,k,j,i)    *solid_angles_.d_view(n));
-        m_new[1] += (n_1*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
-        m_new[2] += (n_2*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
-        m_new[3] += (n_3*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
+      // ---- decide lambda by C2P backtracking (gated: only where the momentum kick is large) --
+      Real lam = 1.0;
+      if (affect_fluid_ && rad_wlimit_) {
+        Real M1 = u0_(m,IM1,k,j,i), M2 = u0_(m,IM2,k,j,i), M3 = u0_(m,IM3,k,j,i);
+        Real gasM2 = SQR(M1) + SQR(M2) + SQR(M3);
+        Real dM2sq = SQR(dM1) + SQR(dM2) + SQR(dM3);
+        if (dM2sq > wkick2_*gasM2) {
+          Real D = u0_(m,IDN,k,j,i), E = u0_(m,IEN,k,j,i);
+          Real bx = bcc0_(m,IBX,k,j,i), by = bcc0_(m,IBY,k,j,i), bz = bcc0_(m,IBZ,k,j,i);
+          bool cf, df, ef;
+          wl_wfull = RadTrialW(D, M1+dM1, M2+dM2, M3+dM3, E+dE, bx,by,bz,
+                               glower, gupper, eos_, cf, df, ef);
+          lam = RadBacktrackLambda(D, M1, M2, M3, E, dM1, dM2, dM3, dE, bx, by, bz,
+                                   glower, gupper, eos_, wl_wlim);
+        }
+      }
+      wl_lam = fmin(wl_lam, lam);
 
-        // handle excision
-        // NOTE(@pdmullen): The below zeroes all intensities within rks <= r_excision and
-        // zeroes intensities within angles where n_0 is about zero. When Compton is
-        // enabled, we delay the n_0_floor excision so that intensites updated via
-        // absorption and scattering inform the Compton update
+      // ---- pass B: write the lambda-blended intensity + excision ----
+      for (int n=0; n<=nang1; ++n) {
+        Real n_0 = tc(m,0,0,k,j,i)*nh_c_.d_view(n,0) + tc(m,1,0,k,j,i)*nh_c_.d_view(n,1)
+                 + tc(m,2,0,k,j,i)*nh_c_.d_view(n,2) + tc(m,3,0,k,j,i)*nh_c_.d_view(n,3);
+        Real i0_old = i0_(m,n,k,j,i);
+        Real n0_cm = (u_tet[0]*nh_c_.d_view(n,0) - u_tet[1]*nh_c_.d_view(n,1) -
+                      u_tet[2]*nh_c_.d_view(n,2) - u_tet[3]*nh_c_.d_view(n,3));
+        Real intensity_cm = 4.0*M_PI*(i0_old/(n0*n_0))*SQR(SQR(n0_cm));
+        Real vncsigma2 = n0_cm/(n0 + (dtcsiga + dtcsigs)*n0_cm);
+        Real di_cm = ( ((dtcsigs-dtcsigp)*jr_cm + (dtcsiga+dtcsigp)*emission
+                      - (dtcsigs+dtcsiga)*intensity_cm)*vncsigma2 );
+        Real i0_upd = n0*n_0*fmax(i0_old/(n0*n_0) + di_cm/(4.0*M_PI*SQR(SQR(n0_cm))), 0.0);
+        i0_(m,n,k,j,i) = i0_old + lam*(i0_upd - i0_old);
         if (excise) {
           bool apply_excision = (rad_mask_(m,k,j,i) ||
                                  (!(is_compton_enabled_) && fabs(n_0) < n_0_floor_));
           if (apply_excision) { i0_(m,n,k,j,i) = 0.0; }
         }
       }
-      // update conserved fluid variables
+      // update conserved fluid variables (scaled by the accepted lambda; conserves 4-momentum)
       if (affect_fluid_) {
-        u0_(m,IEN,k,j,i) += (m_old[0] - m_new[0]);
-        u0_(m,IM1,k,j,i) += (m_old[1] - m_new[1]);
-        u0_(m,IM2,k,j,i) += (m_old[2] - m_new[2]);
-        u0_(m,IM3,k,j,i) += (m_old[3] - m_new[3]);
+        u0_(m,IEN,k,j,i) += lam*dE;
+        u0_(m,IM1,k,j,i) += lam*dM1;
+        u0_(m,IM2,k,j,i) += lam*dM2;
+        u0_(m,IM3,k,j,i) += lam*dM3;
       }
     }
 
@@ -555,9 +670,9 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
       if (!(badcell) && !(temp_equil)) {
         // Compute updated gas temperature
         tgasnew = (arad_*SQR(SQR(tradnew)) - jr_cm)/(suma1*jr_cm) + tradnew;
+        // ---- pass A: full Compton exchange dU=(m_old-m_new), WITHOUT writing i0 ----
         Real m_old[4] = {0.0}; Real m_new[4] = {0.0};
         for (int n=0; n<=nang1; ++n) {
-          // compute coordinate normal components
           Real n_0 = tc(m,0,0,k,j,i)*nh_c_.d_view(n,0)+tc(m,1,0,k,j,i)*nh_c_.d_view(n,1)
                    + tc(m,2,0,k,j,i)*nh_c_.d_view(n,2)+tc(m,3,0,k,j,i)*nh_c_.d_view(n,3);
           Real n_1 = tc(m,0,1,k,j,i)*nh_c_.d_view(n,0)+tc(m,1,1,k,j,i)*nh_c_.d_view(n,1)
@@ -566,38 +681,59 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
                    + tc(m,2,2,k,j,i)*nh_c_.d_view(n,2)+tc(m,3,2,k,j,i)*nh_c_.d_view(n,3);
           Real n_3 = tc(m,0,3,k,j,i)*nh_c_.d_view(n,0)+tc(m,1,3,k,j,i)*nh_c_.d_view(n,1)
                    + tc(m,2,3,k,j,i)*nh_c_.d_view(n,2)+tc(m,3,3,k,j,i)*nh_c_.d_view(n,3);
-
-          // compute moments before coupling
-          m_old[0] += (    i0_(m,n,k,j,i)    *solid_angles_.d_view(n));
-          m_old[1] += (n_1*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
-          m_old[2] += (n_2*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
-          m_old[3] += (n_3*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
-
-          // update intensity
+          Real i0_old = i0_(m,n,k,j,i);
+          m_old[0] += (    i0_old    *solid_angles_.d_view(n));
+          m_old[1] += (n_1*i0_old/n_0*solid_angles_.d_view(n));
+          m_old[2] += (n_2*i0_old/n_0*solid_angles_.d_view(n));
+          m_old[3] += (n_3*i0_old/n_0*solid_angles_.d_view(n));
           Real n0_cm = (u_tet[0]*nh_c_.d_view(n,0) - u_tet[1]*nh_c_.d_view(n,1) -
                         u_tet[2]*nh_c_.d_view(n,2) - u_tet[3]*nh_c_.d_view(n,3));
           Real di_cm = (n0_cm/n0)*dtcsigs*4.0*jr_cm*inv_t_electron_*(tgasnew - tradnew);
-          i0_(m,n,k,j,i) = n0*n_0*fmax(i0_(m,n,k,j,i)/(n0*n_0) +
-                                       di_cm/(4.0*M_PI*SQR(SQR(n0_cm))), 0.0);
+          Real i0_upd = n0*n_0*fmax(i0_old/(n0*n_0) + di_cm/(4.0*M_PI*SQR(SQR(n0_cm))), 0.0);
+          m_new[0] += (    i0_upd    *solid_angles_.d_view(n));
+          m_new[1] += (n_1*i0_upd/n_0*solid_angles_.d_view(n));
+          m_new[2] += (n_2*i0_upd/n_0*solid_angles_.d_view(n));
+          m_new[3] += (n_3*i0_upd/n_0*solid_angles_.d_view(n));
+        }
+        Real dE = m_old[0]-m_new[0], dM1 = m_old[1]-m_new[1],
+             dM2 = m_old[2]-m_new[2], dM3 = m_old[3]-m_new[3];
 
-          // compute moments after coupling
-          m_new[0] += (    i0_(m,n,k,j,i)    *solid_angles_.d_view(n));
-          m_new[1] += (n_1*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
-          m_new[2] += (n_2*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
-          m_new[3] += (n_3*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
+        // ---- decide lambda by C2P backtracking (same W_limit as the scattering substep) ----
+        Real lam = 1.0;
+        if (affect_fluid_ && rad_wlimit_) {
+          Real M1 = u0_(m,IM1,k,j,i), M2 = u0_(m,IM2,k,j,i), M3 = u0_(m,IM3,k,j,i);
+          Real gasM2 = SQR(M1) + SQR(M2) + SQR(M3);
+          Real dM2sq = SQR(dM1) + SQR(dM2) + SQR(dM3);
+          if (dM2sq > wkick2_*gasM2) {
+            Real D = u0_(m,IDN,k,j,i), E = u0_(m,IEN,k,j,i);
+            Real bx = bcc0_(m,IBX,k,j,i), by = bcc0_(m,IBY,k,j,i), bz = bcc0_(m,IBZ,k,j,i);
+            lam = RadBacktrackLambda(D, M1, M2, M3, E, dM1, dM2, dM3, dE, bx, by, bz,
+                                     glower, gupper, eos_, wl_wlim);
+          }
+        }
+        wl_lam = fmin(wl_lam, lam);
 
-          // handle excision (see notes above)
+        // ---- pass B: write lambda-blended intensity + excision ----
+        for (int n=0; n<=nang1; ++n) {
+          Real n_0 = tc(m,0,0,k,j,i)*nh_c_.d_view(n,0)+tc(m,1,0,k,j,i)*nh_c_.d_view(n,1)
+                   + tc(m,2,0,k,j,i)*nh_c_.d_view(n,2)+tc(m,3,0,k,j,i)*nh_c_.d_view(n,3);
+          Real i0_old = i0_(m,n,k,j,i);
+          Real n0_cm = (u_tet[0]*nh_c_.d_view(n,0) - u_tet[1]*nh_c_.d_view(n,1) -
+                        u_tet[2]*nh_c_.d_view(n,2) - u_tet[3]*nh_c_.d_view(n,3));
+          Real di_cm = (n0_cm/n0)*dtcsigs*4.0*jr_cm*inv_t_electron_*(tgasnew - tradnew);
+          Real i0_upd = n0*n_0*fmax(i0_old/(n0*n_0) + di_cm/(4.0*M_PI*SQR(SQR(n0_cm))), 0.0);
+          i0_(m,n,k,j,i) = i0_old + lam*(i0_upd - i0_old);
           if (excise) {
             if (rad_mask_(m,k,j,i) || fabs(n_0) < n_0_floor_) { i0_(m,n,k,j,i) = 0.0; }
           }
         }
 
-        // feedback on fluid
+        // feedback on fluid (scaled by lambda)
         if (affect_fluid_) {
-          u0_(m,IEN,k,j,i) += (m_old[0] - m_new[0]);
-          u0_(m,IM1,k,j,i) += (m_old[1] - m_new[1]);
-          u0_(m,IM2,k,j,i) += (m_old[2] - m_new[2]);
-          u0_(m,IM3,k,j,i) += (m_old[3] - m_new[3]);
+          u0_(m,IEN,k,j,i) += lam*dE;
+          u0_(m,IM1,k,j,i) += lam*dM1;
+          u0_(m,IM2,k,j,i) += lam*dM2;
+          u0_(m,IM3,k,j,i) += lam*dM3;
         }
       } else {
         // NOTE(@pdmullen): At this point, it is possible that excision has not been
@@ -613,6 +749,15 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
           }
         }
       }
+    }
+
+    // C2P W-limiter diagnostics: W_pre, W_full (recovered W at lambda=1), W_limit, applied lambda
+    // (min over both substeps).  lambda<1 => the limiter backtracked the exchange.
+    if (rad_wlimit_) {
+      wlim_diag_(m,0,k,j,i) = wl_wpre;
+      wlim_diag_(m,1,k,j,i) = wl_wfull;
+      wlim_diag_(m,2,k,j,i) = wl_wlim;
+      wlim_diag_(m,3,k,j,i) = wl_lam;
     }
   });
 

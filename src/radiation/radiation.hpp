@@ -113,6 +113,16 @@ class Radiation {
   Real tau_truncation;
   Real sigmoid_residual; // sigmoid residual must be less than 1./3
 
+  // C2P-based velocity (W) limiter: for each gas<->radiation exchange substep, backtrack the
+  // exchange scale lambda so the REAL GRMHD C2P recovers W <= W_limit = max[W_pre,
+  // min(W_hard, fw*W_pre)] (W_pre = pre-substep Lorentz factor).  Trial-C2P is run only where
+  // the exchange is a large fraction (> rad_wlimit_kick) of the gas momentum (perf gate).
+  bool rad_wlimit;
+  Real rad_wlimit_fw;      // fw: max W_post/W_pre in the gated regime (>1)
+  Real rad_w_hard;         // W_hard: absolute Lorentz-factor ceiling (>1)
+  Real rad_wlimit_kick;    // gate: run trial-C2P only if |dM|^2 > kick^2 |M_gas|^2 (Euclidean)
+  DvceArray5D<Real> wlim_diag;   // [nmb,4,...] : 0 W_pre, 1 W_full(lam=1), 2 W_limit, 3 lambda
+
   // radiation source term (i.e., beam)
   SourceTerms *psrc = nullptr;
 

@@ -445,6 +445,16 @@ void FailureTracker::WriteReport(int m, int k, int j, int i, Real rks,
                  Wb, Wm, Wa);
   }
 
+  // ---- C2P W-limiter diagnostics for the center cell (4 values: W_pre, W_full, W_limit, lambda)
+  if (has_rad && pmy_pack->prad->rad_wlimit &&
+      pmy_pack->prad->wlim_diag.extent_int(0) > m) {
+    auto wl_h = gather(pmy_pack->prad->wlim_diag, m);
+    std::fprintf(fp, "# WLIMIT (center): W_pre=%.5g W_full=%.5g W_limit=%.5g lambda=%.5g  "
+                     "(lambda<1 => C2P backtracked the exchange; W_full = recovered W at "
+                     "lambda=1, so W_full>W_limit is the caught overshoot)\n",
+                 wl_h(0,k,j,i), wl_h(1,k,j,i), wl_h(2,k,j,i), wl_h(3,k,j,i));
+  }
+
   // generic per-cell printer (host generic lambda; not a device kernel).  Host arrays are
   // 4D (comp,k,j,i) for the winning block m; index with global (kk,jj,ii).
   auto dump_block = [&](auto &U, auto &W, auto &B, auto &RI) {
