@@ -108,16 +108,17 @@ struct bondi_pgen {
   // Set b0 = 0.0 to disable MHD initialization.
   Real b0;              // vertical field amplitude
 
-  // MySourceTerms: lateral-velocity relaxation RATE [1/M] in the ring of active
+  // MySourceTerms: optional lateral-velocity relaxation in the ring of active
   // cells adjacent to the BH mask.  Per substage the removed fraction is
   // 1 - exp(-veldamp_alpha * bdt), which is time-scaled (independent of CFL /
   // substage count / restart state) and bounded in [0,1) so it can never
-  // overshoot past zero (0 = off).
-  Real veldamp_alpha;
+  // overshoot past zero.
+  bool veldamp_on;       // master on/off for velocity damping (default false)
+  Real veldamp_alpha;    // relaxation rate [1/M], used only when veldamp_on=true
 
   // KO (Kreiss-Oliger) hyper-dissipation of the grid-scale velocity checkerboard
   // in the near-horizon shell.  Independent on/off from the mask damping.
-  bool ko_on;          // master on/off for the KO block (default true)
+  bool ko_on;          // master on/off for the KO block (default false)
   Real ko_sigma;       // KO strength: fraction of the 2*dx mode removed / dir / substage
   Real ko_radius;      // apply KO only inside this radius [M]
 };
@@ -220,20 +221,21 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   bondi.rho0 = pin->GetReal("problem", "rho0");
   bondi.t0   = pin->GetReal("problem", "t0");
 
-  // Velocity-damping RATE [1/M] for MySourceTerms.  Read BEFORE the restart
-  // return so the (device-captured) global bondi struct is populated on restart
-  // too.  NOTE: units are now a per-time rate, NOT a per-stage fraction — the
+  // Velocity-damping controls for MySourceTerms.  Read BEFORE the restart return
+  // so the (device-captured) global bondi struct is populated on restart too.
+  // veldamp_on defaults false; veldamp_alpha is a per-time rate [1/M], NOT a
+  // per-stage fraction.  When enabled, the
   // damped fraction per substage is 1 - exp(-alpha*bdt).  Default 20 /M removes
   // ~0.3 of the lateral velocity per substage at the finest near-horizon step
   // (dx_min~0.06M, cfl~0.3 -> bdt~0.02M), matching the old fixed-0.3 tuning but
-  // now CFL/restart-independent and non-overshooting.  Raise for stronger
-  // damping, lower toward 0 to disable.
+  // now CFL/restart-independent and non-overshooting.
+  bondi.veldamp_on = pin->GetOrAddBoolean("problem", "veldamp_on", false);
   bondi.veldamp_alpha = pin->GetOrAddReal("problem", "veldamp_alpha", 20.0);
 
   // KO dissipation controls: independent on/off (ko_on) + strength + region.
   // Read here (before the restart return) so the device-captured bondi struct is
   // populated on restart too, like veldamp_alpha.
-  bondi.ko_on     = pin->GetOrAddBoolean("problem", "ko_on", true);
+  bondi.ko_on     = pin->GetOrAddBoolean("problem", "ko_on", false);
   bondi.ko_sigma  = pin->GetOrAddReal("problem", "ko_sigma", 0.1);
   bondi.ko_radius = pin->GetOrAddReal("problem", "ko_radius", 8.0);
 
@@ -676,8 +678,8 @@ Real A3(struct bondi_pgen pgen, Real x1, Real x2, Real x3) {
 
 void MySourceTerms(Mesh* pm, const Real bdt) {
 
-  // Relax the meridional velocity in the mask ring (rate veldamp_alpha; 0 = off).
-  if (bondi.veldamp_alpha > 0.0) {
+  // Optionally relax the meridional velocity in the mask ring.
+  if (bondi.veldamp_on && bondi.veldamp_alpha > 0.0) {
     // capture variables for kernel
     MeshBlockPack *pmbp = pm->pmb_pack;
     auto &indcs = pm->mb_indcs;
@@ -710,9 +712,9 @@ void MySourceTerms(Mesh* pm, const Real bdt) {
     // restart state — and frac is bounded in [0,1) so it can NEVER overshoot past
     // zero (the old fixed-fraction form did, flipping the lateral velocity's sign
     // and driving the very oscillation it was meant to kill; alpha=0.8 blew up on
-    // restart for exactly this reason).  Lateral components are damped
-    // unconditionally; the radial component is left untouched (free infall).
-    // Tunable via <problem> veldamp_alpha (default 20 /M).
+    // restart for exactly this reason).  When enabled, lateral components are
+    // damped; the radial component is left untouched (free infall).  Enable via
+    // <problem> veldamp_on and tune with veldamp_alpha (default rate 20 /M).
     const Real alpha = bondi.veldamp_alpha;
 
     // Loop over ACTIVE cells only (is..ie, etc.).  The kernel reads i+-1/j+-1/
