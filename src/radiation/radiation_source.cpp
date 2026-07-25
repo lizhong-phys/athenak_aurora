@@ -174,7 +174,8 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
   }
 
   // C2P-based W limiter: flag + params + the EOS used by the trial C2P (MHD-only), captured by
-  // value into the device kernel.  With rad_wlimit_ == false this whole path compiles to nothing.
+  // value into the device kernel.  With rad_wlimit_ == false the kernel uses the legacy one-pass
+  // radiation update and never invokes a trial C2P.
   bool rad_wlimit_ = rad_wlimit && is_mhd_enabled_;
   Real fw_    = rad_wlimit_fw;
   Real whard_ = rad_w_hard;
@@ -473,8 +474,8 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
     Real wght_sum = 0.0;
     Real suma1 = 0.0;
     Real suma2 = 0.0;
-    // denom == (1 - suma3), accumulated DIRECTLY as a sum of positive terms to avoid the
-    // catastrophic cancellation "1 - suma3" when scattering is enormous (suma3 -> 1).
+    // The limiter path accumulates denom == (1 - suma3) directly to avoid cancellation.
+    // The disabled path retains the original suma3 expression and one-pass update below.
     Real denom = 0.0;
     for (int n=0; n<=nang1; ++n) {
       Real n_0 = tc(m,0,0,k,j,i)*nh_c_.d_view(n,0) + tc(m,1,0,k,j,i)*nh_c_.d_view(n,1) +
@@ -489,17 +490,23 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
       wght_sum += omega_cm;
       suma1 += omega_cm*vncsigma2;
       suma2 += ir_weight*n0*vncsigma;
-      denom += omega_cm*(n0 + (dtcsiga + dtcsigp)*n0_cm)*vncsigma;   // == (1 - suma3) per angle
+      if (rad_wlimit_) {
+        denom += omega_cm*(n0 + (dtcsiga + dtcsigp)*n0_cm)*vncsigma;
+      }
     }
     suma1 /= wght_sum;
     suma2 /= wght_sum;
-    denom /= wght_sum;                     // == 1 - suma3, cancellation-free
+    if (rad_wlimit_) {
+      denom /= wght_sum;                   // == 1 - suma3, cancellation-free
+    } else {
+      Real suma3 = suma1*(dtcsigs - dtcsigp);
+      denom = 1.0 - suma3;                 // exact legacy path when limiter is disabled
+    }
     suma1 *= (dtcsiga + dtcsigp);
 
-    // Reject the source update ONLY if the implicit denominator is degenerate (non-finite or
-    // non-positive) -- leaves the cell unchanged.  A small-but-positive denom is PHYSICAL (stiff
-    // scattering: denom ~ 1/(1+dt*sigma_s)); the direct sum recovers it where 1-suma3 rounded to 0.
-    bool badcell = (!isfinite(denom) || (denom <= 0.0));
+    // The limiter path fails closed on a degenerate denominator.  The disabled path preserves
+    // the original behavior exactly.
+    bool badcell = rad_wlimit_ && (!isfinite(denom) || (denom <= 0.0));
 
     // compute coefficients
     Real coef[2] = {0.0, 0.0};
@@ -529,6 +536,55 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
       Real emission = arad_*SQR(SQR(tgasnew));
       Real jr_cm = (suma1*emission + suma2)/denom;
 
+      if (!rad_wlimit_) {
+        // Legacy fast path: update each angle once and accumulate the fluid exchange in the
+        // same pass.  Keep this path identical to the pre-limiter implementation.
+        Real m_old[4] = {0.0}; Real m_new[4] = {0.0};
+        for (int n=0; n<=nang1; ++n) {
+          Real n_0 = tc(m,0,0,k,j,i)*nh_c_.d_view(n,0) + tc(m,1,0,k,j,i)*nh_c_.d_view(n,1)
+                   + tc(m,2,0,k,j,i)*nh_c_.d_view(n,2) + tc(m,3,0,k,j,i)*nh_c_.d_view(n,3);
+          Real n_1 = tc(m,0,1,k,j,i)*nh_c_.d_view(n,0) + tc(m,1,1,k,j,i)*nh_c_.d_view(n,1)
+                   + tc(m,2,1,k,j,i)*nh_c_.d_view(n,2) + tc(m,3,1,k,j,i)*nh_c_.d_view(n,3);
+          Real n_2 = tc(m,0,2,k,j,i)*nh_c_.d_view(n,0) + tc(m,1,2,k,j,i)*nh_c_.d_view(n,1)
+                   + tc(m,2,2,k,j,i)*nh_c_.d_view(n,2) + tc(m,3,2,k,j,i)*nh_c_.d_view(n,3);
+          Real n_3 = tc(m,0,3,k,j,i)*nh_c_.d_view(n,0) + tc(m,1,3,k,j,i)*nh_c_.d_view(n,1)
+                   + tc(m,2,3,k,j,i)*nh_c_.d_view(n,2) + tc(m,3,3,k,j,i)*nh_c_.d_view(n,3);
+
+          m_old[0] += (    i0_(m,n,k,j,i)    *solid_angles_.d_view(n));
+          m_old[1] += (n_1*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
+          m_old[2] += (n_2*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
+          m_old[3] += (n_3*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
+
+          Real n0_cm = (u_tet[0]*nh_c_.d_view(n,0) - u_tet[1]*nh_c_.d_view(n,1) -
+                        u_tet[2]*nh_c_.d_view(n,2) - u_tet[3]*nh_c_.d_view(n,3));
+          Real intensity_cm = 4.0*M_PI*(i0_(m,n,k,j,i)/(n0*n_0))*SQR(SQR(n0_cm));
+          Real vncsigma = 1.0/(n0 + (dtcsiga + dtcsigs)*n0_cm);
+          Real vncsigma2 = n0_cm*vncsigma;
+          Real di_cm = ( ((dtcsigs-dtcsigp)*jr_cm
+                        + (dtcsiga+dtcsigp)*emission
+                        - (dtcsigs+dtcsiga)*intensity_cm)*vncsigma2 );
+          i0_(m,n,k,j,i) = n0*n_0*fmax(i0_(m,n,k,j,i)/(n0*n_0) +
+                                       di_cm/(4.0*M_PI*SQR(SQR(n0_cm))), 0.0);
+
+          m_new[0] += (    i0_(m,n,k,j,i)    *solid_angles_.d_view(n));
+          m_new[1] += (n_1*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
+          m_new[2] += (n_2*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
+          m_new[3] += (n_3*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
+
+          if (excise) {
+            bool apply_excision = (rad_mask_(m,k,j,i) ||
+                                   (!(is_compton_enabled_) && fabs(n_0) < n_0_floor_));
+            if (apply_excision) { i0_(m,n,k,j,i) = 0.0; }
+          }
+        }
+        if (affect_fluid_) {
+          u0_(m,IEN,k,j,i) += (m_old[0] - m_new[0]);
+          u0_(m,IM1,k,j,i) += (m_old[1] - m_new[1]);
+          u0_(m,IM2,k,j,i) += (m_old[2] - m_new[2]);
+          u0_(m,IM3,k,j,i) += (m_old[3] - m_new[3]);
+        }
+        lam_abs = 1.0;
+      } else {
       // ---- pass A: accumulate the FULL proposed exchange dU = m_old - m_new, WITHOUT writing i0.
       //      Flag nonfinite i0_upd/dU so a degenerate update fails CLOSED (no NaN, no 0*NaN). ----
       Real m_old[4] = {0.0}; Real m_new[4] = {0.0};
@@ -615,13 +671,18 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
           u0_(m,IM3,k,j,i) += lam*dM3;
         }
       }
+      }
     }
 
     // compton scattering
     if (is_compton_enabled_) {
-      // use the CONSISTENT partially-updated gas temperature: only lam_abs of the absorption
-      // exchange was accepted, so blend rather than taking the full lambda=1 solution tgasnew.
-      tgas = tgas + lam_abs*(tgasnew - tgas);
+      // The legacy path takes the original direct assignment.  The limiter path uses the
+      // consistent partially accepted absorption temperature.
+      if (!rad_wlimit_) {
+        tgas = tgasnew;
+      } else {
+        tgas = tgas + lam_abs*(tgasnew - tgas);
+      }
 
       // compute polynomial coefficients using partially updated gas temp and intensity
       suma1 = 0.0;
@@ -660,6 +721,46 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
         // Compute updated gas temperature
         tgasnew = (arad_*SQR(SQR(tradnew)) - jr_cm)/(suma1*jr_cm) + tradnew;
 
+        if (!rad_wlimit_) {
+          // Legacy fast path: one angular pass, identical to the pre-limiter Compton update.
+          Real m_old[4] = {0.0}; Real m_new[4] = {0.0};
+          for (int n=0; n<=nang1; ++n) {
+            Real n_0 = tc(m,0,0,k,j,i)*nh_c_.d_view(n,0)+tc(m,1,0,k,j,i)*nh_c_.d_view(n,1)
+                     + tc(m,2,0,k,j,i)*nh_c_.d_view(n,2)+tc(m,3,0,k,j,i)*nh_c_.d_view(n,3);
+            Real n_1 = tc(m,0,1,k,j,i)*nh_c_.d_view(n,0)+tc(m,1,1,k,j,i)*nh_c_.d_view(n,1)
+                     + tc(m,2,1,k,j,i)*nh_c_.d_view(n,2)+tc(m,3,1,k,j,i)*nh_c_.d_view(n,3);
+            Real n_2 = tc(m,0,2,k,j,i)*nh_c_.d_view(n,0)+tc(m,1,2,k,j,i)*nh_c_.d_view(n,1)
+                     + tc(m,2,2,k,j,i)*nh_c_.d_view(n,2)+tc(m,3,2,k,j,i)*nh_c_.d_view(n,3);
+            Real n_3 = tc(m,0,3,k,j,i)*nh_c_.d_view(n,0)+tc(m,1,3,k,j,i)*nh_c_.d_view(n,1)
+                     + tc(m,2,3,k,j,i)*nh_c_.d_view(n,2)+tc(m,3,3,k,j,i)*nh_c_.d_view(n,3);
+
+            m_old[0] += (    i0_(m,n,k,j,i)    *solid_angles_.d_view(n));
+            m_old[1] += (n_1*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
+            m_old[2] += (n_2*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
+            m_old[3] += (n_3*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
+
+            Real n0_cm = (u_tet[0]*nh_c_.d_view(n,0) - u_tet[1]*nh_c_.d_view(n,1) -
+                          u_tet[2]*nh_c_.d_view(n,2) - u_tet[3]*nh_c_.d_view(n,3));
+            Real di_cm = (n0_cm/n0)*dtcsigs*4.0*jr_cm*inv_t_electron_*(tgasnew - tradnew);
+            i0_(m,n,k,j,i) = n0*n_0*fmax(i0_(m,n,k,j,i)/(n0*n_0) +
+                                         di_cm/(4.0*M_PI*SQR(SQR(n0_cm))), 0.0);
+
+            m_new[0] += (    i0_(m,n,k,j,i)    *solid_angles_.d_view(n));
+            m_new[1] += (n_1*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
+            m_new[2] += (n_2*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
+            m_new[3] += (n_3*i0_(m,n,k,j,i)/n_0*solid_angles_.d_view(n));
+
+            if (excise) {
+              if (rad_mask_(m,k,j,i) || fabs(n_0) < n_0_floor_) { i0_(m,n,k,j,i) = 0.0; }
+            }
+          }
+          if (affect_fluid_) {
+            u0_(m,IEN,k,j,i) += (m_old[0] - m_new[0]);
+            u0_(m,IM1,k,j,i) += (m_old[1] - m_new[1]);
+            u0_(m,IM2,k,j,i) += (m_old[2] - m_new[2]);
+            u0_(m,IM3,k,j,i) += (m_old[3] - m_new[3]);
+          }
+        } else {
         // ---- pass A: full Compton exchange dU = m_old - m_new, WITHOUT writing i0 ----
         Real m_old[4] = {0.0}; Real m_new[4] = {0.0};
         bool bad_exchange = false;
@@ -733,6 +834,7 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
             u0_(m,IM2,k,j,i) += lam*dM2;
             u0_(m,IM3,k,j,i) += lam*dM3;
           }
+        }
         }
       } else {
         // NOTE(@pdmullen): At this point, it is possible that excision has not been
