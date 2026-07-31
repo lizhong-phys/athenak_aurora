@@ -713,6 +713,10 @@ BaseTypeOutput::BaseTypeOutput(ParameterInput *pin, Mesh *pm, OutputParameters o
 // this output type
 
 void BaseTypeOutput::LoadOutputData(Mesh *pm) {
+#if MPI_PARALLEL_ENABLED
+  double load_start = MPI_Wtime();
+#endif
+
   // out_data_ vector (indexed over # of output MBs) stores 4D array of variables
   // so start iteration over number of MeshBlocks
   // TODO(@user): get this working for multiple physics, which may be either defined/undef
@@ -845,4 +849,11 @@ void BaseTypeOutput::LoadOutputData(Mesh *pm) {
       Kokkos::deep_copy(h_slice,h_output_var);
     }
   }
+
+#if MPI_PARALLEL_ENABLED
+  Kokkos::fence();
+  load_time = MPI_Wtime() - load_start;
+#else
+  load_time = 0.0;
+#endif
 }

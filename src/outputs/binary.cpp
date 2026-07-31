@@ -52,6 +52,14 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
   // check if slicing
   bool bin_slice = (out_params.slice1 || out_params.slice2 || out_params.slice3);
 
+#if MPI_PARALLEL_ENABLED
+  double stage_start = 0.0;
+  double header_time = 0.0;
+  double pack_time = 0.0;
+  double data_time = 0.0;
+  double close_time = 0.0;
+#endif
+
   // create filename: "bin/file_basename" + "." + "file_id" + "." + XXXXX + ".bin"
   // where XXXXX = 5-digit file_number
 
@@ -76,6 +84,10 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
   IOWrapper binfile;
   std::size_t header_offset=0;
   binfile.Open(fname.c_str(), IOWrapper::FileMode::write, single_file_per_rank);
+
+#if MPI_PARALLEL_ENABLED
+  stage_start = MPI_Wtime();
+#endif
 
   // Basic parts of the format:
   // 1. Size of the header
@@ -118,6 +130,11 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
     header_offset += sbuf.size()*sizeof(char);
     header_offset += msg.str().size();
   }
+
+#if MPI_PARALLEL_ENABLED
+  header_time = MPI_Wtime() - stage_start;
+  stage_start = MPI_Wtime();
+#endif
 
   //  5. Data.  An arbitrary number of scalars and vectors can be written (every element
   //  of the outvars vector), all in binary floats format
@@ -229,6 +246,11 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
     }
   }
 
+#if MPI_PARALLEL_ENABLED
+  pack_time = MPI_Wtime() - stage_start;
+  stage_start = MPI_Wtime();
+#endif
+
   // now write binary data
   if (bin_slice) {
     std::vector<int> rank_offset(global_variable::nranks, 0);
@@ -240,15 +262,10 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
       myoffset = header_offset;  // Reset offset for individual files
     }
 
-    if (noutmbs_min > 0) {
-      binfile.Write_any_type_at_all(data,(data_size*nout_mbs),myoffset,"byte",
-                                    single_file_per_rank);
-    } else {
-      if (nout_mbs > 0) {
-        binfile.Write_any_type_at(data,(data_size*nout_mbs),myoffset,"byte",
-                                    single_file_per_rank);
-      }
-    }
+    // MPI collective writes allow ranks without slice data to participate with count=0.
+    // This enables ROMIO collective buffering instead of many independent Lustre writes.
+    binfile.Write_any_type_at_all(data,(data_size*nout_mbs),myoffset,"byte",
+                                  single_file_per_rank);
   } else {
     // check if elements larger than 2^31
     if (data_size*nb_mbs<=2147483648) {
@@ -297,8 +314,73 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
     }
   }
 
+#if MPI_PARALLEL_ENABLED
+  data_time = MPI_Wtime() - stage_start;
+  stage_start = MPI_Wtime();
+#endif
+
   // close the output file and clean up ptrs to data
   binfile.Close(single_file_per_rank);
+
+#if MPI_PARALLEL_ENABLED
+  close_time = MPI_Wtime() - stage_start;
+
+  // Gather per-rank stage timings and hostnames so rank 0 can report the slowest
+  // participant in each stage without adding synchronization inside the stages.
+  constexpr int nstages = 7;
+  const double local_times[nstages] = {
+      load_time, binfile.GetOpenTime(), binfile.GetTruncateTime(), header_time,
+      pack_time, data_time, close_time};
+  char hostname[MPI_MAX_PROCESSOR_NAME] = {};
+  int hostname_len = 0;
+  MPI_Get_processor_name(hostname, &hostname_len);
+  if (hostname_len >= MPI_MAX_PROCESSOR_NAME) {
+    hostname[MPI_MAX_PROCESSOR_NAME-1] = '\0';
+  } else {
+    hostname[hostname_len] = '\0';
+  }
+
+  std::vector<double> all_times;
+  std::vector<char> all_hostnames;
+  if (global_variable::my_rank == 0) {
+    all_times.resize(global_variable::nranks*nstages);
+    all_hostnames.resize(global_variable::nranks*MPI_MAX_PROCESSOR_NAME);
+  }
+  MPI_Gather(local_times, nstages, MPI_DOUBLE,
+             (global_variable::my_rank == 0 ? all_times.data() : nullptr),
+             nstages, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+  MPI_Gather(hostname, MPI_MAX_PROCESSOR_NAME, MPI_CHAR,
+             (global_variable::my_rank == 0 ? all_hostnames.data() : nullptr),
+             MPI_MAX_PROCESSOR_NAME, MPI_CHAR, 0, MPI_COMM_WORLD);
+
+  if (global_variable::my_rank == 0) {
+    const char *stage_names[nstages] = {
+        "load", "open", "truncate", "header", "pack", "data", "close"};
+    std::ostringstream timing;
+    timing << "BINARY_TIMING id=" << out_params.file_id
+           << " file=" << out_params.file_number
+           << " time=" << std::scientific << std::setprecision(6) << pm->time
+           << " cycle=" << pm->ncycle;
+    for (int s=0; s<nstages; ++s) {
+      int max_rank = 0;
+      double max_time = all_times[s];
+      for (int r=1; r<global_variable::nranks; ++r) {
+        double rank_time = all_times[r*nstages+s];
+        if (rank_time > max_time) {
+          max_time = rank_time;
+          max_rank = r;
+        }
+      }
+      const char *max_hostname =
+          &(all_hostnames[max_rank*MPI_MAX_PROCESSOR_NAME]);
+      timing << " " << stage_names[s] << "_max=" << max_time
+             << " " << stage_names[s] << "_rank=" << max_rank
+             << " " << stage_names[s] << "_host=" << max_hostname;
+    }
+    std::cout << timing.str() << std::endl;
+  }
+#endif
+
   delete [] data;
   delete [] single_data;
 

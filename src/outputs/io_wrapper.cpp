@@ -23,6 +23,9 @@
 //! This function must not be called by multiple threads in shared memory parallel regions
 
 int IOWrapper::Open(const char* fname, FileMode rw, bool single_file_per_rank) {
+  open_time_ = 0.0;
+  truncate_time_ = 0.0;
+
   const char* mode;
   switch (rw) {
     case FileMode::read:
@@ -55,7 +58,9 @@ int IOWrapper::Open(const char* fname, FileMode rw, bool single_file_per_rank) {
         return false;
     }
 
+    double stage_start = MPI_Wtime();
     int errcode = MPI_File_open(comm_, fname, mpi_mode, MPI_INFO_NULL, &fh_);
+    open_time_ = MPI_Wtime() - stage_start;
     if (errcode != MPI_SUCCESS) {
       char msg[MPI_MAX_ERROR_STRING];
       int resultlen;
@@ -71,7 +76,9 @@ int IOWrapper::Open(const char* fname, FileMode rw, bool single_file_per_rank) {
     // MPI_File_set_size is collective over comm_.  Use it to truncate an existing
     // shared output file instead of having every rank delete the same path.
     if (rw == FileMode::write) {
+      stage_start = MPI_Wtime();
       errcode = MPI_File_set_size(fh_, 0);
+      truncate_time_ = MPI_Wtime() - stage_start;
       if (errcode != MPI_SUCCESS) {
         char msg[MPI_MAX_ERROR_STRING];
         int resultlen;

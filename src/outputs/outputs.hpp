@@ -218,6 +218,7 @@ class BaseTypeOutput {
   // data
   OutputParameters out_params;   // params read from <output> block for this type
   DvceArray5D<Real> derived_var; // array to store output variables computed from u0/b0
+  double load_time = 0.0;        // local wall time spent preparing this output
 
   // function which computes derived output variables like vorticity and current density
   void ComputeDerivedVariable(std::string name, Mesh *pm);

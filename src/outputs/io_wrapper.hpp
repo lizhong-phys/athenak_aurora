@@ -24,10 +24,11 @@ using IOWrapperSizeT = std::uint64_t;
 class IOWrapper {
  public:
 #if MPI_PARALLEL_ENABLED
-  IOWrapper() : fh_(nullptr), comm_(MPI_COMM_WORLD) {}
+  IOWrapper() : fh_(nullptr), comm_(MPI_COMM_WORLD), open_time_(0.0),
+                truncate_time_(0.0) {}
   void SetCommunicator(MPI_Comm scomm) { comm_=scomm;}
 #else
-  IOWrapper() {fh_=nullptr;}
+  IOWrapper() : fh_(nullptr), open_time_(0.0), truncate_time_(0.0) {}
 #endif
   ~IOWrapper() {}
   // nested type definition of strongly typed/scoped enum in class definition
@@ -57,11 +58,15 @@ class IOWrapper {
   int Close(bool single_file_per_rank = false);
   int Seek(IOWrapperSizeT offset, bool single_file_per_rank = false);
   IOWrapperSizeT GetPosition(bool single_file_per_rank = false);
+  double GetOpenTime() const { return open_time_; }
+  double GetTruncateTime() const { return truncate_time_; }
 
  private:
   IOWrapperFile fh_;
 #if MPI_PARALLEL_ENABLED
   MPI_Comm comm_;
 #endif
+  double open_time_;
+  double truncate_time_;
 };
 #endif // OUTPUTS_IO_WRAPPER_HPP_
