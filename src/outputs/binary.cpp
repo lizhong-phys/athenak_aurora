@@ -314,12 +314,45 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
     }
   } else {
 #endif
-    // ---- MPI-IO / independent-POSIX single-file path -----------------------------
+    // ---- single-file path: shared full dump (Step A) or per-rank / serial ---------
+#if MPI_PARALLEL_ENABLED
+    if (!single_file_per_rank) {
+      // SHARED FULL DUMP.  Decouple file creation from the collective open: rank 0
+      // creates the file and writes the header with POSIX, then ALL ranks collectively
+      // open the EXISTING file (no MPI_MODE_CREATE, no collective set_size).  The
+      // collective write below is unchanged (keeps ROMIO aggregation).  A hang in the
+      // create RPC now shows up in header_time; a hang in the collective open of the
+      // existing file shows in open_time -- so the two are distinguishable.
+      double t_hdr = MPI_Wtime();
+      if (global_variable::my_rank == 0) {
+        FILE *fp = std::fopen(fname.c_str(), "wb");
+        if (fp == nullptr) {
+          std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                    << std::endl << "File '" << fname << "' could not be created"
+                    << std::endl;
+          std::exit(EXIT_FAILURE);
+        }
+        std::fwrite(header_str.data(), 1, header_str.size(), fp);
+        std::fclose(fp);
+      }
+      MPI_Barrier(MPI_COMM_WORLD);        // file + header exist before the collective open
+      header_time += MPI_Wtime() - t_hdr;
+      binfile.Open(fname.c_str(), IOWrapper::FileMode::write_existing, false);
+      // header already on disk -- do NOT write it via MPI-IO below
+    } else {
+      binfile.Open(fname.c_str(), IOWrapper::FileMode::write, single_file_per_rank);
+      if (write_header) {
+        binfile.Write_any_type(header_str.c_str(), header_str.size(), "byte",
+                               single_file_per_rank);
+      }
+    }
+#else
     binfile.Open(fname.c_str(), IOWrapper::FileMode::write, single_file_per_rank);
     if (write_header) {
       binfile.Write_any_type(header_str.c_str(), header_str.size(), "byte",
                              single_file_per_rank);
     }
+#endif
 #if MPI_PARALLEL_ENABLED
     stage_start = MPI_Wtime();
 #endif

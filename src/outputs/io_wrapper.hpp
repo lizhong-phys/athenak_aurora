@@ -32,7 +32,11 @@ class IOWrapper {
 #endif
   ~IOWrapper() {}
   // nested type definition of strongly typed/scoped enum in class definition
-  enum class FileMode {read, write, append};
+  // write_existing: open an ALREADY-EXISTING shared file for writing WITHOUT
+  // MPI_MODE_CREATE and without the collective MPI_File_set_size truncation -- used
+  // when rank 0 has already created the file + header via POSIX (keeps the collective
+  // file-create off the collective open, which has been stalling on Aurora).
+  enum class FileMode {read, write, append, write_existing};
 
   // wrapper functions for basic I/O tasks
   int Open(const char* fname, FileMode rw, bool single_file_per_rank = false);

@@ -37,6 +37,9 @@ int IOWrapper::Open(const char* fname, FileMode rw, bool single_file_per_rank) {
     case FileMode::append:
       mode = "ab";
       break;
+    case FileMode::write_existing:
+      mode = "r+b";           // open existing for update, do NOT truncate
+      break;
     default:
       return false;
   }
@@ -50,6 +53,9 @@ int IOWrapper::Open(const char* fname, FileMode rw, bool single_file_per_rank) {
         break;
       case FileMode::write:
         mpi_mode = MPI_MODE_WRONLY | MPI_MODE_CREATE;
+        break;
+      case FileMode::write_existing:
+        mpi_mode = MPI_MODE_WRONLY;   // file already created by rank 0; no CREATE
         break;
       case FileMode::append:
         mpi_mode = MPI_MODE_WRONLY | MPI_MODE_APPEND;
