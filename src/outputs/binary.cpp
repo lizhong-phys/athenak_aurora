@@ -56,8 +56,10 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
   double stage_start = 0.0;
   double header_time = 0.0;
   double pack_time = 0.0;
-  double data_time = 0.0;
+  double data_time = 0.0;      // write time: root POSIX fwrite (slices) or MPI-IO write
   double close_time = 0.0;
+  double split_time = 0.0;     // MPI_Comm_split for the per-slice communicator
+  double gather_time = 0.0;    // MPI_Gatherv of slice blocks to the slice root
 #endif
 
   // create filename: "bin/file_basename" + "." + "file_id" + "." + XXXXX + ".bin"
@@ -91,12 +93,21 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
 #if MPI_PARALLEL_ENABLED
   MPI_Comm slice_comm = MPI_COMM_WORLD;
   int slice_rank = global_variable::my_rank;
+  int io_ranks = global_variable::nranks;   // # ranks that touch THIS file
   bool use_slice_comm = (bin_slice && !single_file_per_rank);
+  bool use_gather = use_slice_comm;         // shared slices -> gather-to-root + POSIX
   if (use_slice_comm) {
     io_active = (outmbs.size() > 0);
+    stage_start = MPI_Wtime();
     MPI_Comm_split(MPI_COMM_WORLD, io_active ? 1 : MPI_UNDEFINED,
                    global_variable::my_rank, &slice_comm);   // collective over WORLD
-    if (io_active) { MPI_Comm_rank(slice_comm, &slice_rank); }
+    split_time = MPI_Wtime() - stage_start;
+    if (io_active) {
+      MPI_Comm_rank(slice_comm, &slice_rank);
+      MPI_Comm_size(slice_comm, &io_ranks);   // measured owner count (per slice)
+    } else {
+      io_ranks = 0;
+    }
   }
   // the header is written once, by the first rank of the participating communicator
   bool write_header = single_file_per_rank || (io_active && slice_rank == 0);
@@ -104,24 +115,14 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
   bool write_header = true;
 #endif
 
-  IOWrapper binfile;
-  std::size_t header_offset=0;
-  if (io_active) {
-#if MPI_PARALLEL_ENABLED
-    if (use_slice_comm) { binfile.SetCommunicator(slice_comm); }
-#endif
-    binfile.Open(fname.c_str(), IOWrapper::FileMode::write, single_file_per_rank);
-  }
+  IOWrapper binfile;   // used only by the MPI-IO / per-rank path below
 
+  // Build the file header as ONE string.  Full dumps write it via MPI-IO (first rank);
+  // gathered slices write it via POSIX on the slice root -- identical bytes either way.
 #if MPI_PARALLEL_ENABLED
   stage_start = MPI_Wtime();
 #endif
-
-  // Basic parts of the format:
-  // 1. Size of the header
-  // 2. Current time
-  // 3. List of variables in the file
-  // 4. Header (input file information)
+  std::string header_str;
   {
     std::stringstream msg;
     msg << "Athena binary output version=1.1" << std::endl
@@ -133,32 +134,15 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
         << "  size of variable=" << sizeof(float) << std::endl
         << "  number of variables=" << outvars.size() << std::endl
         << "  variables:  ";
-    for (int n=0; n<outvars.size(); n++) {
-      msg << outvars[n].label.c_str() << "  ";
-    }
+    for (int n=0; n<outvars.size(); n++) { msg << outvars[n].label.c_str() << "  "; }
     msg << std::endl;
-    if (write_header) {
-      binfile.Write_any_type(msg.str().c_str(),msg.str().size(),"byte",
-                             single_file_per_rank);
-    }
-    header_offset += msg.str().size();
-  }
-  {
-    std::stringstream msg;
-    // prepare the input parameters
     std::stringstream ost;
     pin->ParameterDump(ost);
     std::string sbuf=ost.str();
-    msg << "  header offset=" << sbuf.size()*sizeof(char)  << std::endl;
-    if (write_header) {
-      binfile.Write_any_type(msg.str().c_str(),msg.str().size(),"byte",
-                             single_file_per_rank);
-      binfile.Write_any_type(sbuf.c_str(),sbuf.size(),"byte", single_file_per_rank);
-    }
-    header_offset += sbuf.size()*sizeof(char);
-    header_offset += msg.str().size();
+    msg << "  header offset=" << sbuf.size()*sizeof(char) << std::endl;
+    header_str = msg.str() + sbuf;   // bytes identical to the old 3 sequential writes
   }
-
+  std::size_t header_offset = header_str.size();
 #if MPI_PARALLEL_ENABLED
   header_time = MPI_Wtime() - stage_start;
   stage_start = MPI_Wtime();
@@ -279,39 +263,78 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
   stage_start = MPI_Wtime();
 #endif
 
-  // now write binary data
-  if (bin_slice) {
-    // Only the plane's owner ranks (this slice's communicator) write; inactive ranks
-    // skipped Open and must not enter this collective.
+  // ---------------------------------------------------------------------------
+  // WRITE.  SHARED SLICES: gather each owner's packed blocks to the slice root, which
+  // writes the whole file with POSIX -- no collective MPI_File_open on the shared slice
+  // file (the recurring open-stall source).  Only remaining collective is MPI_Gatherv
+  // over the OWNER ranks (comm, not filesystem).  FULL DUMPS + per-rank files keep the
+  // MPI-IO / independent-POSIX path (bandwidth-bound; collective buffering wins there).
+  // ---------------------------------------------------------------------------
+#if MPI_PARALLEL_ENABLED
+  if (use_gather) {
     if (io_active) {
-      std::vector<int> rank_offset(global_variable::nranks, 0);
-      std::partial_sum(noutmbs.begin(),std::prev(noutmbs.end()),
-                       std::next(rank_offset.begin()));
-      std::size_t myoffset =
-          header_offset+data_size*rank_offset[global_variable::my_rank];
-
-      if (single_file_per_rank) {
-        myoffset = header_offset;  // Reset offset for individual files
+      int local_bytes = static_cast<int>(data_size)*nout_mbs;
+      std::vector<int> recvcounts, displs;
+      char *gathered = nullptr;
+      std::size_t total = 0;
+      stage_start = MPI_Wtime();
+      if (slice_rank == 0) { recvcounts.assign(io_ranks, 0); }
+      MPI_Gather(&local_bytes, 1, MPI_INT,
+                 (slice_rank == 0 ? recvcounts.data() : nullptr), 1, MPI_INT,
+                 0, slice_comm);
+      if (slice_rank == 0) {
+        displs.assign(io_ranks, 0);
+        for (int r = 0; r < io_ranks; ++r) {
+          displs[r] = static_cast<int>(total);
+          total += static_cast<std::size_t>(recvcounts[r]);
+        }
+        gathered = new char[total];
       }
-
-      // Collective write over the slice communicator (ROMIO collective buffering
-      // instead of many independent Lustre writes; ranks pass count=0 if needed).
-      binfile.Write_any_type_at_all(data,(data_size*nout_mbs),myoffset,"byte",
-                                    single_file_per_rank);
+      MPI_Gatherv(data, local_bytes, MPI_BYTE,
+                  (slice_rank == 0 ? gathered : nullptr),
+                  (slice_rank == 0 ? recvcounts.data() : nullptr),
+                  (slice_rank == 0 ? displs.data() : nullptr),
+                  MPI_BYTE, 0, slice_comm);
+      gather_time = MPI_Wtime() - stage_start;
+      if (slice_rank == 0) {
+        stage_start = MPI_Wtime();
+        FILE *fp = std::fopen(fname.c_str(), "wb");
+        if (fp == nullptr) {
+          std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                    << std::endl << "File '" << fname << "' could not be opened"
+                    << std::endl;
+          std::exit(EXIT_FAILURE);
+        }
+        std::fwrite(header_str.data(), 1, header_str.size(), fp);
+        if (total > 0) { std::fwrite(gathered, 1, total, fp); }
+        std::fclose(fp);
+        data_time = MPI_Wtime() - stage_start;   // root POSIX write (filesystem)
+        delete [] gathered;
+      }
     }
   } else {
-    // check if elements larger than 2^31
-    if (data_size*nb_mbs<=2147483648) {
-      // now write binary data in parallel
+#endif
+    // ---- MPI-IO / independent-POSIX single-file path -----------------------------
+    binfile.Open(fname.c_str(), IOWrapper::FileMode::write, single_file_per_rank);
+    if (write_header) {
+      binfile.Write_any_type(header_str.c_str(), header_str.size(), "byte",
+                             single_file_per_rank);
+    }
+#if MPI_PARALLEL_ENABLED
+    stage_start = MPI_Wtime();
+#endif
+    if (bin_slice) {
+      // per-rank slice file (single_file_per_rank): this rank writes only its blocks
+      binfile.Write_any_type_at(data,(data_size*nout_mbs),header_offset,"byte",
+                                single_file_per_rank);
+    } else if (data_size*nb_mbs<=2147483648) {
+      // full dump: collective write in parallel
       std::size_t myoffset = header_offset;
-      if (!single_file_per_rank) {
-        myoffset += data_size*ns_mbs;
-      }
+      if (!single_file_per_rank) { myoffset += data_size*ns_mbs; }
       binfile.Write_any_type_at_all(data,(data_size*nb_mbs),myoffset,"byte",
                                     single_file_per_rank);
     } else {
-      // write data over each MeshBlock sequentially and in parallel
-      // calculate max/min number of MeshBlocks across all ranks
+      // full dump > 2^31 bytes: write over each MeshBlock sequentially and in parallel
       noutmbs_max = pm->nmb_eachrank[0];
       noutmbs_min = pm->nmb_eachrank[0];
       for (int i=0; i<(global_variable::nranks); ++i) {
@@ -321,10 +344,7 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
       for (int m=0;  m<noutmbs_max; ++m) {
         char *pdata=&(data[m*data_size]);
         std::size_t myoffset = header_offset + data_size*m;
-        if (!single_file_per_rank) {
-          myoffset += data_size*ns_mbs;
-        }
-        // every rank has a MB to write, so write collectively
+        if (!single_file_per_rank) { myoffset += data_size*ns_mbs; }
         if (m < noutmbs_min) {
           if (binfile.Write_any_type_at_all(pdata,(data_size),myoffset,"byte",
                                               single_file_per_rank) != data_size) {
@@ -333,7 +353,6 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
                 << "binary file is broken." << std::endl;
             exit(EXIT_FAILURE);
           }
-        // some ranks are finished writing, so use non-collective write
         } else if (m < pm->nmb_thisrank) {
           if (binfile.Write_any_type_at(pdata,(data_size),myoffset,"byte",
                                           single_file_per_rank) != data_size) {
@@ -345,27 +364,26 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
         }
       }
     }
-  }
-
 #if MPI_PARALLEL_ENABLED
-  data_time = MPI_Wtime() - stage_start;
-  stage_start = MPI_Wtime();
+    data_time = MPI_Wtime() - stage_start;
+    stage_start = MPI_Wtime();
+#endif
+    binfile.Close(single_file_per_rank);
+#if MPI_PARALLEL_ENABLED
+    close_time = MPI_Wtime() - stage_start;
+  }
 #endif
 
-  // close the output file and clean up ptrs to data
-  if (io_active) { binfile.Close(single_file_per_rank); }
-
 #if MPI_PARALLEL_ENABLED
-  close_time = MPI_Wtime() - stage_start;
   // free the per-slice communicator (collective over the active ranks only)
   if (use_slice_comm && io_active) { MPI_Comm_free(&slice_comm); }
 
   // Gather per-rank stage timings and hostnames so rank 0 can report the slowest
   // participant in each stage without adding synchronization inside the stages.
-  constexpr int nstages = 7;
+  constexpr int nstages = 9;
   const double local_times[nstages] = {
-      load_time, binfile.GetOpenTime(), binfile.GetTruncateTime(), header_time,
-      pack_time, data_time, close_time};
+      load_time, split_time, binfile.GetOpenTime(), binfile.GetTruncateTime(),
+      header_time, pack_time, gather_time, data_time, close_time};
   char hostname[MPI_MAX_PROCESSOR_NAME] = {};
   int hostname_len = 0;
   MPI_Get_processor_name(hostname, &hostname_len);
@@ -388,14 +406,26 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
              (global_variable::my_rank == 0 ? all_hostnames.data() : nullptr),
              MPI_MAX_PROCESSOR_NAME, MPI_CHAR, 0, MPI_COMM_WORLD);
 
+  // measured participant count for THIS file (per-slice owner count; nranks for full)
+  std::vector<int> all_io_ranks;
+  if (global_variable::my_rank == 0) { all_io_ranks.resize(global_variable::nranks); }
+  MPI_Gather(&io_ranks, 1, MPI_INT,
+             (global_variable::my_rank == 0 ? all_io_ranks.data() : nullptr), 1,
+             MPI_INT, 0, MPI_COMM_WORLD);
+
   if (global_variable::my_rank == 0) {
+    int io_ranks_max = 0;
+    for (int r = 0; r < global_variable::nranks; ++r) {
+      io_ranks_max = std::max(io_ranks_max, all_io_ranks[r]);
+    }
     const char *stage_names[nstages] = {
-        "load", "open", "truncate", "header", "pack", "data", "close"};
+        "load", "split", "open", "truncate", "header", "pack", "gather", "data", "close"};
     std::ostringstream timing;
     timing << "BINARY_TIMING id=" << out_params.file_id
            << " file=" << out_params.file_number
            << " time=" << std::scientific << std::setprecision(6) << pm->time
-           << " cycle=" << pm->ncycle;
+           << " cycle=" << pm->ncycle
+           << " io_ranks=" << io_ranks_max;
     for (int s=0; s<nstages; ++s) {
       int max_rank = 0;
       double max_time = all_times[s];
