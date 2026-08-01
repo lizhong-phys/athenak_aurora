@@ -81,9 +81,37 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
           + "." + out_params.file_id + number + ".bin";
   }
 
+  // ---- SLICE sub-communicator (permanent I/O improvement) -----------------------
+  // For SLICE outputs, only ranks that own cells on the plane participate in the file's
+  // collective open/write/close, via a per-slice communicator.  This keeps a single
+  // flaky or non-owner node out of every slice's collective MPI_File_open (previously
+  // all ranks opened every slice, though most never write it).  Full dumps: every rank
+  // is active -> keep MPI_COMM_WORLD.  Per-rank files: independent I/O, no communicator.
+  bool io_active = true;              // non-slice, or this rank owns slice cells
+#if MPI_PARALLEL_ENABLED
+  MPI_Comm slice_comm = MPI_COMM_WORLD;
+  int slice_rank = global_variable::my_rank;
+  bool use_slice_comm = (bin_slice && !single_file_per_rank);
+  if (use_slice_comm) {
+    io_active = (outmbs.size() > 0);
+    MPI_Comm_split(MPI_COMM_WORLD, io_active ? 1 : MPI_UNDEFINED,
+                   global_variable::my_rank, &slice_comm);   // collective over WORLD
+    if (io_active) { MPI_Comm_rank(slice_comm, &slice_rank); }
+  }
+  // the header is written once, by the first rank of the participating communicator
+  bool write_header = single_file_per_rank || (io_active && slice_rank == 0);
+#else
+  bool write_header = true;
+#endif
+
   IOWrapper binfile;
   std::size_t header_offset=0;
-  binfile.Open(fname.c_str(), IOWrapper::FileMode::write, single_file_per_rank);
+  if (io_active) {
+#if MPI_PARALLEL_ENABLED
+    if (use_slice_comm) { binfile.SetCommunicator(slice_comm); }
+#endif
+    binfile.Open(fname.c_str(), IOWrapper::FileMode::write, single_file_per_rank);
+  }
 
 #if MPI_PARALLEL_ENABLED
   stage_start = MPI_Wtime();
@@ -109,7 +137,7 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
       msg << outvars[n].label.c_str() << "  ";
     }
     msg << std::endl;
-    if (global_variable::my_rank == 0 || single_file_per_rank) {
+    if (write_header) {
       binfile.Write_any_type(msg.str().c_str(),msg.str().size(),"byte",
                              single_file_per_rank);
     }
@@ -122,7 +150,7 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
     pin->ParameterDump(ost);
     std::string sbuf=ost.str();
     msg << "  header offset=" << sbuf.size()*sizeof(char)  << std::endl;
-    if (global_variable::my_rank == 0 || single_file_per_rank) {
+    if (write_header) {
       binfile.Write_any_type(msg.str().c_str(),msg.str().size(),"byte",
                              single_file_per_rank);
       binfile.Write_any_type(sbuf.c_str(),sbuf.size(),"byte", single_file_per_rank);
@@ -253,19 +281,24 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
 
   // now write binary data
   if (bin_slice) {
-    std::vector<int> rank_offset(global_variable::nranks, 0);
-    std::partial_sum(noutmbs.begin(),std::prev(noutmbs.end()),
-                     std::next(rank_offset.begin()));
-    std::size_t myoffset = header_offset+data_size*rank_offset[global_variable::my_rank];
+    // Only the plane's owner ranks (this slice's communicator) write; inactive ranks
+    // skipped Open and must not enter this collective.
+    if (io_active) {
+      std::vector<int> rank_offset(global_variable::nranks, 0);
+      std::partial_sum(noutmbs.begin(),std::prev(noutmbs.end()),
+                       std::next(rank_offset.begin()));
+      std::size_t myoffset =
+          header_offset+data_size*rank_offset[global_variable::my_rank];
 
-    if (single_file_per_rank) {
-      myoffset = header_offset;  // Reset offset for individual files
+      if (single_file_per_rank) {
+        myoffset = header_offset;  // Reset offset for individual files
+      }
+
+      // Collective write over the slice communicator (ROMIO collective buffering
+      // instead of many independent Lustre writes; ranks pass count=0 if needed).
+      binfile.Write_any_type_at_all(data,(data_size*nout_mbs),myoffset,"byte",
+                                    single_file_per_rank);
     }
-
-    // MPI collective writes allow ranks without slice data to participate with count=0.
-    // This enables ROMIO collective buffering instead of many independent Lustre writes.
-    binfile.Write_any_type_at_all(data,(data_size*nout_mbs),myoffset,"byte",
-                                  single_file_per_rank);
   } else {
     // check if elements larger than 2^31
     if (data_size*nb_mbs<=2147483648) {
@@ -320,10 +353,12 @@ void MeshBinaryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
 #endif
 
   // close the output file and clean up ptrs to data
-  binfile.Close(single_file_per_rank);
+  if (io_active) { binfile.Close(single_file_per_rank); }
 
 #if MPI_PARALLEL_ENABLED
   close_time = MPI_Wtime() - stage_start;
+  // free the per-slice communicator (collective over the active ranks only)
+  if (use_slice_comm && io_active) { MPI_Comm_free(&slice_comm); }
 
   // Gather per-rank stage timings and hostnames so rank 0 can report the slowest
   // participant in each stage without adding synchronization inside the stages.
