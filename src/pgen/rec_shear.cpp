@@ -27,6 +27,13 @@
 //! added as the discrete curl of a vector potential A_y, so div(B) = 0 to machine
 //! precision.  Random velocity perturbations are added as in HGB.
 //!
+//! CAVEAT: this file uses only constructs that appear in pgen/tests/mri3d.cpp or
+//! pgen/gr_torus.cpp, with ONE exception -- user_srcs_func.  Neither example enrols a
+//! user source term (they use user_bcs_func and user_hist_func only), so the vertical
+//! gravity below is the one piece of this pgen with no validated precedent.  Set
+//! <problem>/grav = 0.0 to disable it entirely: user_srcs is then never set and
+//! RecShearSrcTerms is never called.
+//!
 //! Optional user source terms (enrolled only when their parameters are non-zero):
 //! - vertical tidal gravity about the nearest sheet, set by <problem>/grav.  Note this
 //!   replaces <shearing_box>/stratified, which is centred on z = 0 instead of on the
@@ -49,7 +56,6 @@
 
 // Athena++ headers
 #include "athena.hpp"
-#include "globals.hpp"
 #include "parameter_input.hpp"
 #include "coordinates/cell_locations.hpp"
 #include "mesh/mesh.hpp"
@@ -60,6 +66,10 @@
 #include "pgen/pgen.hpp"
 
 #include <Kokkos_Random.hpp>
+
+#if MPI_PARALLEL_ENABLED
+#include <mpi.h>
+#endif
 
 namespace {
 // Useful container for physical parameters of the current sheets.  Copied by value into
@@ -161,7 +171,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   rshear.grav      = pin->GetOrAddReal("problem","grav",0.0);
   rshear.sinkwidth = pin->GetOrAddReal("problem","sinkwidth",0.0);
   rshear.tau_sink  = pin->GetOrAddReal("problem","tau_sink",1.0);
-  rshear.dfloor    = eos.dfloor;
+  rshear.dfloor    = pin->GetOrAddReal("mhd","dfloor",1.0e-10);
   rshear.omega0    = pmbp->pmhd->psbox_u->omega0;
 
   user_hist_func = RecShearHistory;
@@ -326,23 +336,28 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       mvars.the_array[0] = u0(m,IM1,k,j,i);
       mvars.the_array[1] = u0(m,IM2,k,j,i);
       mvars.the_array[2] = u0(m,IM3,k,j,i);
-      for (int n=3; n<NREDUCTION_VARIABLES; ++n) {
+      for (int n=3; n<NHISTORY_VARIABLES; ++n) {
         mvars.the_array[n] = 0.0;
       }
       mb_sum += mvars;
     }, Kokkos::Sum<array_sum::GlobalSum>(msum));
     Kokkos::fence();
 
-    Real mtot[3] = {msum.the_array[0], msum.the_array[1], msum.the_array[2]};
+    Real m1tot = msum.the_array[0];
+    Real m2tot = msum.the_array[1];
+    Real m3tot = msum.the_array[2];
 #if MPI_PARALLEL_ENABLED
-    MPI_Allreduce(MPI_IN_PLACE, mtot, 3, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+    // sum the net momentum over all MPI ranks
+    MPI_Allreduce(MPI_IN_PLACE, &m1tot, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &m2tot, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &m3tot, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 #endif
     Real ncells = static_cast<Real>(pmy_mesh_->mesh_indcs.nx1)
                  *static_cast<Real>(pmy_mesh_->mesh_indcs.nx2)
                  *static_cast<Real>(pmy_mesh_->mesh_indcs.nx3);
-    Real mavg1 = mtot[0]/ncells;
-    Real mavg2 = mtot[1]/ncells;
-    Real mavg3 = mtot[2]/ncells;
+    Real mavg1 = m1tot/ncells;
+    Real mavg2 = m2tot/ncells;
+    Real mavg3 = m3tot/ncells;
 
     par_for("rec_shear_dmom", DevExeSpace(), 0,(nmb-1),ks,ke,js,je,is,ie,
     KOKKOS_LAMBDA(int m, int k, int j, int i) {
@@ -352,7 +367,6 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     });
   }
 
-  if (global_variable::my_rank == 0) {
   std::cout << std::endl
     << "--- rec_shear: double Harris sheet in a shearing box ---" << std::endl
     << "  ifield           = " << rshear.ifield << std::endl
@@ -368,7 +382,6 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     << "  grav             = " << rshear.grav << std::endl
     << "  sinkwidth        = " << rshear.sinkwidth << ", tau_sink = "
     << rshear.tau_sink << std::endl << std::endl;
-  }
 
   return;
 }
