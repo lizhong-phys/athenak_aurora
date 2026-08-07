@@ -190,8 +190,8 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   // ---- problem parameters ------------------------------------------------------------
   Real d0     = pin->GetOrAddReal("problem", "d0", 1.0);
   Real jwidth = pin->GetOrAddReal("problem", "jwidth", 0.1);
-  Real bx2by  = pin->GetOrAddReal("problem", "bx2by", 0.02);
-  Real bz2bx  = pin->GetOrAddReal("problem", "bz2bx", 0.01);
+  Real bx2by  = pin->GetOrAddReal("problem", "bx2by", 0.01);
+  Real bz2bx  = pin->GetOrAddReal("problem", "bz2bx", 1.00);
   Real amp    = pin->GetReal("problem", "amp");
   Real beta   = pin->GetReal("problem", "beta");
   // beta_mri sets the strength of the vertical seed perturbation.  Set <= 0 (default) for
@@ -250,7 +250,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     // Bx at (x1f, x2v, x3v): equilibrium + (-dA_y/dz) from the discrete curl
     Real bx = by0*bx2by*HarrisProfile(x3v, zl, zu, jwidth)
               - (VecPotY(x1f, x3fp, bz0, kx, zl, zu, jwidth)
-               - VecPotY(x1f, x3f,  bz0, kx, zl, zu, jwidth))/dx3;
+              - VecPotY(x1f, x3f,  bz0, kx, zl, zu, jwidth))/dx3;
     // By at (x1v, x2f, x3v): reversing component, function of z only
     Real by = by0*HarrisProfile(x3v, zl, zu, jwidth);
     // Bz at (x1v, x2v, x3f): uniform guide field + (dA_y/dx) from the discrete curl
