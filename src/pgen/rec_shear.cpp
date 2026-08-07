@@ -201,10 +201,8 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       Real x1fp = LeftEdgeX(i+1-is, nx1, x1min, x1max);
       Real x3f  = LeftEdgeX(k-ks,   nx3, x3min, x3max);
       Real x3fp = LeftEdgeX(k+1-ks, nx3, x3min, x3max);
-      Real gf  = exp(-0.5*SQR((x3f  - zupr)/jwidth))
-               + exp(-0.5*SQR((x3f  - zlwr)/jwidth));
-      Real gfp = exp(-0.5*SQR((x3fp - zupr)/jwidth))
-               + exp(-0.5*SQR((x3fp - zlwr)/jwidth));
+      Real gf  = exp(-0.5*SQR((x3f  - zupr)/jwidth)) + exp(-0.5*SQR((x3f  - zlwr)/jwidth));
+      Real gfp = exp(-0.5*SQR((x3fp - zupr)/jwidth)) + exp(-0.5*SQR((x3fp - zlwr)/jwidth));
       Real dcos = cos(kx*x1fp) - cos(kx*x1f);
       Real &dx1 = size.d_view(m).dx1;
       Real &dx3 = size.d_view(m).dx3;
