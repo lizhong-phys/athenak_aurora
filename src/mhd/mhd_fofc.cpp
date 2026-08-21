@@ -28,6 +28,7 @@ namespace mhd {
 //! also exploited for BH excision.  If a cell is about the horizon, FOFC is automatically
 //! triggered (without estimating updated conserved variables).
 
+template <bool energy_diag_>
 void MHD::FOFC(Driver *pdriver, int stage) {
   auto &indcs = pmy_pack->pmesh->mb_indcs;
   int is = indcs.is, ie = indcs.ie, nx1 = indcs.nx1;
@@ -123,11 +124,10 @@ void MHD::FOFC(Driver *pdriver, int stage) {
   auto &excision_flux_ = pmy_pack->pcoord->excision_flux;
   auto &w0_ = w0;
   auto &b0_ = b0;
-  const bool energy_diag_ = (pmy_pack->penergy_diag != nullptr);
   DvceArray4D<Real> fofc_diag1_, fofc_diag2_, fofc_diag3_;
   DvceArray4D<Real> entropy_diag1_, entropy_diag2_, entropy_diag3_;
   DvceArray4D<unsigned int> diag_flags_;
-  if (energy_diag_) {
+  if constexpr (energy_diag_) {
     fofc_diag1_ = pmy_pack->penergy_diag->fofc_energy_flux.x1f;
     fofc_diag2_ = pmy_pack->penergy_diag->fofc_energy_flux.x2f;
     fofc_diag3_ = pmy_pack->penergy_diag->fofc_energy_flux.x3f;
@@ -158,7 +158,7 @@ void MHD::FOFC(Driver *pdriver, int stage) {
 
     // Apply FOFC
     if (fofc_flag || fofc_excision) {
-      if (energy_diag_) {
+      if constexpr (energy_diag_) {
         if (fofc_flag) diag_flags_(m,k,j,i) |= diagnostics::EDF_FOFC;
         if (fofc_excision) diag_flags_(m,k,j,i) |= diagnostics::EDF_EXCISION;
       }
@@ -211,9 +211,9 @@ void MHD::FOFC(Driver *pdriver, int stage) {
         flx1(m,IM2,k,j,i) = flux.my;
         flx1(m,IM3,k,j,i) = flux.mz;
         if (eos.is_ideal) {
-          if (energy_diag_) fofc_diag1_(m,k,j,i) += flux.e-flx1(m,IEN,k,j,i);
+          if constexpr (energy_diag_) fofc_diag1_(m,k,j,i) += flux.e-flx1(m,IEN,k,j,i);
           flx1(m,IEN,k,j,i) = flux.e;
-          if (energy_diag_) {
+          if constexpr (energy_diag_) {
             const Real sl=(log(fmax((eos.gamma-1.0)*wim1.e,1.0e-300))-
                            eos.gamma*log(fmax(wim1.d,1.0e-300)))/(eos.gamma-1.0);
             const Real sr=(log(fmax((eos.gamma-1.0)*wi.e,1.0e-300))-
@@ -274,9 +274,9 @@ void MHD::FOFC(Driver *pdriver, int stage) {
         flx2(m,IM3,k,j,i) = flux.my;
         flx2(m,IM1,k,j,i) = flux.mz;
         if (eos.is_ideal) {
-          if (energy_diag_) fofc_diag2_(m,k,j,i) += flux.e-flx2(m,IEN,k,j,i);
+          if constexpr (energy_diag_) fofc_diag2_(m,k,j,i) += flux.e-flx2(m,IEN,k,j,i);
           flx2(m,IEN,k,j,i) = flux.e;
-          if (energy_diag_) {
+          if constexpr (energy_diag_) {
             const Real sl=(log(fmax((eos.gamma-1.0)*wjm1.e,1.0e-300))-
                            eos.gamma*log(fmax(wjm1.d,1.0e-300)))/(eos.gamma-1.0);
             const Real sr=(log(fmax((eos.gamma-1.0)*wj.e,1.0e-300))-
@@ -337,9 +337,9 @@ void MHD::FOFC(Driver *pdriver, int stage) {
         flx3(m,IM1,k,j,i) = flux.my;
         flx3(m,IM2,k,j,i) = flux.mz;
         if (eos.is_ideal) {
-          if (energy_diag_) fofc_diag3_(m,k,j,i) += flux.e-flx3(m,IEN,k,j,i);
+          if constexpr (energy_diag_) fofc_diag3_(m,k,j,i) += flux.e-flx3(m,IEN,k,j,i);
           flx3(m,IEN,k,j,i) = flux.e;
-          if (energy_diag_) {
+          if constexpr (energy_diag_) {
             const Real sl=(log(fmax((eos.gamma-1.0)*wkm1.e,1.0e-300))-
                            eos.gamma*log(fmax(wkm1.d,1.0e-300)))/(eos.gamma-1.0);
             const Real sr=(log(fmax((eos.gamma-1.0)*wk.e,1.0e-300))-
@@ -418,9 +418,9 @@ void MHD::FOFC(Driver *pdriver, int stage) {
         flx1(m,IM2,k,j,i+1) = flux.my;
         flx1(m,IM3,k,j,i+1) = flux.mz;
         if (eos.is_ideal) {
-          if (energy_diag_) fofc_diag1_(m,k,j,i+1) += flux.e-flx1(m,IEN,k,j,i+1);
+          if constexpr (energy_diag_) fofc_diag1_(m,k,j,i+1) += flux.e-flx1(m,IEN,k,j,i+1);
           flx1(m,IEN,k,j,i+1) = flux.e;
-          if (energy_diag_) {
+          if constexpr (energy_diag_) {
             const Real sl=(log(fmax((eos.gamma-1.0)*wi.e,1.0e-300))-
                            eos.gamma*log(fmax(wi.d,1.0e-300)))/(eos.gamma-1.0);
             const Real sr=(log(fmax((eos.gamma-1.0)*wip1.e,1.0e-300))-
@@ -481,9 +481,9 @@ void MHD::FOFC(Driver *pdriver, int stage) {
         flx2(m,IM3,k,j+1,i) = flux.my;
         flx2(m,IM1,k,j+1,i) = flux.mz;
         if (eos.is_ideal) {
-          if (energy_diag_) fofc_diag2_(m,k,j+1,i) += flux.e-flx2(m,IEN,k,j+1,i);
+          if constexpr (energy_diag_) fofc_diag2_(m,k,j+1,i) += flux.e-flx2(m,IEN,k,j+1,i);
           flx2(m,IEN,k,j+1,i) = flux.e;
-          if (energy_diag_) {
+          if constexpr (energy_diag_) {
             const Real sl=(log(fmax((eos.gamma-1.0)*wj.e,1.0e-300))-
                            eos.gamma*log(fmax(wj.d,1.0e-300)))/(eos.gamma-1.0);
             const Real sr=(log(fmax((eos.gamma-1.0)*wjp1.e,1.0e-300))-
@@ -544,9 +544,9 @@ void MHD::FOFC(Driver *pdriver, int stage) {
         flx3(m,IM1,k+1,j,i) = flux.my;
         flx3(m,IM2,k+1,j,i) = flux.mz;
         if (eos.is_ideal) {
-          if (energy_diag_) fofc_diag3_(m,k+1,j,i) += flux.e-flx3(m,IEN,k+1,j,i);
+          if constexpr (energy_diag_) fofc_diag3_(m,k+1,j,i) += flux.e-flx3(m,IEN,k+1,j,i);
           flx3(m,IEN,k+1,j,i) = flux.e;
-          if (energy_diag_) {
+          if constexpr (energy_diag_) {
             const Real sl=(log(fmax((eos.gamma-1.0)*wk.e,1.0e-300))-
                            eos.gamma*log(fmax(wk.d,1.0e-300)))/(eos.gamma-1.0);
             const Real sr=(log(fmax((eos.gamma-1.0)*wkp1.e,1.0e-300))-
@@ -567,5 +567,8 @@ void MHD::FOFC(Driver *pdriver, int stage) {
 
   return;
 }
+
+template void MHD::FOFC<false>(Driver*, int);
+template void MHD::FOFC<true>(Driver*, int);
 
 } // namespace mhd

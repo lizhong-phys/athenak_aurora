@@ -37,7 +37,7 @@ namespace mhd {
 //! for evolution of magnetic field
 //! Note this function is templated over RS for better performance on GPUs.
 
-template <MHD_RSolver rsolver_method_>
+template <MHD_RSolver rsolver_method_, bool energy_diag_>
 void MHD::CalculateFluxes(Driver *pdriver, int stage) {
   RegionIndcs &indcs_ = pmy_pack->pmesh->mb_indcs;
   int is = indcs_.is, ie = indcs_.ie;
@@ -59,10 +59,9 @@ void MHD::CalculateFluxes(Driver *pdriver, int stage) {
   auto &coord_ = pmy_pack->pcoord->coord_data;
   auto &w0_ = w0;
   auto &b0_ = bcc0;
-  const bool energy_diag_ = (pmy_pack->penergy_diag != nullptr);
   DvceArray4D<Real> hlle_diag1_, hlle_diag2_, hlle_diag3_;
   DvceArray4D<Real> entropy_diag1_, entropy_diag2_, entropy_diag3_;
-  if (energy_diag_) {
+  if constexpr (energy_diag_) {
     hlle_diag1_ = pmy_pack->penergy_diag->hlle_energy_flux.x1f;
     hlle_diag2_ = pmy_pack->penergy_diag->hlle_energy_flux.x2f;
     hlle_diag3_ = pmy_pack->penergy_diag->hlle_energy_flux.x3f;
@@ -155,8 +154,8 @@ void MHD::CalculateFluxes(Driver *pdriver, int stage) {
     } else if constexpr (rsolver_method_ == MHD_RSolver::llf_gr) {
       LLF_GR(member,eos,indcs,size,coord,m,k,j,il,iu,IVX,wl,wr,bl,br,bx,flx1,e31,e21);
     } else if constexpr (rsolver_method_ == MHD_RSolver::hlle_gr) {
-      HLLE_GR(member,eos,indcs,size,coord,m,k,j,il,iu,IVX,wl,wr,bl,br,bx,flx1,e31,e21,
-              energy_diag_,diag1,sdiag1);
+      HLLE_GR<energy_diag_>(member,eos,indcs,size,coord,m,k,j,il,iu,IVX,
+                            wl,wr,bl,br,bx,flx1,e31,e21,diag1,sdiag1);
     }
     member.team_barrier();
 
@@ -279,9 +278,9 @@ void MHD::CalculateFluxes(Driver *pdriver, int stage) {
             LLF_GR(member,eos,indcs,size,coord,
                     m,k,j,is-1,ie+1,IVY,wl,wr,bl,br,by,flx2,e12,e32);
           } else if constexpr (rsolver_method_ == MHD_RSolver::hlle_gr) {
-            HLLE_GR(member,eos,indcs,size,coord,
+            HLLE_GR<energy_diag_>(member,eos,indcs,size,coord,
                     m,k,j,is-1,ie+1,IVY,wl,wr,bl,br,by,flx2,e12,e32,
-                    energy_diag_,diag2,sdiag2);
+                    diag2,sdiag2);
           }
           member.team_barrier();
         }
@@ -402,9 +401,9 @@ void MHD::CalculateFluxes(Driver *pdriver, int stage) {
             LLF_GR(member,eos,indcs,size,coord,
                     m,k,j,is-1,ie+1,IVZ,wl,wr,bl,br,bz,flx3,e23,e13);
           } else if constexpr (rsolver_method_ == MHD_RSolver::hlle_gr) {
-            HLLE_GR(member,eos,indcs,size,coord,
+            HLLE_GR<energy_diag_>(member,eos,indcs,size,coord,
                     m,k,j,is-1,ie+1,IVZ,wl,wr,bl,br,bz,flx3,e23,e13,
-                    energy_diag_,diag3,sdiag3);
+                    diag3,sdiag3);
           }
           member.team_barrier();
         }
@@ -429,13 +428,14 @@ void MHD::CalculateFluxes(Driver *pdriver, int stage) {
 }
 
 // function definitions for each template parameter
-template void MHD::CalculateFluxes<MHD_RSolver::advect>(Driver *pdriver, int stage);
-template void MHD::CalculateFluxes<MHD_RSolver::llf>(Driver *pdriver, int stage);
-template void MHD::CalculateFluxes<MHD_RSolver::hlle>(Driver *pdriver, int stage);
-template void MHD::CalculateFluxes<MHD_RSolver::hlld>(Driver *pdriver, int stage);
-template void MHD::CalculateFluxes<MHD_RSolver::llf_sr>(Driver *pdriver, int stage);
-template void MHD::CalculateFluxes<MHD_RSolver::hlle_sr>(Driver *pdriver, int stage);
-template void MHD::CalculateFluxes<MHD_RSolver::llf_gr>(Driver *pdriver, int stage);
-template void MHD::CalculateFluxes<MHD_RSolver::hlle_gr>(Driver *pdriver, int stage);
+template void MHD::CalculateFluxes<MHD_RSolver::advect,false>(Driver*, int);
+template void MHD::CalculateFluxes<MHD_RSolver::llf,false>(Driver*, int);
+template void MHD::CalculateFluxes<MHD_RSolver::hlle,false>(Driver*, int);
+template void MHD::CalculateFluxes<MHD_RSolver::hlld,false>(Driver*, int);
+template void MHD::CalculateFluxes<MHD_RSolver::llf_sr,false>(Driver*, int);
+template void MHD::CalculateFluxes<MHD_RSolver::hlle_sr,false>(Driver*, int);
+template void MHD::CalculateFluxes<MHD_RSolver::llf_gr,false>(Driver*, int);
+template void MHD::CalculateFluxes<MHD_RSolver::hlle_gr,false>(Driver*, int);
+template void MHD::CalculateFluxes<MHD_RSolver::hlle_gr,true>(Driver*, int);
 
 } // namespace mhd

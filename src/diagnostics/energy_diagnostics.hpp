@@ -100,6 +100,9 @@ class EnergyDiagnostics {
 
  private:
   MeshBlockPack *pmy_pack_;
+  Real sample_dt_;
+  Real next_sample_time_;
+  int sample_number_ = 0;
 };
 
 } // namespace diagnostics

@@ -188,10 +188,11 @@ class MHD {
   TaskStatus ClearRecv(Driver *d, int stage);  // also in Driver::Initialize
 
   // CalculateFluxes function templated over Riemann Solvers
-  template <MHD_RSolver T>
+  template <MHD_RSolver T, bool energy_diag = false>
   void CalculateFluxes(Driver *d, int stage);
 
   // first-order flux correction
+  template <bool energy_diag = false>
   void FOFC(Driver *d, int stage);
 
   DvceArray5D<Real> utest, bcctest;  // scratch arrays for FOFC

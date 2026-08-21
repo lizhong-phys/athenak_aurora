@@ -339,6 +339,7 @@ class IsothermalMHD : public EquationOfState {
   void PrimToCons(const DvceArray5D<Real> &prim, const DvceArray5D<Real> &bcc,
                   DvceArray5D<Real> &cons, const int il, const int iu,
                   const int jl, const int ju, const int kl, const int ku) override;
+
 };
 
 //----------------------------------------------------------------------------------------
@@ -402,6 +403,14 @@ class IdealGRMHD : public EquationOfState {
   void PrimToCons(const DvceArray5D<Real> &prim, const DvceArray5D<Real> &bcc,
                   DvceArray5D<Real> &cons, const int il, const int iu,
                   const int jl, const int ju, const int kl, const int ku) override;
+
+ private:
+  template <bool diag_on>
+  void ConsToPrimImpl(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &b,
+                      DvceArray5D<Real> &prim, DvceArray5D<Real> &bcc,
+                      const bool only_testfloors,
+                      const int il, const int iu, const int jl, const int ju,
+                      const int kl, const int ku);
 };
 
 #endif // EOS_EOS_HPP_

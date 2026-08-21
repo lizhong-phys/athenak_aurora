@@ -109,6 +109,14 @@ Real RadBacktrackLambda(Real d, Real m1, Real m2, Real m3, Real e,
 //! gr_rad branch, radiation/coupling/emission.cpp commit be7f84565b.
 
 TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
+  const bool record_energy = (pmy_pack->penergy_diag != nullptr &&
+                              pmy_pack->penergy_diag->recording);
+  if (record_energy) return RadFluidCouplingImpl<true>(pdriver, stage);
+  return RadFluidCouplingImpl<false>(pdriver, stage);
+}
+
+template <bool energy_diag_>
+TaskStatus Radiation::RadFluidCouplingImpl(Driver *pdriver, int stage) {
   // Return if radiation source term disabled
   if (!(rad_source)) {
     return TaskStatus::complete;
@@ -225,14 +233,13 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
   // difference contains only the radiation-coupling operator; any C2P repair is recorded
   // independently by IdealGRMHD::ConsToPrim.
   auto *pdiag = pmy_pack->penergy_diag;
-  if (pdiag != nullptr) {
+  if constexpr (energy_diag_) {
     pdiag->SaveGasEnergy();
     pdiag->SaveRadiationEnergy();
   }
-  const bool energy_diag_ = (pdiag != nullptr);
   DvceArray5D<Real> energy_diag_step_;
   DvceArray4D<unsigned int> energy_diag_flags_;
-  if (energy_diag_) {
+  if constexpr (energy_diag_) {
     energy_diag_step_ = pdiag->step;
     energy_diag_flags_ = pdiag->flags;
   }
@@ -281,8 +288,10 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
     const Real uc1 = wvx-alpha*gamma*gupper[0][1];
     const Real uc2 = wvy-alpha*gamma*gupper[0][2];
     const Real uc3 = wvz-alpha*gamma*gupper[0][3];
-    if (energy_diag_ && excise && rad_mask_(m,k,j,i)) {
-      energy_diag_flags_(m,k,j,i) |= diagnostics::EDF_EXCISION;
+    if constexpr (energy_diag_) {
+      if (excise && rad_mask_(m,k,j,i)) {
+        energy_diag_flags_(m,k,j,i) |= diagnostics::EDF_EXCISION;
+      }
     }
 
     // compute sigma_cold
@@ -672,7 +681,7 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
         }
       }
       lam_abs = bad_exchange ? 0.0 : lam;   // accepted absorption fraction (for Compton's tgas)
-      if (energy_diag_) {
+      if constexpr (energy_diag_) {
         if (isfinite(dE)) diag_rejected += (1.0-lam)*dE;
         if (bad_exchange || lam < 1.0) {
           energy_diag_flags_(m,k,j,i) |= diagnostics::EDF_RAD_LIMIT;
@@ -710,7 +719,7 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
       }
     }
 
-    if (energy_diag_) {
+    if constexpr (energy_diag_) {
       diag_gas_after_abs = u0_(m,IEN,k,j,i);
       if (badcell) energy_diag_flags_(m,k,j,i) |= diagnostics::EDF_RAD_BAD;
     }
@@ -854,7 +863,7 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
           }
         }
 
-        if (energy_diag_) {
+        if constexpr (energy_diag_) {
           if (isfinite(dE)) diag_rejected += (1.0-lam)*dE;
           if (bad_exchange || lam < 1.0) {
             energy_diag_flags_(m,k,j,i) |= diagnostics::EDF_RAD_LIMIT;
@@ -901,7 +910,7 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
       }
     }
 
-    if (energy_diag_) {
+    if constexpr (energy_diag_) {
       if (badcell) energy_diag_flags_(m,k,j,i) |= diagnostics::EDF_RAD_BAD;
       energy_diag_step_(m,diagnostics::ED_GAS_RAD_ABS,k,j,i) +=
           diag_gas_after_abs-diag_gas_before;
@@ -919,7 +928,7 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
     }
   });
 
-  if (pdiag != nullptr) {
+  if constexpr (energy_diag_) {
     pdiag->AccumulateGasEnergy(diagnostics::ED_GAS_RAD_TOTAL);
     pdiag->AccumulateRadiationEnergy(diagnostics::ED_RAD_SOURCE_TOTAL);
   }

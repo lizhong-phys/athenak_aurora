@@ -21,6 +21,7 @@ namespace mhd {
 //! \fn void HLLE_GR
 //! \brief
 
+template <bool energy_diag>
 KOKKOS_INLINE_FUNCTION
 void HLLE_GR(TeamMember_t const &member, const EOS_Data &eos,
      const RegionIndcs &indcs,const DualArray1D<RegionSize> &size,const CoordData &coord,
@@ -28,7 +29,7 @@ void HLLE_GR(TeamMember_t const &member, const EOS_Data &eos,
      const ScrArray2D<Real> &wl, const ScrArray2D<Real> &wr,
      const ScrArray2D<Real> &bl, const ScrArray2D<Real> &br, const DvceArray4D<Real> &bx,
      DvceArray5D<Real> flx, DvceArray4D<Real> ey, DvceArray4D<Real> ez,
-     const bool energy_diag, DvceArray4D<Real> diag_flux,
+     DvceArray4D<Real> diag_flux,
      DvceArray4D<Real> diag_entropy_flux) {
   // Cyclic permutation of array indices corresponding to velocity/b_field components
   int ivy = IVX + ((ivx-IVX)+1)%3;
@@ -281,7 +282,7 @@ void HLLE_GR(TeamMember_t const &member, const EOS_Data &eos,
 
     // Passive diagnostic only: isolate the jump term in the evolved-energy HLLE flux.
     // This view is detached from the solver flux and is never read by the evolution.
-    if (energy_diag) {
+    if constexpr (energy_diag) {
       diag_flux(m,k,j,i) = (lambda_l < 0.0 && lambda_r > 0.0)
                            ? qa*(du.e + du.d)*qb : 0.0;
       const Real sl = (log(fmax(wl_ipr,1.0e-300))-

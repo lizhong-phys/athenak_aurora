@@ -41,6 +41,21 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
                             const bool only_testfloors,
                             const int il, const int iu, const int jl, const int ju,
                             const int kl, const int ku) {
+  const bool record_energy = (pmy_pack->penergy_diag != nullptr &&
+                              pmy_pack->penergy_diag->recording && !only_testfloors);
+  if (record_energy) {
+    ConsToPrimImpl<true>(cons,b,prim,bcc,only_testfloors,il,iu,jl,ju,kl,ku);
+  } else {
+    ConsToPrimImpl<false>(cons,b,prim,bcc,only_testfloors,il,iu,jl,ju,kl,ku);
+  }
+}
+
+template <bool diag_on>
+void IdealGRMHD::ConsToPrimImpl(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &b,
+                                DvceArray5D<Real> &prim, DvceArray5D<Real> &bcc,
+                                const bool only_testfloors,
+                                const int il, const int iu, const int jl, const int ju,
+                                const int kl, const int ku) {
   auto &indcs = pmy_pack->pmesh->mb_indcs;
   int &is = indcs.is, &js = indcs.js, &ks = indcs.ks;
   auto &size = pmy_pack->pmb->mb_size;
@@ -51,11 +66,9 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
   auto eos = eos_data;
   Real gm1 = eos_data.gamma - 1.0;
 
-  const bool diag_on = (pmy_pack->penergy_diag != nullptr &&
-                        pmy_pack->penergy_diag->recording && !only_testfloors);
   DvceArray5D<Real> diag_step;
   DvceArray4D<unsigned int> diag_flags;
-  if (diag_on) {
+  if constexpr (diag_on) {
     diag_step = pmy_pack->penergy_diag->step;
     diag_flags = pmy_pack->penergy_diag->flags;
   }
@@ -304,7 +317,7 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
 
         HydCons1D u_out;
         SingleP2C_IdealGRMHD(glower, gupper, w_in, eos.gamma, u_out);
-        if (diag_on) {
+        if constexpr (diag_on) {
           diag_step(m,diagnostics::ED_GAS_C2P,k,j,i) += u_out.e-u.e;
           unsigned int bits = 0u;
           if (dfloor_used) bits |= diagnostics::EDF_DENSITY_FLOOR;

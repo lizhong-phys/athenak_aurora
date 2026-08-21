@@ -177,6 +177,8 @@ TaskStatus MHD::CopyCons(Driver *pdrive, int stage) {
 //! of conserved variables
 
 TaskStatus MHD::Fluxes(Driver *pdrive, int stage) {
+  const bool record_energy = (pmy_pack->penergy_diag != nullptr &&
+                              pmy_pack->penergy_diag->recording);
   // select which calculate_flux function to call based on rsolver_method
   if (rsolver_method == MHD_RSolver::advect) {
     CalculateFluxes<MHD_RSolver::advect>(pdrive, stage);
@@ -193,7 +195,11 @@ TaskStatus MHD::Fluxes(Driver *pdrive, int stage) {
   } else if (rsolver_method == MHD_RSolver::llf_gr) {
     CalculateFluxes<MHD_RSolver::llf_gr>(pdrive, stage);
   } else if (rsolver_method == MHD_RSolver::hlle_gr) {
-    CalculateFluxes<MHD_RSolver::hlle_gr>(pdrive, stage);
+    if (pmy_pack->penergy_diag != nullptr && pmy_pack->penergy_diag->recording) {
+      CalculateFluxes<MHD_RSolver::hlle_gr,true>(pdrive, stage);
+    } else {
+      CalculateFluxes<MHD_RSolver::hlle_gr,false>(pdrive, stage);
+    }
   }
 
   // Add viscous, resistive, heat-flux, etc fluxes
@@ -209,10 +215,12 @@ TaskStatus MHD::Fluxes(Driver *pdrive, int stage) {
 
   // call FOFC if necessary
   if (use_fofc) {
-    FOFC(pdrive, stage);
+    if (record_energy) FOFC<true>(pdrive, stage);
+    else FOFC<false>(pdrive, stage);
   } else if (pmy_pack->pcoord->is_general_relativistic) {
     if (pmy_pack->pcoord->coord_data.bh_excise) {
-      FOFC(pdrive, stage);
+      if (record_energy) FOFC<true>(pdrive, stage);
+      else FOFC<false>(pdrive, stage);
     }
   }
 
@@ -258,29 +266,35 @@ TaskStatus MHD::MHDSrcTerms(Driver *pdrive, int stage) {
   auto *pdiag = pmy_pack->penergy_diag;
 
   // Add physics source terms (must be computed from primitives)
-  if (pdiag != nullptr) pdiag->SaveGasEnergy();
+  if (pdiag != nullptr && pdiag->recording) pdiag->SaveGasEnergy();
   if (psrc != nullptr) psrc->ApplySrcTerms(w0, peos->eos_data,  beta_dt, u0);
 
   // Add shearing box source terms for CC MHD variables
   if (psbox_u != nullptr) psbox_u->SourceTermsCC(w0, bcc0, peos->eos_data, beta_dt, u0);
-  if (pdiag != nullptr) pdiag->AccumulateGasEnergy(diagnostics::ED_GAS_OTHER);
+  if (pdiag != nullptr && pdiag->recording) {
+    pdiag->AccumulateGasEnergy(diagnostics::ED_GAS_OTHER);
+  }
 
   // Add coordinate source terms in GR.  Again, must be computed with only primitives.
-  if (pdiag != nullptr) pdiag->SaveGasEnergy();
+  if (pdiag != nullptr && pdiag->recording) pdiag->SaveGasEnergy();
   if (pmy_pack->pcoord->is_general_relativistic &&
       !pmy_pack->pcoord->is_dynamical_relativistic) {
     pmy_pack->pcoord->CoordSrcTerms(w0, bcc0, peos->eos_data, beta_dt, u0);
   } else if (pmy_pack->pcoord->is_dynamical_relativistic) {
     pmy_pack->pdyngr->AddCoordTerms(w0, bcc0, beta_dt, u0, pmy_pack->pmesh->mb_indcs.ng);
   }
-  if (pdiag != nullptr) pdiag->AccumulateGasEnergy(diagnostics::ED_GAS_COORD);
+  if (pdiag != nullptr && pdiag->recording) {
+    pdiag->AccumulateGasEnergy(diagnostics::ED_GAS_COORD);
+  }
 
   // Add user source terms
-  if (pdiag != nullptr) pdiag->SaveGasEnergy();
+  if (pdiag != nullptr && pdiag->recording) pdiag->SaveGasEnergy();
   if (pmy_pack->pmesh->pgen->user_srcs) {
     (pmy_pack->pmesh->pgen->user_srcs_func)(pmy_pack->pmesh, beta_dt);
   }
-  if (pdiag != nullptr) pdiag->AccumulateGasEnergy(diagnostics::ED_GAS_OTHER);
+  if (pdiag != nullptr && pdiag->recording) {
+    pdiag->AccumulateGasEnergy(diagnostics::ED_GAS_OTHER);
+  }
 
   return TaskStatus::complete;
 }

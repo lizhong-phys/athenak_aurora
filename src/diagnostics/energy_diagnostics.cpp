@@ -17,6 +17,7 @@
 #include "radiation/radiation.hpp"
 #include "geodesic-grid/geodesic_grid.hpp"
 #include "diagnostics/energy_diagnostics.hpp"
+#include "globals.hpp"
 
 namespace diagnostics {
 
@@ -44,9 +45,17 @@ EnergyDiagnostics::EnergyDiagnostics(MeshBlockPack *ppack, ParameterInput *pin) 
     fofc_energy_flux("energy_diag_fofc_flux",1,1,1,1),
     entropy_flux("energy_diag_entropy_flux",1,1,1,1),
     flags("energy_diag_flags",1,1,1,1),
-    pmy_pack_(ppack) {
+    pmy_pack_(ppack),
+    sample_dt_(pin->GetOrAddReal("problem","energy_diagnostics_dt",1.0)),
+    next_sample_time_(pin->GetOrAddReal("problem","energy_diagnostics_start",
+                                        ppack->pmesh->time)+sample_dt_) {
   if (ppack->pmhd == nullptr || ppack->prad == nullptr) {
     std::cout << "### FATAL ERROR: energy diagnostics currently require radiation+MHD"
+              << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+  if (!(sample_dt_ > 0.0)) {
+    std::cout << "### FATAL ERROR: <problem>/energy_diagnostics_dt must be positive"
               << std::endl;
     std::exit(EXIT_FAILURE);
   }
@@ -94,7 +103,17 @@ void EnergyDiagnostics::AssembleTasks(
 }
 
 TaskStatus EnergyDiagnostics::BeginTimestep(Driver *pdriver, int stage) {
-  recording = true;
+  // Match Driver's 32-bit output-time comparison.  The ledger is intentionally active
+  // only on a step whose end time crosses a requested diagnostic output time.
+  const Real end_time = pmy_pack_->pmesh->time + pmy_pack_->pmesh->dt;
+  recording = (static_cast<float>(end_time) >=
+               static_cast<float>(next_sample_time_));
+  if (!recording) return TaskStatus::complete;
+  if (global_variable::my_rank == 0) {
+    std::cout << "ENERGY_DIAG sample_begin=" << (sample_number_+1)
+              << " step_time=[" << pmy_pack_->pmesh->time << "," << end_time
+              << "] target=" << next_sample_time_ << std::endl;
+  }
   auto gas = pmy_pack_->pmhd->u0;
   auto prim = pmy_pack_->pmhd->w0;
   auto initial = gas_initial;
@@ -118,6 +137,7 @@ TaskStatus EnergyDiagnostics::BeginTimestep(Driver *pdriver, int stage) {
 }
 
 TaskStatus EnergyDiagnostics::BeginStage(Driver *pdriver, int stage) {
+  if (!recording) return TaskStatus::complete;
   if (stage == 1) {
     Kokkos::deep_copy(DevExeSpace(),step,0.0);
     Kokkos::deep_copy(DevExeSpace(),flags,0u);
@@ -145,6 +165,7 @@ TaskStatus EnergyDiagnostics::BeginStage(Driver *pdriver, int stage) {
 }
 
 void EnergyDiagnostics::SaveGasEnergy() {
+  if (!recording) return;
   auto gas = pmy_pack_->pmhd->u0;
   auto scratch = gas_scratch;
   auto &indcs = pmy_pack_->pmesh->mb_indcs;
@@ -157,6 +178,7 @@ void EnergyDiagnostics::SaveGasEnergy() {
 }
 
 void EnergyDiagnostics::AccumulateGasEnergy(int channel) {
+  if (!recording) return;
   auto gas = pmy_pack_->pmhd->u0;
   auto scratch = gas_scratch;
   auto d = step;
@@ -170,6 +192,7 @@ void EnergyDiagnostics::AccumulateGasEnergy(int channel) {
 }
 
 void EnergyDiagnostics::SaveRadiationEnergy() {
+  if (!recording) return;
   auto prad = pmy_pack_->prad;
   auto i0 = prad->i0;
   auto omega = prad->prgeo->solid_angles;
@@ -187,6 +210,7 @@ void EnergyDiagnostics::SaveRadiationEnergy() {
 }
 
 void EnergyDiagnostics::AccumulateRadiationEnergy(int channel) {
+  if (!recording) return;
   auto prad = pmy_pack_->prad;
   auto i0 = prad->i0;
   auto omega = prad->prgeo->solid_angles;
@@ -205,6 +229,7 @@ void EnergyDiagnostics::AccumulateRadiationEnergy(int channel) {
 }
 
 void EnergyDiagnostics::RecordMHDFluxUpdate(Driver *pdriver, int stage) {
+  if (!recording) return;
   auto &indcs = pmy_pack_->pmesh->mb_indcs;
   const int nmb1 = pmy_pack_->nmb_thispack-1;
   const bool multi_d = pmy_pack_->pmesh->multi_d;
@@ -243,6 +268,7 @@ void EnergyDiagnostics::RecordMHDFluxUpdate(Driver *pdriver, int stage) {
 }
 
 void EnergyDiagnostics::RecordRadiationUpdate(Driver *pdriver, int stage) {
+  if (!recording) return;
   auto prad = pmy_pack_->prad;
   auto &indcs = pmy_pack_->pmesh->mb_indcs;
   const int nmb1 = pmy_pack_->nmb_thispack-1;
@@ -288,6 +314,7 @@ void EnergyDiagnostics::RecordRadiationUpdate(Driver *pdriver, int stage) {
 }
 
 TaskStatus EnergyDiagnostics::FinalizeTimestep(Driver *pdriver, int stage) {
+  if (!recording) return TaskStatus::complete;
   auto &indcs = pmy_pack_->pmesh->mb_indcs;
   const int nmb1 = pmy_pack_->nmb_thispack-1;
   const bool multi_d = pmy_pack_->pmesh->multi_d;
@@ -411,6 +438,19 @@ TaskStatus EnergyDiagnostics::FinalizeTimestep(Driver *pdriver, int stage) {
     out(m,ED_SHEAR_SENSOR,k,j,i)=sqrt(2.0*shear2)*h/cs;
     out(m,ED_FLAGS,k,j,i)=static_cast<Real>(flg(m,k,j,i));
   });
+  ++sample_number_;
+  const Real end_time = pmy_pack_->pmesh->time + pmy_pack_->pmesh->dt;
+  // Normally one interval is crossed (dt_sim << sample_dt).  Jump arithmetically if a
+  // deliberately coarse test step crosses several targets; do not iterate over each one.
+  const Real crossed = std::floor((end_time-next_sample_time_)/sample_dt_)+1.0;
+  next_sample_time_ += std::max(1.0,crossed)*sample_dt_;
+  while (static_cast<float>(next_sample_time_) <= static_cast<float>(end_time)) {
+    next_sample_time_ += sample_dt_;
+  }
+  if (global_variable::my_rank == 0) {
+    std::cout << "ENERGY_DIAG sample_complete=" << sample_number_
+              << " next_target=" << next_sample_time_ << std::endl;
+  }
   return TaskStatus::complete;
 }
 

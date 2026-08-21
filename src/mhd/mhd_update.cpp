@@ -81,7 +81,7 @@ TaskStatus MHD::RKUpdate(Driver *pdriver, int stage) {
       u0_(m,n,k,j,i) = gam0*u0_(m,n,k,j,i) + gam1*u1_(m,n,k,j,i) - beta_dt*divf(i);
     });
   });
-  if (pmy_pack->penergy_diag != nullptr) {
+  if (pmy_pack->penergy_diag != nullptr && pmy_pack->penergy_diag->recording) {
     pmy_pack->penergy_diag->RecordMHDFluxUpdate(pdriver,stage);
   }
   return TaskStatus::complete;
