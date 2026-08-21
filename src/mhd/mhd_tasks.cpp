@@ -27,6 +27,7 @@
 #include "shearing_box/orbital_advection.hpp"
 #include "mhd/mhd.hpp"
 #include "dyn_grmhd/dyn_grmhd.hpp"
+#include "diagnostics/energy_diagnostics.hpp"
 
 namespace mhd {
 //----------------------------------------------------------------------------------------
@@ -254,25 +255,32 @@ TaskStatus MHD::RecvFlux(Driver *pdrive, int stage) {
 
 TaskStatus MHD::MHDSrcTerms(Driver *pdrive, int stage) {
   Real beta_dt = (pdrive->beta[stage-1])*(pmy_pack->pmesh->dt);
+  auto *pdiag = pmy_pack->penergy_diag;
 
   // Add physics source terms (must be computed from primitives)
+  if (pdiag != nullptr) pdiag->SaveGasEnergy();
   if (psrc != nullptr) psrc->ApplySrcTerms(w0, peos->eos_data,  beta_dt, u0);
 
   // Add shearing box source terms for CC MHD variables
   if (psbox_u != nullptr) psbox_u->SourceTermsCC(w0, bcc0, peos->eos_data, beta_dt, u0);
+  if (pdiag != nullptr) pdiag->AccumulateGasEnergy(diagnostics::ED_GAS_OTHER);
 
   // Add coordinate source terms in GR.  Again, must be computed with only primitives.
+  if (pdiag != nullptr) pdiag->SaveGasEnergy();
   if (pmy_pack->pcoord->is_general_relativistic &&
       !pmy_pack->pcoord->is_dynamical_relativistic) {
     pmy_pack->pcoord->CoordSrcTerms(w0, bcc0, peos->eos_data, beta_dt, u0);
   } else if (pmy_pack->pcoord->is_dynamical_relativistic) {
     pmy_pack->pdyngr->AddCoordTerms(w0, bcc0, beta_dt, u0, pmy_pack->pmesh->mb_indcs.ng);
   }
+  if (pdiag != nullptr) pdiag->AccumulateGasEnergy(diagnostics::ED_GAS_COORD);
 
   // Add user source terms
+  if (pdiag != nullptr) pdiag->SaveGasEnergy();
   if (pmy_pack->pmesh->pgen->user_srcs) {
     (pmy_pack->pmesh->pgen->user_srcs_func)(pmy_pack->pmesh, beta_dt);
   }
+  if (pdiag != nullptr) pdiag->AccumulateGasEnergy(diagnostics::ED_GAS_OTHER);
 
   return TaskStatus::complete;
 }

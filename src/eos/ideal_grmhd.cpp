@@ -16,6 +16,7 @@
 #include "coordinates/coordinates.hpp"
 #include "coordinates/cartesian_ks.hpp"
 #include "coordinates/cell_locations.hpp"
+#include "diagnostics/energy_diagnostics.hpp"
 
 //----------------------------------------------------------------------------------------
 // ctor: also calls EOS base class constructor
@@ -49,6 +50,15 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
   auto &fofc_ = pmy_pack->pmhd->fofc;
   auto eos = eos_data;
   Real gm1 = eos_data.gamma - 1.0;
+
+  const bool diag_on = (pmy_pack->penergy_diag != nullptr &&
+                        pmy_pack->penergy_diag->recording && !only_testfloors);
+  DvceArray5D<Real> diag_step;
+  DvceArray4D<unsigned int> diag_flags;
+  if (diag_on) {
+    diag_step = pmy_pack->penergy_diag->step;
+    diag_flags = pmy_pack->penergy_diag->flags;
+  }
 
   auto &flat = pmy_pack->pcoord->coord_data.is_minkowski;
   auto &spin = pmy_pack->pcoord->coord_data.bh_spin;
@@ -294,6 +304,16 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
 
         HydCons1D u_out;
         SingleP2C_IdealGRMHD(glower, gupper, w_in, eos.gamma, u_out);
+        if (diag_on) {
+          diag_step(m,diagnostics::ED_GAS_C2P,k,j,i) += u_out.e-u.e;
+          unsigned int bits = 0u;
+          if (dfloor_used) bits |= diagnostics::EDF_DENSITY_FLOOR;
+          if (efloor_used) bits |= diagnostics::EDF_ENERGY_FLOOR;
+          if (vceiling_used) bits |= diagnostics::EDF_VELOCITY_CEIL;
+          if (c2p_failure) bits |= diagnostics::EDF_C2P_FAILURE;
+          if (excised) bits |= diagnostics::EDF_EXCISION;
+          diag_flags(m,k,j,i) |= bits;
+        }
         cons(m,IDN,k,j,i) = u_out.d;
         cons(m,IM1,k,j,i) = u_out.mx;
         cons(m,IM2,k,j,i) = u_out.my;

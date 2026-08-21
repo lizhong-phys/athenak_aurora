@@ -30,6 +30,7 @@
 #include "srcterms/turb_driver.hpp"
 #include "particles/particles.hpp"
 #include "units/units.hpp"
+#include "diagnostics/energy_diagnostics.hpp"
 #include "meshblock_pack.hpp"
 
 //----------------------------------------------------------------------------------------
@@ -57,6 +58,7 @@ MeshBlockPack::~MeshBlockPack() {
   if (pmhd   != nullptr) {delete pmhd;}
   if (padm   != nullptr) {delete padm;}
   if (ptmunu != nullptr) {delete ptmunu;}
+  if (penergy_diag != nullptr) {delete penergy_diag;}
   if (prad   != nullptr) {delete prad;}
   if (pdyngr != nullptr) {delete pdyngr;}
   if (pnr    != nullptr) {delete pnr;}
@@ -238,6 +240,15 @@ void MeshBlockPack::AddPhysics(ParameterInput *pin) {
     nphysics++;
   } else {
     ppart = nullptr;
+  }
+
+  // Passive BHL energy diagnostics.  No object, arrays, tasks, or diagnostic kernels are
+  // created unless the runtime switch is explicitly enabled.
+  if (pin->GetOrAddBoolean("problem","energy_diagnostics",false)) {
+    penergy_diag = new diagnostics::EnergyDiagnostics(this,pin);
+    penergy_diag->AssembleTasks(tl_map);
+  } else {
+    penergy_diag = nullptr;
   }
 
   // Check that at least ONE is requested and initialized.

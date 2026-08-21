@@ -21,6 +21,7 @@
 
 #include "radiation/radiation_tetrad.hpp"
 #include "radiation/radiation_opacities.hpp"
+#include "diagnostics/energy_diagnostics.hpp"
 
 namespace radiation {
 
@@ -220,9 +221,31 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
     }
   }
 
+  // Snapshot immediately after the pre-coupling C2P.  Therefore this exact before/after
+  // difference contains only the radiation-coupling operator; any C2P repair is recorded
+  // independently by IdealGRMHD::ConsToPrim.
+  auto *pdiag = pmy_pack->penergy_diag;
+  if (pdiag != nullptr) {
+    pdiag->SaveGasEnergy();
+    pdiag->SaveRadiationEnergy();
+  }
+  const bool energy_diag_ = (pdiag != nullptr);
+  DvceArray5D<Real> energy_diag_step_;
+  DvceArray4D<unsigned int> energy_diag_flags_;
+  if (energy_diag_) {
+    energy_diag_step_ = pdiag->step;
+    energy_diag_flags_ = pdiag->flags;
+  }
+
   // compute implicit source term
   par_for("radiation_source",DevExeSpace(),0,nmb1,ks,ke,js,je,is,ie,
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    const Real diag_gas_before = energy_diag_ ? u0_(m,IEN,k,j,i) : 0.0;
+    const Real diag_m1_before = energy_diag_ ? u0_(m,IM1,k,j,i) : 0.0;
+    const Real diag_m2_before = energy_diag_ ? u0_(m,IM2,k,j,i) : 0.0;
+    const Real diag_m3_before = energy_diag_ ? u0_(m,IM3,k,j,i) : 0.0;
+    Real diag_gas_after_abs = diag_gas_before;
+    Real diag_rejected = 0.0;
     Real &x1min = size.d_view(m).x1min;
     Real &x1max = size.d_view(m).x1max;
     Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
@@ -255,6 +278,12 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
            + glower[3][3]*wvz*wvz;
     Real gamma = sqrt(1.0 + q);
     Real u0 = gamma/alpha;
+    const Real uc1 = wvx-alpha*gamma*gupper[0][1];
+    const Real uc2 = wvy-alpha*gamma*gupper[0][2];
+    const Real uc3 = wvz-alpha*gamma*gupper[0][3];
+    if (energy_diag_ && excise && rad_mask_(m,k,j,i)) {
+      energy_diag_flags_(m,k,j,i) |= diagnostics::EDF_EXCISION;
+    }
 
     // compute sigma_cold
     Real sigma_cold = 0.0;
@@ -643,6 +672,13 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
         }
       }
       lam_abs = bad_exchange ? 0.0 : lam;   // accepted absorption fraction (for Compton's tgas)
+      if (energy_diag_) {
+        if (isfinite(dE)) diag_rejected += (1.0-lam)*dE;
+        if (bad_exchange || lam < 1.0) {
+          energy_diag_flags_(m,k,j,i) |= diagnostics::EDF_RAD_LIMIT;
+        }
+        if (bad_exchange) energy_diag_flags_(m,k,j,i) |= diagnostics::EDF_RAD_BAD;
+      }
 
       // ---- pass B: apply the lambda-blended exchange (SKIP entirely if bad_exchange) ----
       if (!bad_exchange) {
@@ -672,6 +708,11 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
         }
       }
       }
+    }
+
+    if (energy_diag_) {
+      diag_gas_after_abs = u0_(m,IEN,k,j,i);
+      if (badcell) energy_diag_flags_(m,k,j,i) |= diagnostics::EDF_RAD_BAD;
     }
 
     // compton scattering
@@ -813,6 +854,14 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
           }
         }
 
+        if (energy_diag_) {
+          if (isfinite(dE)) diag_rejected += (1.0-lam)*dE;
+          if (bad_exchange || lam < 1.0) {
+            energy_diag_flags_(m,k,j,i) |= diagnostics::EDF_RAD_LIMIT;
+          }
+          if (bad_exchange) energy_diag_flags_(m,k,j,i) |= diagnostics::EDF_RAD_BAD;
+        }
+
         // ---- pass B: apply the lambda-blended exchange (SKIP entirely if bad_exchange) ----
         if (!bad_exchange) {
           for (int n=0; n<=nang1; ++n) {
@@ -851,7 +900,29 @@ TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
         }
       }
     }
+
+    if (energy_diag_) {
+      if (badcell) energy_diag_flags_(m,k,j,i) |= diagnostics::EDF_RAD_BAD;
+      energy_diag_step_(m,diagnostics::ED_GAS_RAD_ABS,k,j,i) +=
+          diag_gas_after_abs-diag_gas_before;
+      energy_diag_step_(m,diagnostics::ED_GAS_RAD_COMPT,k,j,i) +=
+          u0_(m,IEN,k,j,i)-diag_gas_after_abs;
+      energy_diag_step_(m,diagnostics::ED_RAD_LIMIT_REJECT,k,j,i) += diag_rejected;
+      // The evolved energy is -T^0_0-D while momenta are T^0_i.  Contracting the
+      // accepted four-momentum increment with u^mu gives the comoving gas heating.
+      const Real dE=u0_(m,IEN,k,j,i)-diag_gas_before;
+      const Real dM1=u0_(m,IM1,k,j,i)-diag_m1_before;
+      const Real dM2=u0_(m,IM2,k,j,i)-diag_m2_before;
+      const Real dM3=u0_(m,IM3,k,j,i)-diag_m3_before;
+      energy_diag_step_(m,diagnostics::ED_QENT_RAD,k,j,i) +=
+          u0*dE-uc1*dM1-uc2*dM2-uc3*dM3;
+    }
   });
+
+  if (pdiag != nullptr) {
+    pdiag->AccumulateGasEnergy(diagnostics::ED_GAS_RAD_TOTAL);
+    pdiag->AccumulateRadiationEnergy(diagnostics::ED_RAD_SOURCE_TOTAL);
+  }
 
   return TaskStatus::complete;
 }

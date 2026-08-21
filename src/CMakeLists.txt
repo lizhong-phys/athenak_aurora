@@ -37,6 +37,8 @@ add_executable(
 
         driver/driver.cpp
 
+        diagnostics/energy_diagnostics.cpp
+
         dyn_grmhd/dyn_grmhd.cpp
         dyn_grmhd/dyn_grmhd_fluxes.cpp
         dyn_grmhd/dyn_grmhd_fofc.cpp

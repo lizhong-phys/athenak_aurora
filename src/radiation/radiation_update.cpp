@@ -19,6 +19,7 @@
 #include "geodesic-grid/geodesic_grid.hpp"
 #include "srcterms/srcterms.hpp"
 #include "radiation.hpp"
+#include "diagnostics/energy_diagnostics.hpp"
 
 namespace radiation {
 //----------------------------------------------------------------------------------------
@@ -26,6 +27,8 @@ namespace radiation {
 //  \brief Explicit RK update of flux divergence and physical source terms
 
 TaskStatus Radiation::RKUpdate(Driver *pdriver, int stage) {
+  auto *pdiag = pmy_pack->penergy_diag;
+  if (pdiag != nullptr) pdiag->SaveRadiationEnergy();
   auto &indcs = pmy_pack->pmesh->mb_indcs;
   int &is = indcs.is, &ie = indcs.ie;
   int &js = indcs.js, &je = indcs.je;
@@ -88,6 +91,7 @@ TaskStatus Radiation::RKUpdate(Driver *pdriver, int stage) {
       if (rad_mask_(m,k,j,i) || fabs(n_0) < n_0_floor_) { i0_(m,n,k,j,i) = 0.0; }
     }
   });
+  if (pdiag != nullptr) pdiag->RecordRadiationUpdate(pdriver,stage);
   return TaskStatus::complete;
 }
 } // namespace radiation

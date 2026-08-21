@@ -15,6 +15,7 @@
 #include "eos/eos.hpp"
 #include "mhd.hpp"
 #include "dyn_grmhd/dyn_grmhd.hpp"
+#include "diagnostics/energy_diagnostics.hpp"
 
 namespace mhd {
 //----------------------------------------------------------------------------------------
@@ -80,6 +81,9 @@ TaskStatus MHD::RKUpdate(Driver *pdriver, int stage) {
       u0_(m,n,k,j,i) = gam0*u0_(m,n,k,j,i) + gam1*u1_(m,n,k,j,i) - beta_dt*divf(i);
     });
   });
+  if (pmy_pack->penergy_diag != nullptr) {
+    pmy_pack->penergy_diag->RecordMHDFluxUpdate(pdriver,stage);
+  }
   return TaskStatus::complete;
 }
 } // namespace mhd

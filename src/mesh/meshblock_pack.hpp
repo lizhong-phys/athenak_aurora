@@ -35,6 +35,7 @@ namespace z4c {class CCE;}
 namespace adm {class ADM;}
 namespace particles {class Particles;}
 namespace units {class Units;}
+namespace diagnostics {class EnergyDiagnostics;}
 
 //----------------------------------------------------------------------------------------
 //! \class MeshBlockPack
@@ -72,6 +73,7 @@ class MeshBlockPack {
   ion_neutral::IonNeutral *pionn=nullptr;
   TurbulenceDriver *pturb=nullptr;
   radiation::Radiation *prad=nullptr;
+  diagnostics::EnergyDiagnostics *penergy_diag=nullptr;
   std::vector<z4c::CCE *> pz4c_cce;
   particles::Particles *ppart=nullptr;
 
