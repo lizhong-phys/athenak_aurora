@@ -3,7 +3,7 @@
 // Copyright(C) 2020 James M. Stone <jmstone@ias.edu> and the Athena code team
 // Licensed under the 3-clause BSD License (the "LICENSE")
 //========================================================================================
-//! \file mhd_fluxes.cpp
+//! \file mhd_fluxes_diag.cpp
 //! \brief Calculate fluxes of the conserved variables, and area-averaged electric fields
 //! E = - (v X B) on cell faces for mhd.  Fluxes are stored in face-centered vector
 //! 'uflx', while electric fields are stored in individual arrays: e2x1,e3x1 on x1-faces;
@@ -12,6 +12,7 @@
 #include <iostream>
 
 #include "athena.hpp"
+#include "diagnostics/energy_diagnostics.hpp"
 #include "mesh/mesh.hpp"
 #include "mhd.hpp"
 #include "eos/eos.hpp"
@@ -27,6 +28,7 @@
 #include "mhd/rsolvers/hlle_srmhd.hpp"
 #include "mhd/rsolvers/llf_grmhd.hpp"
 #include "mhd/rsolvers/hlle_grmhd.hpp"
+#include "mhd/rsolvers/hlle_grmhd_diag.hpp"
 // #include "mhd/rsolvers/roe_mhd.hpp"
 
 namespace mhd {
@@ -37,7 +39,7 @@ namespace mhd {
 //! Note this function is templated over RS for better performance on GPUs.
 
 template <MHD_RSolver rsolver_method_>
-void MHD::CalculateFluxes(Driver *pdriver, int stage) {
+void MHD::CalculateFluxesDiag(Driver *pdriver, int stage) {
   RegionIndcs &indcs_ = pmy_pack->pmesh->mb_indcs;
   int is = indcs_.is, ie = indcs_.ie;
   int js = indcs_.js, je = indcs_.je;
@@ -58,6 +60,16 @@ void MHD::CalculateFluxes(Driver *pdriver, int stage) {
   auto &coord_ = pmy_pack->pcoord->coord_data;
   auto &w0_ = w0;
   auto &b0_ = bcc0;
+  DvceArray4D<Real> hlle_diag1_, hlle_diag2_, hlle_diag3_;
+  DvceArray4D<Real> entropy_diag1_, entropy_diag2_, entropy_diag3_;
+  if constexpr (true) {
+    hlle_diag1_ = pmy_pack->penergy_diag->hlle_energy_flux.x1f;
+    hlle_diag2_ = pmy_pack->penergy_diag->hlle_energy_flux.x2f;
+    hlle_diag3_ = pmy_pack->penergy_diag->hlle_energy_flux.x3f;
+    entropy_diag1_ = pmy_pack->penergy_diag->entropy_flux.x1f;
+    entropy_diag2_ = pmy_pack->penergy_diag->entropy_flux.x2f;
+    entropy_diag3_ = pmy_pack->penergy_diag->entropy_flux.x3f;
+  }
 
   //--------------------------------------------------------------------------------------
   // i-direction
@@ -126,6 +138,8 @@ void MHD::CalculateFluxes(Driver *pdriver, int stage) {
     auto flx1 = flx1_;
     auto e31 = e31_;
     auto e21 = e21_;
+    auto diag1 = hlle_diag1_;
+    auto sdiag1 = entropy_diag1_;
     if constexpr (rsolver_method_ == MHD_RSolver::advect) {
       Advect(member,eos,indcs,size,coord,m,k,j,il,iu,IVX,wl,wr,bl,br,bx,flx1,e31,e21);
     } else if constexpr (rsolver_method_ == MHD_RSolver::llf) {
@@ -141,7 +155,8 @@ void MHD::CalculateFluxes(Driver *pdriver, int stage) {
     } else if constexpr (rsolver_method_ == MHD_RSolver::llf_gr) {
       LLF_GR(member,eos,indcs,size,coord,m,k,j,il,iu,IVX,wl,wr,bl,br,bx,flx1,e31,e21);
     } else if constexpr (rsolver_method_ == MHD_RSolver::hlle_gr) {
-      HLLE_GR(member,eos,indcs,size,coord,m,k,j,il,iu,IVX,wl,wr,bl,br,bx,flx1,e31,e21);
+      HLLE_GR_DIAG(member,eos,indcs,size,coord,m,k,j,il,iu,IVX,
+                            wl,wr,bl,br,bx,flx1,e31,e21,diag1,sdiag1);
     }
     member.team_barrier();
 
@@ -240,6 +255,8 @@ void MHD::CalculateFluxes(Driver *pdriver, int stage) {
           auto flx2 = flx2_;
           auto e12 = e12_;
           auto e32 = e32_;
+          auto diag2 = hlle_diag2_;
+          auto sdiag2 = entropy_diag2_;
           if constexpr (rsolver_method_ == MHD_RSolver::advect) {
             Advect(member,eos,indcs,size,coord,
                     m,k,j,is-1,ie+1,IVY,wl,wr,bl,br,by,flx2,e12,e32);
@@ -262,8 +279,9 @@ void MHD::CalculateFluxes(Driver *pdriver, int stage) {
             LLF_GR(member,eos,indcs,size,coord,
                     m,k,j,is-1,ie+1,IVY,wl,wr,bl,br,by,flx2,e12,e32);
           } else if constexpr (rsolver_method_ == MHD_RSolver::hlle_gr) {
-            HLLE_GR(member,eos,indcs,size,coord,
-                    m,k,j,is-1,ie+1,IVY,wl,wr,bl,br,by,flx2,e12,e32);
+            HLLE_GR_DIAG(member,eos,indcs,size,coord,
+                    m,k,j,is-1,ie+1,IVY,wl,wr,bl,br,by,flx2,e12,e32,
+                    diag2,sdiag2);
           }
           member.team_barrier();
         }
@@ -360,6 +378,8 @@ void MHD::CalculateFluxes(Driver *pdriver, int stage) {
           auto flx3 = flx3_;
           auto e23 = e23_;
           auto e13 = e13_;
+          auto diag3 = hlle_diag3_;
+          auto sdiag3 = entropy_diag3_;
           if constexpr (rsolver_method_ == MHD_RSolver::advect) {
             Advect(member,eos,indcs,size,coord,
                     m,k,j,is-1,ie+1,IVZ,wl,wr,bl,br,bz,flx3,e23,e13);
@@ -382,8 +402,9 @@ void MHD::CalculateFluxes(Driver *pdriver, int stage) {
             LLF_GR(member,eos,indcs,size,coord,
                     m,k,j,is-1,ie+1,IVZ,wl,wr,bl,br,bz,flx3,e23,e13);
           } else if constexpr (rsolver_method_ == MHD_RSolver::hlle_gr) {
-            HLLE_GR(member,eos,indcs,size,coord,
-                    m,k,j,is-1,ie+1,IVZ,wl,wr,bl,br,bz,flx3,e23,e13);
+            HLLE_GR_DIAG(member,eos,indcs,size,coord,
+                    m,k,j,is-1,ie+1,IVZ,wl,wr,bl,br,bz,flx3,e23,e13,
+                    diag3,sdiag3);
           }
           member.team_barrier();
         }
@@ -407,14 +428,8 @@ void MHD::CalculateFluxes(Driver *pdriver, int stage) {
   return;
 }
 
-// function definitions for each template parameter
-template void MHD::CalculateFluxes<MHD_RSolver::advect>(Driver *pdriver, int stage);
-template void MHD::CalculateFluxes<MHD_RSolver::llf>(Driver *pdriver, int stage);
-template void MHD::CalculateFluxes<MHD_RSolver::hlle>(Driver *pdriver, int stage);
-template void MHD::CalculateFluxes<MHD_RSolver::hlld>(Driver *pdriver, int stage);
-template void MHD::CalculateFluxes<MHD_RSolver::llf_sr>(Driver *pdriver, int stage);
-template void MHD::CalculateFluxes<MHD_RSolver::hlle_sr>(Driver *pdriver, int stage);
-template void MHD::CalculateFluxes<MHD_RSolver::llf_gr>(Driver *pdriver, int stage);
-template void MHD::CalculateFluxes<MHD_RSolver::hlle_gr>(Driver *pdriver, int stage);
+// Only the GR-HLLE diagnostic specialization is called by the energy-check problem.
+template void MHD::CalculateFluxesDiag<MHD_RSolver::hlle_gr>(Driver*, int);
 
 } // namespace mhd
+

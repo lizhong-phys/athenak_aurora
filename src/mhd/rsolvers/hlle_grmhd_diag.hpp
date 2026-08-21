@@ -1,5 +1,5 @@
-#ifndef MHD_RSOLVERS_HLLE_GRMHD_HPP_
-#define MHD_RSOLVERS_HLLE_GRMHD_HPP_
+#ifndef MHD_RSOLVERS_HLLE_GRMHD_DIAG_HPP_
+#define MHD_RSOLVERS_HLLE_GRMHD_DIAG_HPP_
 //========================================================================================
 // AthenaXXX astrophysical plasma code
 // Copyright(C) 2020 James M. Stone <jmstone@ias.edu> and the Athena code team
@@ -22,12 +22,14 @@ namespace mhd {
 //! \brief
 
 KOKKOS_INLINE_FUNCTION
-void HLLE_GR(TeamMember_t const &member, const EOS_Data &eos,
+void HLLE_GR_DIAG(TeamMember_t const &member, const EOS_Data &eos,
      const RegionIndcs &indcs,const DualArray1D<RegionSize> &size,const CoordData &coord,
      const int m, const int k, const int j, const int il, const int iu, const int ivx,
      const ScrArray2D<Real> &wl, const ScrArray2D<Real> &wr,
      const ScrArray2D<Real> &bl, const ScrArray2D<Real> &br, const DvceArray4D<Real> &bx,
-     DvceArray5D<Real> flx, DvceArray4D<Real> ey, DvceArray4D<Real> ez) {
+     DvceArray5D<Real> flx, DvceArray4D<Real> ey, DvceArray4D<Real> ez,
+     DvceArray4D<Real> diag_flux,
+     DvceArray4D<Real> diag_entropy_flux) {
   // Cyclic permutation of array indices corresponding to velocity/b_field components
   int ivy = IVX + ((ivx-IVX)+1)%3;
   int ivz = IVX + ((ivx-IVX)+2)%3;
@@ -276,9 +278,31 @@ void HLLE_GR(TeamMember_t const &member, const EOS_Data &eos,
 
     // We evolve tau = T^t_t + D
     flx(m,IEN,k,j,i) += flx(m,IDN,k,j,i);
+
+    // Passive diagnostic only: isolate the jump term in the evolved-energy HLLE flux.
+    // This view is detached from the solver flux and is never read by the evolution.
+    if constexpr (true) {
+      diag_flux(m,k,j,i) = (lambda_l < 0.0 && lambda_r > 0.0)
+                           ? qa*(du.e + du.d)*qb : 0.0;
+      const Real sl = (log(fmax(wl_ipr,1.0e-300))-
+                       eos.gamma*log(fmax(wl_idn,1.0e-300)))/gm1;
+      const Real sr = (log(fmax(wr_ipr,1.0e-300))-
+                       eos.gamma*log(fmax(wr_idn,1.0e-300)))/gm1;
+      const Real ul_s=wl_idn*uul[0]*sl, ur_s=wr_idn*uur[0]*sr;
+      const Real fl_s=wl_idn*uul[ivx]*sl, fr_s=wr_idn*uur[ivx]*sr;
+      if (lambda_l >= 0.0) {
+        diag_entropy_flux(m,k,j,i)=fl_s;
+      } else if (lambda_r <= 0.0) {
+        diag_entropy_flux(m,k,j,i)=fr_s;
+      } else {
+        diag_entropy_flux(m,k,j,i)=
+            (lambda_r*fl_s-lambda_l*fr_s+qa*(ur_s-ul_s))*qb;
+      }
+    }
   });
 
   return;
 }
 } // namespace mhd
-#endif // MHD_RSOLVERS_HLLE_GRMHD_HPP_
+#endif // MHD_RSOLVERS_HLLE_GRMHD_DIAG_HPP_
+

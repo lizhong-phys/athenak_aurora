@@ -3,7 +3,7 @@
 // Copyright(C) 2020 James M. Stone <jmstone@ias.edu> and the Athena code team
 // Licensed under the 3-clause BSD License (the "LICENSE")
 //========================================================================================
-//! \file ideal_grmhd.cpp
+//! \file ideal_grmhd_diag.cpp
 //! \brief derived class that implements ideal gas EOS in general relativistic mhd
 
 #include <float.h>
@@ -18,44 +18,11 @@
 #include "coordinates/cell_locations.hpp"
 #include "diagnostics/energy_diagnostics.hpp"
 
-//----------------------------------------------------------------------------------------
-// ctor: also calls EOS base class constructor
-
-IdealGRMHD::IdealGRMHD(MeshBlockPack *pp, ParameterInput *pin) :
-    EquationOfState("mhd", pp, pin) {
-  eos_data.is_ideal = true;
-  eos_data.gamma = pin->GetReal("mhd","gamma");
-  eos_data.iso_cs = 0.0;
-  eos_data.use_e = true;  // ideal gas EOS always uses internal energy
-  eos_data.use_t = false;
-  eos_data.gamma_max = pin->GetOrAddReal("mhd","gamma_max",(FLT_MAX));  // gamma ceiling
-}
-
-//----------------------------------------------------------------------------------------
-//! \fn void ConsToPrim()
-//! \brief Converts conserved into primitive variables.
-//! Operates over range of cells given in argument list.
-
-void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &b,
-                            DvceArray5D<Real> &prim, DvceArray5D<Real> &bcc,
-                            const bool only_testfloors,
-                            const int il, const int iu, const int jl, const int ju,
-                            const int kl, const int ku) {
-  const bool record_energy = (pmy_pack->penergy_diag != nullptr &&
-                              pmy_pack->penergy_diag->recording && !only_testfloors);
-  if (record_energy) {
-    ConsToPrimDiagnostic(cons,b,prim,bcc,only_testfloors,il,iu,jl,ju,kl,ku);
-  } else {
-    ConsToPrimOriginal(cons,b,prim,bcc,only_testfloors,il,iu,jl,ju,kl,ku);
-  }
-}
-
-void IdealGRMHD::ConsToPrimOriginal(DvceArray5D<Real> &cons,
-                                    const DvceFaceFld4D<Real> &b,
-                                    DvceArray5D<Real> &prim, DvceArray5D<Real> &bcc,
-                                    const bool only_testfloors,
-                                    const int il, const int iu, const int jl, const int ju,
-                                    const int kl, const int ku) {
+void IdealGRMHD::ConsToPrimDiagnostic(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &b,
+                                DvceArray5D<Real> &prim, DvceArray5D<Real> &bcc,
+                                const bool only_testfloors,
+                                const int il, const int iu, const int jl, const int ju,
+                                const int kl, const int ku) {
   auto &indcs = pmy_pack->pmesh->mb_indcs;
   int &is = indcs.is, &js = indcs.js, &ks = indcs.ks;
   auto &size = pmy_pack->pmb->mb_size;
@@ -65,6 +32,13 @@ void IdealGRMHD::ConsToPrimOriginal(DvceArray5D<Real> &cons,
   auto &fofc_ = pmy_pack->pmhd->fofc;
   auto eos = eos_data;
   Real gm1 = eos_data.gamma - 1.0;
+
+  DvceArray5D<Real> diag_step;
+  DvceArray4D<unsigned int> diag_flags;
+  if constexpr (true) {
+    diag_step = pmy_pack->penergy_diag->step;
+    diag_flags = pmy_pack->penergy_diag->flags;
+  }
 
   auto &flat = pmy_pack->pcoord->coord_data.is_minkowski;
   auto &spin = pmy_pack->pcoord->coord_data.bh_spin;
@@ -310,6 +284,16 @@ void IdealGRMHD::ConsToPrimOriginal(DvceArray5D<Real> &cons,
 
         HydCons1D u_out;
         SingleP2C_IdealGRMHD(glower, gupper, w_in, eos.gamma, u_out);
+        if constexpr (true) {
+          diag_step(m,diagnostics::ED_GAS_C2P,k,j,i) += u_out.e-u.e;
+          unsigned int bits = 0u;
+          if (dfloor_used) bits |= diagnostics::EDF_DENSITY_FLOOR;
+          if (efloor_used) bits |= diagnostics::EDF_ENERGY_FLOOR;
+          if (vceiling_used) bits |= diagnostics::EDF_VELOCITY_CEIL;
+          if (c2p_failure) bits |= diagnostics::EDF_C2P_FAILURE;
+          if (excised) bits |= diagnostics::EDF_EXCISION;
+          diag_flags(m,k,j,i) |= bits;
+        }
         cons(m,IDN,k,j,i) = u_out.d;
         cons(m,IM1,k,j,i) = u_out.mx;
         cons(m,IM2,k,j,i) = u_out.my;
@@ -340,71 +324,4 @@ void IdealGRMHD::ConsToPrimOriginal(DvceArray5D<Real> &cons,
   return;
 }
 
-//----------------------------------------------------------------------------------------
-//! \fn void PrimToCons()
-//! \brief Converts primitive into conserved variables.  Operates over range of cells
-//! given in argument list.
 
-void IdealGRMHD::PrimToCons(const DvceArray5D<Real> &prim, const DvceArray5D<Real> &bcc,
-                            DvceArray5D<Real> &cons, const int il, const int iu,
-                            const int jl, const int ju, const int kl, const int ku) {
-  auto &indcs = pmy_pack->pmesh->mb_indcs;
-  int &is = indcs.is, &js = indcs.js, &ks = indcs.ks;
-  auto &size = pmy_pack->pmb->mb_size;
-  auto &flat = pmy_pack->pcoord->coord_data.is_minkowski;
-  auto &spin = pmy_pack->pcoord->coord_data.bh_spin;
-  int &nmhd  = pmy_pack->pmhd->nmhd;
-  int &nscal = pmy_pack->pmhd->nscalars;
-  int &nmb = pmy_pack->nmb_thispack;
-  Real &gamma = eos_data.gamma;
-
-  par_for("grmhd_p2c", DevExeSpace(), 0, (nmb-1), kl, ku, jl, ju, il, iu,
-  KOKKOS_LAMBDA(int m, int k, int j, int i) {
-    // Extract components of metric
-    Real &x1min = size.d_view(m).x1min;
-    Real &x1max = size.d_view(m).x1max;
-    Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
-
-    Real &x2min = size.d_view(m).x2min;
-    Real &x2max = size.d_view(m).x2max;
-    Real x2v = CellCenterX(j-js, indcs.nx2, x2min, x2max);
-
-    Real &x3min = size.d_view(m).x3min;
-    Real &x3max = size.d_view(m).x3max;
-    Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
-
-    Real glower[4][4], gupper[4][4];
-    ComputeMetricAndInverse(x1v, x2v, x3v, flat, spin, glower, gupper);
-
-    // Load single state of primitive variables
-    MHDPrim1D w;
-    w.d  = prim(m,IDN,k,j,i);
-    w.vx = prim(m,IVX,k,j,i);
-    w.vy = prim(m,IVY,k,j,i);
-    w.vz = prim(m,IVZ,k,j,i);
-    w.e  = prim(m,IEN,k,j,i);
-
-    // load cell-centered fields into primitive state
-    w.bx = bcc(m,IBX,k,j,i);
-    w.by = bcc(m,IBY,k,j,i);
-    w.bz = bcc(m,IBZ,k,j,i);
-
-    // call p2c function
-    HydCons1D u;
-    SingleP2C_IdealGRMHD(glower, gupper, w, gamma, u);
-
-    // store conserved quantities in 3D array
-    cons(m,IDN,k,j,i) = u.d;
-    cons(m,IM1,k,j,i) = u.mx;
-    cons(m,IM2,k,j,i) = u.my;
-    cons(m,IM3,k,j,i) = u.mz;
-    cons(m,IEN,k,j,i) = u.e;
-
-    // convert scalars (if any)
-    for (int n=nmhd; n<(nmhd+nscal); ++n) {
-      cons(m,n,k,j,i) = u.d*prim(m,n,k,j,i);
-    }
-  });
-
-  return;
-}

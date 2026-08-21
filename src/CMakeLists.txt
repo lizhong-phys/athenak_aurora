@@ -52,6 +52,7 @@ add_executable(
         eos/ideal_grhyd.cpp
         eos/ideal_srmhd.cpp
         eos/ideal_grmhd.cpp
+        eos/ideal_grmhd_diag.cpp
         eos/primitive-solver/eos_compose.cpp
         eos/primitive-solver/eos_hybrid.cpp
         eos/primitive-solver/piecewise_polytrope.cpp
@@ -84,7 +85,9 @@ add_executable(
         mhd/mhd_corner_e.cpp
         mhd/mhd_ct.cpp
         mhd/mhd_fluxes.cpp
+        mhd/mhd_fluxes_diag.cpp
         mhd/mhd_fofc.cpp
+        mhd/mhd_fofc_diag.cpp
         mhd/mhd_newdt.cpp
         mhd/mhd_tasks.cpp
         mhd/mhd_update.cpp
@@ -133,6 +136,7 @@ add_executable(
         radiation/radiation_fluxes.cpp
         radiation/radiation_newdt.cpp
         radiation/radiation_source.cpp
+        radiation/radiation_source_diag.cpp
         radiation/radiation_tasks.cpp
         radiation/radiation_tetrad.cpp
         radiation/radiation_update.cpp

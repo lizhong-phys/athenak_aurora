@@ -21,6 +21,10 @@
 
 namespace diagnostics {
 
+namespace {
+constexpr const char *kEnergyDiagImplementation = "sampled-passive-v3";
+}
+
 const char *EnergyDiagnostics::label[NENERGY_DIAG] = {
   "dE_gas_flux", "dE_gas_hlle", "dE_gas_fofc", "dE_gas_coord",
   "dE_gas_other", "dE_gas_rad", "dE_gas_abs", "dE_gas_compt",
@@ -59,6 +63,11 @@ EnergyDiagnostics::EnergyDiagnostics(MeshBlockPack *ppack, ParameterInput *pin) 
               << std::endl;
     std::exit(EXIT_FAILURE);
   }
+  if (global_variable::my_rank == 0) {
+    std::cout << "ENERGY_DIAG implementation=" << kEnergyDiagImplementation
+              << " passive=true start=" << (next_sample_time_-sample_dt_)
+              << " cadence=" << sample_dt_ << std::endl;
+  }
 
   const int nmb = std::max(ppack->nmb_thispack, ppack->pmesh->nmb_maxperrank);
   auto &indcs = ppack->pmesh->mb_indcs;
@@ -95,10 +104,19 @@ void EnergyDiagnostics::AssembleTasks(
   TaskID none(0);
   tl["before_timeintegrator"]->AddTask(&EnergyDiagnostics::BeginTimestep,this,none);
 
-  // The diagnostic RK recurrence must be applied before any stage operator. Insert it
-  // before Radiation::CopyCons, the first task for radiation-MHD evolution.
-  TaskID first = pmy_pack_->prad->id.copyu;
-  tl["stagen"]->InsertTask(&EnergyDiagnostics::BeginStage,this,none,first);
+  // The diagnostic RK recurrence must run before any stage operator.  Register it in the
+  // "before_stagen" list, which the driver runs to COMPLETION before "stagen" on every RK
+  // stage (driver.cpp: before_stagen -> stagen -> after_stagen), so BeginStage precedes
+  // Radiation::CopyCons and all stage operators.
+  //
+  // NOTE: do NOT use tl["stagen"]->InsertTask(..., copyu) here.  copyu is added with an
+  // empty (`none`) dependency, and InsertTask reads old_dep = copyu's dependency = none,
+  // then calls ChangeDependency(none, new_id) on every other task.  ChangeDependency tests
+  // `((dep_ & id) == id)`, which is ALWAYS true for id == none, so EVERY task in the hot
+  // per-stage list (including all MPI Send/Recv/boundary tasks) gets this task OR'd into
+  // its dependency -- a corrupted graph that stalls multi-rank runs.  AddTask into
+  // before_stagen achieves the required ordering without touching any other dependency.
+  tl["before_stagen"]->AddTask(&EnergyDiagnostics::BeginStage,this,none);
   tl["after_timeintegrator"]->AddTask(&EnergyDiagnostics::FinalizeTimestep,this,none);
 }
 

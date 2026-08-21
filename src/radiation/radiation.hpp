@@ -182,8 +182,8 @@ class Radiation {
   TaskStatus ClearRecv(Driver *d, int stage);
 
  private:
-  template <bool energy_diag>
-  TaskStatus RadFluidCouplingImpl(Driver *d, int stage);
+  TaskStatus RadFluidCouplingOriginal(Driver *d, int stage);
+  TaskStatus RadFluidCouplingDiagnostic(Driver *d, int stage);
   MeshBlockPack* pmy_pack;  // ptr to MeshBlockPack containing this Radiation
 };
 

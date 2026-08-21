@@ -195,10 +195,10 @@ TaskStatus MHD::Fluxes(Driver *pdrive, int stage) {
   } else if (rsolver_method == MHD_RSolver::llf_gr) {
     CalculateFluxes<MHD_RSolver::llf_gr>(pdrive, stage);
   } else if (rsolver_method == MHD_RSolver::hlle_gr) {
-    if (pmy_pack->penergy_diag != nullptr && pmy_pack->penergy_diag->recording) {
-      CalculateFluxes<MHD_RSolver::hlle_gr,true>(pdrive, stage);
+    if (record_energy) {
+      CalculateFluxesDiag<MHD_RSolver::hlle_gr>(pdrive, stage);
     } else {
-      CalculateFluxes<MHD_RSolver::hlle_gr,false>(pdrive, stage);
+      CalculateFluxes<MHD_RSolver::hlle_gr>(pdrive, stage);
     }
   }
 
@@ -215,12 +215,12 @@ TaskStatus MHD::Fluxes(Driver *pdrive, int stage) {
 
   // call FOFC if necessary
   if (use_fofc) {
-    if (record_energy) FOFC<true>(pdrive, stage);
-    else FOFC<false>(pdrive, stage);
+    if (record_energy) FOFCDiag(pdrive, stage);
+    else FOFC(pdrive, stage);
   } else if (pmy_pack->pcoord->is_general_relativistic) {
     if (pmy_pack->pcoord->coord_data.bh_excise) {
-      if (record_energy) FOFC<true>(pdrive, stage);
-      else FOFC<false>(pdrive, stage);
+      if (record_energy) FOFCDiag(pdrive, stage);
+      else FOFC(pdrive, stage);
     }
   }
 
