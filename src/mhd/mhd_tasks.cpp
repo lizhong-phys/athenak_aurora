@@ -177,8 +177,6 @@ TaskStatus MHD::CopyCons(Driver *pdrive, int stage) {
 //! of conserved variables
 
 TaskStatus MHD::Fluxes(Driver *pdrive, int stage) {
-  const bool record_energy = (pmy_pack->penergy_diag != nullptr &&
-                              pmy_pack->penergy_diag->recording);
   // select which calculate_flux function to call based on rsolver_method
   if (rsolver_method == MHD_RSolver::advect) {
     CalculateFluxes<MHD_RSolver::advect>(pdrive, stage);
@@ -195,11 +193,7 @@ TaskStatus MHD::Fluxes(Driver *pdrive, int stage) {
   } else if (rsolver_method == MHD_RSolver::llf_gr) {
     CalculateFluxes<MHD_RSolver::llf_gr>(pdrive, stage);
   } else if (rsolver_method == MHD_RSolver::hlle_gr) {
-    if (record_energy) {
-      CalculateFluxesDiag<MHD_RSolver::hlle_gr>(pdrive, stage);
-    } else {
-      CalculateFluxes<MHD_RSolver::hlle_gr>(pdrive, stage);
-    }
+    CalculateFluxes<MHD_RSolver::hlle_gr>(pdrive, stage);
   }
 
   // Add viscous, resistive, heat-flux, etc fluxes
@@ -215,12 +209,10 @@ TaskStatus MHD::Fluxes(Driver *pdrive, int stage) {
 
   // call FOFC if necessary
   if (use_fofc) {
-    if (record_energy) FOFCDiag(pdrive, stage);
-    else FOFC(pdrive, stage);
+    FOFC(pdrive, stage);
   } else if (pmy_pack->pcoord->is_general_relativistic) {
     if (pmy_pack->pcoord->coord_data.bh_excise) {
-      if (record_energy) FOFCDiag(pdrive, stage);
-      else FOFC(pdrive, stage);
+      FOFC(pdrive, stage);
     }
   }
 

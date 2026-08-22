@@ -16,13 +16,24 @@
 #include "mhd/mhd.hpp"
 #include "radiation/radiation.hpp"
 #include "geodesic-grid/geodesic_grid.hpp"
+#include "coordinates/cartesian_ks.hpp"
+#include "coordinates/cell_locations.hpp"
 #include "diagnostics/energy_diagnostics.hpp"
 #include "globals.hpp"
 
 namespace diagnostics {
 
 namespace {
-constexpr const char *kEnergyDiagImplementation = "sampled-passive-v3";
+constexpr const char *kEnergyDiagImplementation = "physics-first-passive-v4";
+
+enum PhysicalStateIndex {
+  PS_RHO=0, PS_EINT, PS_PRESSURE, PS_ENTROPY,
+  PS_UT, PS_U1, PS_U2, PS_U3,
+  PS_UC0, PS_UC1, PS_UC2, PS_UC3,
+  PS_B0, PS_B1, PS_B2, PS_B3, PS_BSQ,
+  PS_EUT, PS_EU1, PS_EU2, PS_EU3,
+  NPHYSICAL_STATE
+};
 }
 
 const char *EnergyDiagnostics::label[NENERGY_DIAG] = {
@@ -32,8 +43,12 @@ const char *EnergyDiagnostics::label[NENERGY_DIAG] = {
   "dE_rad_source", "dE_gas_c2p", "dS_advect", "qent_rad",
   "qent_total", "qent_num",
   "dE_gas_actual", "dE_gas_closure", "dE_rad_actual", "dE_rad_closure",
+  "q_storage", "q_advection", "q_compression", "q_diss_energy",
+  "q_thermo_closure", "expansion", "q_mag_loss", "q_hydro_diss",
   "shock_sensor", "current_sensor", "contact_sensor", "vort_sensor",
-  "shear_sensor", "repair_flags"
+  "shear_sensor", "pressure_jump", "field_reversal",
+  "rho", "eint", "pressure", "ut", "u1", "u2", "u3", "B1", "B2", "B3", "bsq",
+  "repair_flags"
 };
 
 EnergyDiagnostics::EnergyDiagnostics(MeshBlockPack *ppack, ParameterInput *pin) :
@@ -44,6 +59,10 @@ EnergyDiagnostics::EnergyDiagnostics(MeshBlockPack *ppack, ParameterInput *pin) 
     gas_scratch("energy_diag_gas_scratch",1,1,1,1,1),
     rad_scratch("energy_diag_rad_scratch",1,1,1,1,1),
     entropy_initial("energy_diag_entropy_initial",1,1,1,1,1),
+    physical_initial("energy_diag_physical_initial",1,1,1,1,1),
+    physical_final("energy_diag_physical_final",1,1,1,1,1),
+    gas_four_scratch("energy_diag_gas_four_scratch",1,1,1,1,1),
+    ucon_scratch("energy_diag_ucon_scratch",1,1,1,1,1),
     rad_energy_flux("energy_diag_rad_flux",1,1,1,1,1),
     hlle_energy_flux("energy_diag_hlle_flux",1,1,1,1),
     fofc_energy_flux("energy_diag_fofc_flux",1,1,1,1),
@@ -82,6 +101,10 @@ EnergyDiagnostics::EnergyDiagnostics(MeshBlockPack *ppack, ParameterInput *pin) 
   Kokkos::realloc(gas_scratch,nmb,1,n3,n2,n1);
   Kokkos::realloc(rad_scratch,nmb,1,n3,n2,n1);
   Kokkos::realloc(entropy_initial,nmb,1,n3,n2,n1);
+  Kokkos::realloc(physical_initial,nmb,NPHYSICAL_STATE,n3,n2,n1);
+  Kokkos::realloc(physical_final,nmb,NPHYSICAL_STATE,n3,n2,n1);
+  Kokkos::realloc(gas_four_scratch,nmb,4,n3,n2,n1);
+  Kokkos::realloc(ucon_scratch,nmb,4,n3,n2,n1);
   Kokkos::realloc(rad_energy_flux,nmb,3,n3,n2,n1);
   Kokkos::realloc(hlle_energy_flux.x1f,nmb,n3,n2,n1+1);
   Kokkos::realloc(hlle_energy_flux.x2f,nmb,n3,n2+1,n1);
@@ -120,6 +143,80 @@ void EnergyDiagnostics::AssembleTasks(
   tl["after_timeintegrator"]->AddTask(&EnergyDiagnostics::FinalizeTimestep,this,none);
 }
 
+// Fill a detached state used by the physical internal- and magnetic-energy equations.
+// This kernel is read-only with respect to every evolved array.  Cartesian Kerr-Schild
+// has sqrt(-g)=1, so no metric determinant is required in the stored currents.
+void EnergyDiagnostics::FillPhysicalState(DvceArray5D<Real> &state) {
+  if (!recording) return;
+  auto w = pmy_pack_->pmhd->w0;
+  auto b = pmy_pack_->pmhd->bcc0;
+  auto qstate = state;
+  auto size = pmy_pack_->pmb->mb_size;
+  auto &indcs = pmy_pack_->pmesh->mb_indcs;
+  const int nmb1 = pmy_pack_->nmb_thispack-1;
+  const int n1 = indcs.nx1 + 2*indcs.ng;
+  const int n2 = (indcs.nx2 > 1) ? indcs.nx2 + 2*indcs.ng : 1;
+  const int n3 = (indcs.nx3 > 1) ? indcs.nx3 + 2*indcs.ng : 1;
+  const int is=indcs.is, js=indcs.js, ks=indcs.ks;
+  const Real gamma = pmy_pack_->pmhd->peos->eos_data.gamma;
+  const bool flat = pmy_pack_->pcoord->coord_data.is_minkowski;
+  const Real spin = pmy_pack_->pcoord->coord_data.bh_spin;
+  par_for("energy_diag_physical_state",DevExeSpace(),0,nmb1,0,n3-1,0,n2-1,0,n1-1,
+  KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    const Real x1=CellCenterX(i-is,indcs.nx1,size.d_view(m).x1min,size.d_view(m).x1max);
+    const Real x2=CellCenterX(j-js,indcs.nx2,size.d_view(m).x2min,size.d_view(m).x2max);
+    const Real x3=CellCenterX(k-ks,indcs.nx3,size.d_view(m).x3min,size.d_view(m).x3max);
+    Real gl[4][4], gu[4][4];
+    ComputeMetricAndInverse(x1,x2,x3,flat,spin,gl,gu);
+    const Real rho=fmax(w(m,IDN,k,j,i),1.0e-300);
+    const Real eint=fmax(w(m,IEN,k,j,i),1.0e-300);
+    const Real press=fmax((gamma-1.0)*eint,1.0e-300);
+    const Real v1=w(m,IVX,k,j,i), v2=w(m,IVY,k,j,i), v3=w(m,IVZ,k,j,i);
+    const Real usq=gl[1][1]*v1*v1+gl[2][2]*v2*v2+gl[3][3]*v3*v3
+                  +2.0*(gl[1][2]*v1*v2+gl[1][3]*v1*v3+gl[2][3]*v2*v3);
+    const Real alpha=sqrt(-1.0/gu[0][0]);
+    const Real lor=sqrt(1.0+fmax(usq,0.0));
+    Real uc[4];
+    uc[0]=lor/alpha;
+    uc[1]=v1-alpha*lor*gu[0][1];
+    uc[2]=v2-alpha*lor*gu[0][2];
+    uc[3]=v3-alpha*lor*gu[0][3];
+    Real ul[4];
+    for (int a=0; a<4; ++a) {
+      ul[a]=0.0;
+      for (int c=0; c<4; ++c) ul[a]+=gl[a][c]*uc[c];
+    }
+    const Real B1=b(m,IBX,k,j,i), B2=b(m,IBY,k,j,i), B3=b(m,IBZ,k,j,i);
+    Real bc[4];
+    bc[0]=ul[1]*B1+ul[2]*B2+ul[3]*B3;
+    bc[1]=(B1+bc[0]*uc[1])/uc[0];
+    bc[2]=(B2+bc[0]*uc[2])/uc[0];
+    bc[3]=(B3+bc[0]*uc[3])/uc[0];
+    Real bsq=0.0;
+    for (int a=0; a<4; ++a) {
+      Real bl=0.0;
+      for (int c=0; c<4; ++c) bl+=gl[a][c]*bc[c];
+      bsq+=bl*bc[a];
+    }
+    qstate(m,PS_RHO,k,j,i)=rho;
+    qstate(m,PS_EINT,k,j,i)=eint;
+    qstate(m,PS_PRESSURE,k,j,i)=press;
+    qstate(m,PS_ENTROPY,k,j,i)=(log(press)-gamma*log(rho))/(gamma-1.0);
+    qstate(m,PS_UT,k,j,i)=uc[0];
+    qstate(m,PS_U1,k,j,i)=uc[1]; qstate(m,PS_U2,k,j,i)=uc[2];
+    qstate(m,PS_U3,k,j,i)=uc[3];
+    qstate(m,PS_UC0,k,j,i)=ul[0]; qstate(m,PS_UC1,k,j,i)=ul[1];
+    qstate(m,PS_UC2,k,j,i)=ul[2]; qstate(m,PS_UC3,k,j,i)=ul[3];
+    qstate(m,PS_B0,k,j,i)=bc[0]; qstate(m,PS_B1,k,j,i)=bc[1];
+    qstate(m,PS_B2,k,j,i)=bc[2]; qstate(m,PS_B3,k,j,i)=bc[3];
+    qstate(m,PS_BSQ,k,j,i)=bsq;
+    qstate(m,PS_EUT,k,j,i)=eint*uc[0];
+    qstate(m,PS_EU1,k,j,i)=eint*uc[1];
+    qstate(m,PS_EU2,k,j,i)=eint*uc[2];
+    qstate(m,PS_EU3,k,j,i)=eint*uc[3];
+  });
+}
+
 TaskStatus EnergyDiagnostics::BeginTimestep(Driver *pdriver, int stage) {
   // Match Driver's 32-bit output-time comparison.  The ledger is intentionally active
   // only on a step whose end time crosses a requested diagnostic output time.
@@ -149,9 +246,59 @@ TaskStatus EnergyDiagnostics::BeginTimestep(Driver *pdriver, int stage) {
     sinitial(m,0,k,j,i)=gas(m,IDN,k,j,i)*s;
   });
 
+  FillPhysicalState(physical_initial);
+
   SaveRadiationEnergy();
   Kokkos::deep_copy(DevExeSpace(),rad_initial,rad_scratch);
   return TaskStatus::complete;
+}
+
+void EnergyDiagnostics::SaveRadiationCouplingState() {
+  if (!recording) return;
+  auto u=pmy_pack_->pmhd->u0;
+  auto before=gas_four_scratch;
+  auto usave=ucon_scratch;
+  auto qstate=physical_final;
+  // Refresh four-velocity from the primitives immediately before this source operator.
+  FillPhysicalState(physical_final);
+  auto &indcs=pmy_pack_->pmesh->mb_indcs;
+  const int nmb1=pmy_pack_->nmb_thispack-1;
+  par_for("energy_diag_rad_before",DevExeSpace(),0,nmb1,indcs.ks,indcs.ke,
+          indcs.js,indcs.je,indcs.is,indcs.ie,
+  KOKKOS_LAMBDA(int m,int k,int j,int i) {
+    before(m,0,k,j,i)=u(m,IEN,k,j,i);
+    before(m,1,k,j,i)=u(m,IM1,k,j,i);
+    before(m,2,k,j,i)=u(m,IM2,k,j,i);
+    before(m,3,k,j,i)=u(m,IM3,k,j,i);
+    usave(m,0,k,j,i)=qstate(m,PS_UT,k,j,i);
+    usave(m,1,k,j,i)=qstate(m,PS_U1,k,j,i);
+    usave(m,2,k,j,i)=qstate(m,PS_U2,k,j,i);
+    usave(m,3,k,j,i)=qstate(m,PS_U3,k,j,i);
+  });
+  SaveGasEnergy();
+  SaveRadiationEnergy();
+}
+
+void EnergyDiagnostics::RecordRadiationCoupling() {
+  if (!recording) return;
+  auto u=pmy_pack_->pmhd->u0;
+  auto before=gas_four_scratch;
+  auto usave=ucon_scratch;
+  auto d=step;
+  auto &indcs=pmy_pack_->pmesh->mb_indcs;
+  const int nmb1=pmy_pack_->nmb_thispack-1;
+  par_for("energy_diag_rad_after",DevExeSpace(),0,nmb1,indcs.ks,indcs.ke,
+          indcs.js,indcs.je,indcs.is,indcs.ie,
+  KOKKOS_LAMBDA(int m,int k,int j,int i) {
+    const Real de=u(m,IEN,k,j,i)-before(m,0,k,j,i);
+    const Real dm1=u(m,IM1,k,j,i)-before(m,1,k,j,i);
+    const Real dm2=u(m,IM2,k,j,i)-before(m,2,k,j,i);
+    const Real dm3=u(m,IM3,k,j,i)-before(m,3,k,j,i);
+    d(m,ED_QENT_RAD,k,j,i)+=usave(m,0,k,j,i)*de-usave(m,1,k,j,i)*dm1
+                            -usave(m,2,k,j,i)*dm2-usave(m,3,k,j,i)*dm3;
+  });
+  AccumulateGasEnergy(ED_GAS_RAD_TOTAL);
+  AccumulateRadiationEnergy(ED_RAD_SOURCE_TOTAL);
 }
 
 TaskStatus EnergyDiagnostics::BeginStage(Driver *pdriver, int stage) {
@@ -333,6 +480,7 @@ void EnergyDiagnostics::RecordRadiationUpdate(Driver *pdriver, int stage) {
 
 TaskStatus EnergyDiagnostics::FinalizeTimestep(Driver *pdriver, int stage) {
   if (!recording) return TaskStatus::complete;
+  FillPhysicalState(physical_final);
   auto &indcs = pmy_pack_->pmesh->mb_indcs;
   const int nmb1 = pmy_pack_->nmb_thispack-1;
   const bool multi_d = pmy_pack_->pmesh->multi_d;
@@ -351,10 +499,14 @@ TaskStatus EnergyDiagnostics::FinalizeTimestep(Driver *pdriver, int stage) {
   auto initial_g = gas_initial;
   auto initial_r = rad_initial;
   auto initial_s = entropy_initial;
+  auto phys0 = physical_initial;
+  auto phys1 = physical_final;
   auto d = step;
   auto out = output;
   auto rflux = rad_energy_flux;
   auto flg = flags;
+  const bool flat = pmy_pack_->pcoord->coord_data.is_minkowski;
+  const Real spin = pmy_pack_->pcoord->coord_data.bh_spin;
 
   par_for("energy_diag_finalize",DevExeSpace(),0,nmb1,indcs.ks,indcs.ke,
           indcs.js,indcs.je,indcs.is,indcs.ie,
@@ -387,12 +539,64 @@ TaskStatus EnergyDiagnostics::FinalizeTimestep(Driver *pdriver, int stage) {
                        + d(m,ED_RAD_FIX,k,j,i)+d(m,ED_RAD_SOURCE_TOTAL,k,j,i);
 
     for (int n=0; n<=ED_QENT_RAD; ++n) out(m,n,k,j,i)=d(m,n,k,j,i)/dt;
-    const Real rho_s=fmax(w(m,IDN,k,j,i),1.0e-300);
-    const Real p_s=fmax((gamma-1.0)*w(m,IEN,k,j,i),1.0e-300);
-    const Real s_final=(log(p_s)-gamma*log(rho_s))/(gamma-1.0);
+
+    // Physical internal-energy and entropy-current budget.  Start/end currents are
+    // centered over the actual solver timestep, which is much shorter than the output
+    // cadence.  This avoids differencing widely separated full dumps.
+    const Real dx1=size.d_view(m).dx1, dx2=size.d_view(m).dx2, dx3=size.d_view(m).dx3;
+    Real div_e0=(phys0(m,PS_EU1,k,j,i+1)-phys0(m,PS_EU1,k,j,i-1))/(2.0*dx1);
+    Real div_e1=(phys1(m,PS_EU1,k,j,i+1)-phys1(m,PS_EU1,k,j,i-1))/(2.0*dx1);
+    Real div_u0=(phys0(m,PS_U1,k,j,i+1)-phys0(m,PS_U1,k,j,i-1))/(2.0*dx1);
+    Real div_u1=(phys1(m,PS_U1,k,j,i+1)-phys1(m,PS_U1,k,j,i-1))/(2.0*dx1);
+    Real div_s0=(phys0(m,PS_RHO,k,j,i+1)*phys0(m,PS_ENTROPY,k,j,i+1)
+                    *phys0(m,PS_U1,k,j,i+1)
+                 -phys0(m,PS_RHO,k,j,i-1)*phys0(m,PS_ENTROPY,k,j,i-1)
+                    *phys0(m,PS_U1,k,j,i-1))/(2.0*dx1);
+    Real div_s1=(phys1(m,PS_RHO,k,j,i+1)*phys1(m,PS_ENTROPY,k,j,i+1)
+                    *phys1(m,PS_U1,k,j,i+1)
+                 -phys1(m,PS_RHO,k,j,i-1)*phys1(m,PS_ENTROPY,k,j,i-1)
+                    *phys1(m,PS_U1,k,j,i-1))/(2.0*dx1);
+    if (multi_d) {
+      div_e0+=(phys0(m,PS_EU2,k,j+1,i)-phys0(m,PS_EU2,k,j-1,i))/(2.0*dx2);
+      div_e1+=(phys1(m,PS_EU2,k,j+1,i)-phys1(m,PS_EU2,k,j-1,i))/(2.0*dx2);
+      div_u0+=(phys0(m,PS_U2,k,j+1,i)-phys0(m,PS_U2,k,j-1,i))/(2.0*dx2);
+      div_u1+=(phys1(m,PS_U2,k,j+1,i)-phys1(m,PS_U2,k,j-1,i))/(2.0*dx2);
+      div_s0+=(phys0(m,PS_RHO,k,j+1,i)*phys0(m,PS_ENTROPY,k,j+1,i)
+                  *phys0(m,PS_U2,k,j+1,i)
+               -phys0(m,PS_RHO,k,j-1,i)*phys0(m,PS_ENTROPY,k,j-1,i)
+                  *phys0(m,PS_U2,k,j-1,i))/(2.0*dx2);
+      div_s1+=(phys1(m,PS_RHO,k,j+1,i)*phys1(m,PS_ENTROPY,k,j+1,i)
+                  *phys1(m,PS_U2,k,j+1,i)
+               -phys1(m,PS_RHO,k,j-1,i)*phys1(m,PS_ENTROPY,k,j-1,i)
+                  *phys1(m,PS_U2,k,j-1,i))/(2.0*dx2);
+    }
+    if (three_d) {
+      div_e0+=(phys0(m,PS_EU3,k+1,j,i)-phys0(m,PS_EU3,k-1,j,i))/(2.0*dx3);
+      div_e1+=(phys1(m,PS_EU3,k+1,j,i)-phys1(m,PS_EU3,k-1,j,i))/(2.0*dx3);
+      div_u0+=(phys0(m,PS_U3,k+1,j,i)-phys0(m,PS_U3,k-1,j,i))/(2.0*dx3);
+      div_u1+=(phys1(m,PS_U3,k+1,j,i)-phys1(m,PS_U3,k-1,j,i))/(2.0*dx3);
+      div_s0+=(phys0(m,PS_RHO,k+1,j,i)*phys0(m,PS_ENTROPY,k+1,j,i)
+                  *phys0(m,PS_U3,k+1,j,i)
+               -phys0(m,PS_RHO,k-1,j,i)*phys0(m,PS_ENTROPY,k-1,j,i)
+                  *phys0(m,PS_U3,k-1,j,i))/(2.0*dx3);
+      div_s1+=(phys1(m,PS_RHO,k+1,j,i)*phys1(m,PS_ENTROPY,k+1,j,i)
+                  *phys1(m,PS_U3,k+1,j,i)
+               -phys1(m,PS_RHO,k-1,j,i)*phys1(m,PS_ENTROPY,k-1,j,i)
+                  *phys1(m,PS_U3,k-1,j,i))/(2.0*dx3);
+    }
+    const Real p0=phys0(m,PS_PRESSURE,k,j,i), p1=phys1(m,PS_PRESSURE,k,j,i);
+    const Real rho0=phys0(m,PS_RHO,k,j,i), rho1=phys1(m,PS_RHO,k,j,i);
+    const Real dut=(phys1(m,PS_UT,k,j,i)-phys0(m,PS_UT,k,j,i))/dt;
+    const Real expansion=dut+0.5*(div_u0+div_u1);
+    const Real qstore=(phys1(m,PS_EUT,k,j,i)-phys0(m,PS_EUT,k,j,i))/dt;
+    const Real qadv=0.5*(div_e0+div_e1);
+    const Real qcomp=-0.5*(p0+p1)*dut-0.5*(p0*div_u0+p1*div_u1);
+
+    const Real s_final=phys1(m,PS_ENTROPY,k,j,i);
     const Real ds_cons=u(m,IDN,k,j,i)*s_final-initial_s(m,0,k,j,i)
-                      -d(m,ED_DS_ADVECT,k,j,i);
-    const Real qent_total=(p_s/rho_s)*ds_cons/dt;
+                      +0.5*dt*(div_s0+div_s1);
+    const Real temperature=0.5*(p0/rho0+p1/rho1);
+    const Real qent_total=temperature*ds_cons/dt;
     out(m,ED_QENT_TOTAL,k,j,i)=qent_total;
     out(m,ED_QENT_NUM,k,j,i)=qent_total-out(m,ED_QENT_RAD,k,j,i);
     out(m,ED_GAS_ACTUAL,k,j,i)=gas_actual/dt;
@@ -400,7 +604,80 @@ TaskStatus EnergyDiagnostics::FinalizeTimestep(Driver *pdriver, int stage) {
     out(m,ED_RAD_ACTUAL,k,j,i)=rad_actual/dt;
     out(m,ED_RAD_CLOSURE,k,j,i)=(rad_actual-rad_sum)/dt;
 
-    const Real dx1=size.d_view(m).dx1, dx2=size.d_view(m).dx2, dx3=size.d_view(m).dx3;
+    const Real qdiss_e=qstore+qadv-qcomp-out(m,ED_QENT_RAD,k,j,i);
+    out(m,ED_INT_STORAGE,k,j,i)=qstore;
+    out(m,ED_INT_ADVECTION,k,j,i)=qadv;
+    out(m,ED_COMPRESSION,k,j,i)=qcomp;
+    out(m,ED_DISS_ENERGY,k,j,i)=qdiss_e;
+    out(m,ED_THERMO_CLOSURE,k,j,i)=qdiss_e-out(m,ED_QENT_NUM,k,j,i);
+    out(m,ED_EXPANSION,k,j,i)=expansion;
+
+    // Covariant magnetic-energy identity for ideal GRMHD:
+    //   u.d(b^2/2) + b^2 theta - b^mu b^nu nabla_mu u_nu = 0.
+    // A negative residual is effective non-ideal magnetic-energy loss.  All derivatives
+    // are time-centered over this sampled timestep; the stationary CKS metric has det g=-1.
+    Real dmag[4]={0.0,0.0,0.0,0.0};
+    dmag[0]=0.5*(phys1(m,PS_BSQ,k,j,i)-phys0(m,PS_BSQ,k,j,i))/dt;
+    dmag[1]=((phys0(m,PS_BSQ,k,j,i+1)-phys0(m,PS_BSQ,k,j,i-1))
+            +(phys1(m,PS_BSQ,k,j,i+1)-phys1(m,PS_BSQ,k,j,i-1)))/(8.0*dx1);
+    if (multi_d) {
+      dmag[2]=((phys0(m,PS_BSQ,k,j+1,i)-phys0(m,PS_BSQ,k,j-1,i))
+              +(phys1(m,PS_BSQ,k,j+1,i)-phys1(m,PS_BSQ,k,j-1,i)))/(8.0*dx2);
+    }
+    if (three_d) {
+      dmag[3]=((phys0(m,PS_BSQ,k+1,j,i)-phys0(m,PS_BSQ,k-1,j,i))
+              +(phys1(m,PS_BSQ,k+1,j,i)-phys1(m,PS_BSQ,k-1,j,i)))/(8.0*dx3);
+    }
+    Real uavg[4], bavg[4], ulavg[4];
+    for (int a=0; a<4; ++a) {
+      uavg[a]=0.5*(phys0(m,PS_UT+a,k,j,i)+phys1(m,PS_UT+a,k,j,i));
+      bavg[a]=0.5*(phys0(m,PS_B0+a,k,j,i)+phys1(m,PS_B0+a,k,j,i));
+      ulavg[a]=0.5*(phys0(m,PS_UC0+a,k,j,i)+phys1(m,PS_UC0+a,k,j,i));
+    }
+    Real ducov[4][4]={{0.0}};
+    for (int a=0; a<4; ++a) {
+      ducov[0][a]=(phys1(m,PS_UC0+a,k,j,i)-phys0(m,PS_UC0+a,k,j,i))/dt;
+      ducov[1][a]=((phys0(m,PS_UC0+a,k,j,i+1)-phys0(m,PS_UC0+a,k,j,i-1))
+                  +(phys1(m,PS_UC0+a,k,j,i+1)-phys1(m,PS_UC0+a,k,j,i-1)))/(4.0*dx1);
+      if (multi_d) {
+        ducov[2][a]=((phys0(m,PS_UC0+a,k,j+1,i)-phys0(m,PS_UC0+a,k,j-1,i))
+                    +(phys1(m,PS_UC0+a,k,j+1,i)-phys1(m,PS_UC0+a,k,j-1,i)))/(4.0*dx2);
+      }
+      if (three_d) {
+        ducov[3][a]=((phys0(m,PS_UC0+a,k+1,j,i)-phys0(m,PS_UC0+a,k-1,j,i))
+                    +(phys1(m,PS_UC0+a,k+1,j,i)-phys1(m,PS_UC0+a,k-1,j,i)))/(4.0*dx3);
+      }
+    }
+    const Real x1=CellCenterX(i-indcs.is,indcs.nx1,size.d_view(m).x1min,size.d_view(m).x1max);
+    const Real x2=CellCenterX(j-indcs.js,indcs.nx2,size.d_view(m).x2min,size.d_view(m).x2max);
+    const Real x3=CellCenterX(k-indcs.ks,indcs.nx3,size.d_view(m).x3min,size.d_view(m).x3max);
+    Real gl[4][4], gu[4][4], dg1[4][4], dg2[4][4], dg3[4][4];
+    ComputeMetricAndInverse(x1,x2,x3,flat,spin,gl,gu);
+    ComputeMetricDerivatives(x1,x2,x3,flat,spin,dg1,dg2,dg3);
+    Real dg[4][4][4]={{{0.0}}};
+    for (int a=0; a<4; ++a) for (int c=0; c<4; ++c) {
+      dg[1][a][c]=dg1[a][c]; dg[2][a][c]=dg2[a][c]; dg[3][a][c]=dg3[a][c];
+    }
+    Real partial=0.0, connection=0.0;
+    for (int mu=0; mu<4; ++mu) for (int nu=0; nu<4; ++nu) {
+      partial+=bavg[mu]*bavg[nu]*ducov[mu][nu];
+      for (int lam=0; lam<4; ++lam) {
+        Real christ=0.0;
+        for (int sig=0; sig<4; ++sig) {
+          christ+=0.5*gu[lam][sig]
+                     *(dg[mu][sig][nu]+dg[nu][sig][mu]-dg[sig][mu][nu]);
+        }
+        connection+=bavg[mu]*bavg[nu]*christ*ulavg[lam];
+      }
+    }
+    Real material_mag=0.0;
+    for (int mu=0; mu<4; ++mu) material_mag+=uavg[mu]*dmag[mu];
+    const Real bsqavg=0.5*(phys0(m,PS_BSQ,k,j,i)+phys1(m,PS_BSQ,k,j,i));
+    const Real ideal_mag_resid=material_mag+bsqavg*expansion-(partial-connection);
+    const Real qmagloss=-ideal_mag_resid;
+    out(m,ED_MAG_LOSS,k,j,i)=qmagloss;
+    out(m,ED_HYDRO_DISS,k,j,i)=qdiss_e-qmagloss;
+
     Real dv[3][3]={{0.0}};
     dv[0][0]=(w(m,IVX,k,j,i+1)-w(m,IVX,k,j,i-1))/(2.0*dx1);
     dv[1][0]=(w(m,IVY,k,j,i+1)-w(m,IVY,k,j,i-1))/(2.0*dx1);
@@ -436,7 +713,7 @@ TaskStatus EnergyDiagnostics::FinalizeTimestep(Driver *pdriver, int stage) {
     const Real p=fmax(fabs((gamma-1.0)*w(m,IEN,k,j,i)),1.0e-30);
     const Real bmag=sqrt(SQR(b(m,IBX,k,j,i))+SQR(b(m,IBY,k,j,i))+SQR(b(m,IBZ,k,j,i)));
     const Real cs=sqrt(fmax(gamma*p/(rho+gamma*p/(gamma-1.0)),1.0e-30));
-    out(m,ED_SHOCK_SENSOR,k,j,i)=fmax(-divv,0.0)*h/cs;
+    out(m,ED_SHOCK_SENSOR,k,j,i)=fmax(-expansion,0.0)*h/cs;
     out(m,ED_CURRENT_SENSOR,k,j,i)=sqrt(j1*j1+j2*j2+j3*j3)*h/(bmag+sqrt(p)+1.0e-30);
     const Real gradr=sqrt(grad_r2)*h/rho;
     const Real gradp=sqrt(grad_p2)*h/p;
@@ -454,6 +731,42 @@ TaskStatus EnergyDiagnostics::FinalizeTimestep(Driver *pdriver, int stage) {
     }
     out(m,ED_VORT_SENSOR,k,j,i)=sqrt(om1*om1+om2*om2+om3*om3)*h/cs;
     out(m,ED_SHEAR_SENSOR,k,j,i)=sqrt(2.0*shear2)*h/cs;
+    Real pjump=fmax(fabs(phys1(m,PS_PRESSURE,k,j,i+1)-phys1(m,PS_PRESSURE,k,j,i-1)),0.0);
+    if (multi_d) pjump=fmax(pjump,fabs(phys1(m,PS_PRESSURE,k,j+1,i)-phys1(m,PS_PRESSURE,k,j-1,i)));
+    if (three_d) pjump=fmax(pjump,fabs(phys1(m,PS_PRESSURE,k+1,j,i)-phys1(m,PS_PRESSURE,k-1,j,i)));
+    out(m,ED_PRESSURE_JUMP,k,j,i)=pjump/(2.0*p);
+    Real reversal=0.0;
+    Real bm1=b(m,IBX,k,j,i-1), bm2=b(m,IBY,k,j,i-1), bm3=b(m,IBZ,k,j,i-1);
+    Real bp1=b(m,IBX,k,j,i+1), bp2=b(m,IBY,k,j,i+1), bp3=b(m,IBZ,k,j,i+1);
+    reversal=fmax(reversal,-(bm1*bp1+bm2*bp2+bm3*bp3)/
+                           (sqrt(bm1*bm1+bm2*bm2+bm3*bm3)*
+                            sqrt(bp1*bp1+bp2*bp2+bp3*bp3)+1.0e-30));
+    if (multi_d) {
+      bm1=b(m,IBX,k,j-1,i); bm2=b(m,IBY,k,j-1,i); bm3=b(m,IBZ,k,j-1,i);
+      bp1=b(m,IBX,k,j+1,i); bp2=b(m,IBY,k,j+1,i); bp3=b(m,IBZ,k,j+1,i);
+      reversal=fmax(reversal,-(bm1*bp1+bm2*bp2+bm3*bp3)/
+                             (sqrt(bm1*bm1+bm2*bm2+bm3*bm3)*
+                              sqrt(bp1*bp1+bp2*bp2+bp3*bp3)+1.0e-30));
+    }
+    if (three_d) {
+      bm1=b(m,IBX,k-1,j,i); bm2=b(m,IBY,k-1,j,i); bm3=b(m,IBZ,k-1,j,i);
+      bp1=b(m,IBX,k+1,j,i); bp2=b(m,IBY,k+1,j,i); bp3=b(m,IBZ,k+1,j,i);
+      reversal=fmax(reversal,-(bm1*bp1+bm2*bp2+bm3*bp3)/
+                             (sqrt(bm1*bm1+bm2*bm2+bm3*bm3)*
+                              sqrt(bp1*bp1+bp2*bp2+bp3*bp3)+1.0e-30));
+    }
+    out(m,ED_FIELD_REVERSAL,k,j,i)=fmax(reversal,0.0);
+    out(m,ED_RHO,k,j,i)=phys1(m,PS_RHO,k,j,i);
+    out(m,ED_EINT,k,j,i)=phys1(m,PS_EINT,k,j,i);
+    out(m,ED_PRESSURE,k,j,i)=phys1(m,PS_PRESSURE,k,j,i);
+    out(m,ED_UT,k,j,i)=phys1(m,PS_UT,k,j,i);
+    out(m,ED_U1,k,j,i)=phys1(m,PS_U1,k,j,i);
+    out(m,ED_U2,k,j,i)=phys1(m,PS_U2,k,j,i);
+    out(m,ED_U3,k,j,i)=phys1(m,PS_U3,k,j,i);
+    out(m,ED_B1,k,j,i)=b(m,IBX,k,j,i);
+    out(m,ED_B2,k,j,i)=b(m,IBY,k,j,i);
+    out(m,ED_B3,k,j,i)=b(m,IBZ,k,j,i);
+    out(m,ED_BSQ,k,j,i)=phys1(m,PS_BSQ,k,j,i);
     out(m,ED_FLAGS,k,j,i)=static_cast<Real>(flg(m,k,j,i));
   });
   ++sample_number_;

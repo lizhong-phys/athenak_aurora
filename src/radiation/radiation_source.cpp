@@ -109,10 +109,15 @@ Real RadBacktrackLambda(Real d, Real m1, Real m2, Real m3, Real e,
 //! gr_rad branch, radiation/coupling/emission.cpp commit be7f84565b.
 
 TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
-  if (pmy_pack->penergy_diag != nullptr && pmy_pack->penergy_diag->recording) {
-    return RadFluidCouplingDiagnostic(pdriver, stage);
+  // Always execute the production coupling.  The diagnostic only snapshots the accepted
+  // four-momentum exchange before/afterward and cannot influence limiter decisions.
+  auto *pdiag=pmy_pack->penergy_diag;
+  if (pdiag != nullptr && pdiag->recording) pdiag->SaveRadiationCouplingState();
+  TaskStatus status=RadFluidCouplingOriginal(pdriver, stage);
+  if (pdiag != nullptr && pdiag->recording && status == TaskStatus::complete) {
+    pdiag->RecordRadiationCoupling();
   }
-  return RadFluidCouplingOriginal(pdriver, stage);
+  return status;
 }
 
 TaskStatus Radiation::RadFluidCouplingOriginal(Driver *pdriver, int stage) {
