@@ -24,7 +24,7 @@
 namespace diagnostics {
 
 namespace {
-constexpr const char *kEnergyDiagImplementation = "physics-first-passive-v4";
+constexpr const char *kEnergyDiagImplementation = "physics-first-passive-v6";
 
 enum PhysicalStateIndex {
   PS_RHO=0, PS_EINT, PS_PRESSURE, PS_ENTROPY,
@@ -41,7 +41,7 @@ const char *EnergyDiagnostics::label[NENERGY_DIAG] = {
   "dE_gas_other", "dE_gas_rad", "dE_gas_abs", "dE_gas_compt",
   "dE_rad_reject", "dE_rad_spatial", "dE_rad_angular", "dE_rad_fix",
   "dE_rad_source", "dE_gas_c2p", "dS_advect", "qent_rad",
-  "qent_total", "qent_num",
+  "qent_total", "qent_centered", "qent_num",
   "dE_gas_actual", "dE_gas_closure", "dE_rad_actual", "dE_rad_closure",
   "q_storage", "q_advection", "q_compression", "q_diss_energy",
   "q_thermo_closure", "expansion", "q_mag_loss", "q_hydro_diss",
@@ -593,18 +593,28 @@ TaskStatus EnergyDiagnostics::FinalizeTimestep(Driver *pdriver, int stage) {
     const Real qcomp=-0.5*(p0+p1)*dut-0.5*(p0*div_u0+p1*div_u1);
 
     const Real s_final=phys1(m,PS_ENTROPY,k,j,i);
-    const Real ds_cons=u(m,IDN,k,j,i)*s_final-initial_s(m,0,k,j,i)
-                      +0.5*dt*(div_s0+div_s1);
+    const Real delta_ds=u(m,IDN,k,j,i)*s_final-initial_s(m,0,k,j,i);
     const Real temperature=0.5*(p0/rho0+p1/rho1);
-    const Real qent_total=temperature*ds_cons/dt;
+    // dS_advect is the RK-weighted conservative change predicted by the actual face
+    // entropy fluxes, including the final HLLE states and any FOFC replacement:
+    //   dS_advect = -dt div(F_S).
+    // Therefore actual minus advected entropy is delta(D s)-dS_advect.  This uses the
+    // solver's discrete transport operator instead of an unrelated centered stencil.
+    const Real qent_total=temperature*(delta_ds-d(m,ED_DS_ADVECT,k,j,i))/dt;
+    const Real qent_centered=temperature*(delta_ds
+                                         +0.5*dt*(div_s0+div_s1))/dt;
     out(m,ED_QENT_TOTAL,k,j,i)=qent_total;
-    out(m,ED_QENT_NUM,k,j,i)=qent_total-out(m,ED_QENT_RAD,k,j,i);
+    out(m,ED_QENT_CENTERED,k,j,i)=qent_centered;
+    // ED_QENT_RAD is Lambda_{gas->radiation}: u.e evolves T^t_t+D, so a positive
+    // conserved-energy increment corresponds to gas energy loss.  Recover irreversible
+    // heating by adding that radiative loss back to the gas entropy change.
+    out(m,ED_QENT_NUM,k,j,i)=qent_total+out(m,ED_QENT_RAD,k,j,i);
     out(m,ED_GAS_ACTUAL,k,j,i)=gas_actual/dt;
     out(m,ED_GAS_CLOSURE,k,j,i)=(gas_actual-gas_sum)/dt;
     out(m,ED_RAD_ACTUAL,k,j,i)=rad_actual/dt;
     out(m,ED_RAD_CLOSURE,k,j,i)=(rad_actual-rad_sum)/dt;
 
-    const Real qdiss_e=qstore+qadv-qcomp-out(m,ED_QENT_RAD,k,j,i);
+    const Real qdiss_e=qstore+qadv-qcomp+out(m,ED_QENT_RAD,k,j,i);
     out(m,ED_INT_STORAGE,k,j,i)=qstore;
     out(m,ED_INT_ADVECTION,k,j,i)=qadv;
     out(m,ED_COMPRESSION,k,j,i)=qcomp;

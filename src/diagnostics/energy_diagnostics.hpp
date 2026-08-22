@@ -36,10 +36,11 @@ enum EnergyDiagIndex {
   ED_RAD_FIX,            // positivity/excision correction in the radiation update
   ED_RAD_SOURCE_TOTAL,   // exact radiation change across the coupling operator
   ED_GAS_C2P,            // exact conserved-energy change made by C2P/floors/excision
-  ED_DS_ADVECT,           // RK-integrated conservative entropy-flux contribution
-  ED_QENT_RAD,            // comoving radiation-to-gas energy transfer
-  ED_QENT_TOTAL,          // total nonadiabatic heating from the discrete entropy residual
-  ED_QENT_NUM,            // entropy heating minus radiation heating (repairs are flagged)
+  ED_DS_ADVECT,           // RK-integrated change -dt div(F_S) from solver face fluxes
+  ED_QENT_RAD,            // comoving gas-to-radiation loss Lambda (positive = emission)
+  ED_QENT_TOTAL,          // T[(D s)^{n+1}-(D s)^n-dS_advect]/dt
+  ED_QENT_CENTERED,       // legacy centered-current entropy estimate retained for QA
+  ED_QENT_NUM,            // irreversible entropy heating qent_total + Lambda
   ED_GAS_ACTUAL,         // measured gas conserved-energy change over the timestep
   ED_GAS_CLOSURE,        // actual minus independently recorded gas terms
   ED_RAD_ACTUAL,         // measured coordinate radiation-energy change over the timestep
@@ -47,7 +48,7 @@ enum EnergyDiagIndex {
   ED_INT_STORAGE,        // d(e u^t)/dt in Cartesian Kerr-Schild coordinates
   ED_INT_ADVECTION,      // div(e u^i), centered in time over the sampled timestep
   ED_COMPRESSION,        // -p div_4(u), centered in time over the sampled timestep
-  ED_DISS_ENERGY,        // storage + advection - compression - radiation
+  ED_DISS_ENERGY,        // storage + advection - compression + gas-to-radiation loss
   ED_THERMO_CLOSURE,     // energy-equation dissipation minus entropy dissipation
   ED_EXPANSION,          // covariant expansion theta = div_4(u)
   ED_MAG_LOSS,           // non-ideal comoving magnetic-energy loss residual
