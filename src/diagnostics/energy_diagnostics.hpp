@@ -37,6 +37,10 @@ enum EnergyDiagIndex {
   ED_RAD_SOURCE_TOTAL,   // exact radiation change across the coupling operator
   ED_GAS_C2P,            // exact conserved-energy change made by C2P/floors/excision
   ED_DS_ADVECT,           // RK-integrated change -dt div(F_S) from solver face fluxes
+  ED_DEINT_ADVECT,        // RK-integrated change -dt div(F_e) from solver face fluxes
+  ED_DU_ADVECT,           // RK-integrated change -dt div(u^i_face)
+  ED_DPCOMP_SPATIAL,      // RK-integrated spatial pressure work -dt p div(u^i_face)
+  ED_QENT_RAD_LEGACY,     // old radiation contraction retained only for sign QA
   ED_QENT_RAD,            // comoving gas-to-radiation loss Lambda (positive = emission)
   ED_QENT_TOTAL,          // T[(D s)^{n+1}-(D s)^n-dS_advect]/dt
   ED_QENT_CENTERED,       // legacy centered-current entropy estimate retained for QA
@@ -51,6 +55,9 @@ enum EnergyDiagIndex {
   ED_DISS_ENERGY,        // storage + advection - compression + gas-to-radiation loss
   ED_THERMO_CLOSURE,     // energy-equation dissipation minus entropy dissipation
   ED_EXPANSION,          // covariant expansion theta = div_4(u)
+  ED_INT_ADVECTION_CENTERED, // legacy centered div(e u^i), QA only
+  ED_COMPRESSION_CENTERED,   // legacy centered -p div_4(u), QA only
+  ED_EXPANSION_CENTERED,     // legacy centered div_4(u), QA only
   ED_MAG_LOSS,           // non-ideal comoving magnetic-energy loss residual
   ED_HYDRO_DISS,         // dissipation remaining after the signed magnetic residual
   ED_SHOCK_SENSOR,       // dimensionless compressive morphology score
@@ -105,6 +112,8 @@ class EnergyDiagnostics {
   DvceFaceFld4D<Real> hlle_energy_flux;
   DvceFaceFld4D<Real> fofc_energy_flux;
   DvceFaceFld4D<Real> entropy_flux;   // passive entropy flux used only by diagnostics
+  DvceFaceFld4D<Real> internal_energy_flux; // passive HLL flux of e u^mu
+  DvceFaceFld4D<Real> four_velocity_flux;   // Riemann-face normal u^i for p dV work
   DvceArray4D<unsigned int> flags;
 
   void AssembleTasks(std::map<std::string, std::shared_ptr<TaskList>> tl);

@@ -125,6 +125,8 @@ void MHD::FOFCDiag(Driver *pdriver, int stage) {
   auto &b0_ = b0;
   DvceArray4D<Real> fofc_diag1_, fofc_diag2_, fofc_diag3_;
   DvceArray4D<Real> entropy_diag1_, entropy_diag2_, entropy_diag3_;
+  DvceArray4D<Real> eint_diag1_, eint_diag2_, eint_diag3_;
+  DvceArray4D<Real> uface_diag1_, uface_diag2_, uface_diag3_;
   DvceArray4D<unsigned int> diag_flags_;
   if constexpr (true) {
     fofc_diag1_ = pmy_pack->penergy_diag->fofc_energy_flux.x1f;
@@ -133,6 +135,12 @@ void MHD::FOFCDiag(Driver *pdriver, int stage) {
     entropy_diag1_ = pmy_pack->penergy_diag->entropy_flux.x1f;
     entropy_diag2_ = pmy_pack->penergy_diag->entropy_flux.x2f;
     entropy_diag3_ = pmy_pack->penergy_diag->entropy_flux.x3f;
+    eint_diag1_ = pmy_pack->penergy_diag->internal_energy_flux.x1f;
+    eint_diag2_ = pmy_pack->penergy_diag->internal_energy_flux.x2f;
+    eint_diag3_ = pmy_pack->penergy_diag->internal_energy_flux.x3f;
+    uface_diag1_ = pmy_pack->penergy_diag->four_velocity_flux.x1f;
+    uface_diag2_ = pmy_pack->penergy_diag->four_velocity_flux.x2f;
+    uface_diag3_ = pmy_pack->penergy_diag->four_velocity_flux.x3f;
     diag_flags_ = pmy_pack->penergy_diag->flags;
   }
 
@@ -217,7 +225,12 @@ void MHD::FOFCDiag(Driver *pdriver, int stage) {
                            eos.gamma*log(fmax(wim1.d,1.0e-300)))/(eos.gamma-1.0);
             const Real sr=(log(fmax((eos.gamma-1.0)*wi.e,1.0e-300))-
                            eos.gamma*log(fmax(wi.d,1.0e-300)))/(eos.gamma-1.0);
-            entropy_diag1_(m,k,j,i)=flux.d*((flux.d >= 0.0) ? sl : sr);
+            const bool left=(flux.d >= 0.0);
+            const Real rup=left ? wim1.d : wi.d;
+            const Real eup=left ? wim1.e : wi.e;
+            entropy_diag1_(m,k,j,i)=flux.d*(left ? sl : sr);
+            eint_diag1_(m,k,j,i)=flux.d*eup/fmax(rup,1.0e-300);
+            uface_diag1_(m,k,j,i)=flux.d/fmax(rup,1.0e-300);
           }
         }
         e3x1_(m,k,j,i) = flux.by;
@@ -280,7 +293,12 @@ void MHD::FOFCDiag(Driver *pdriver, int stage) {
                            eos.gamma*log(fmax(wjm1.d,1.0e-300)))/(eos.gamma-1.0);
             const Real sr=(log(fmax((eos.gamma-1.0)*wj.e,1.0e-300))-
                            eos.gamma*log(fmax(wj.d,1.0e-300)))/(eos.gamma-1.0);
-            entropy_diag2_(m,k,j,i)=flux.d*((flux.d >= 0.0) ? sl : sr);
+            const bool left=(flux.d >= 0.0);
+            const Real rup=left ? wjm1.d : wj.d;
+            const Real eup=left ? wjm1.e : wj.e;
+            entropy_diag2_(m,k,j,i)=flux.d*(left ? sl : sr);
+            eint_diag2_(m,k,j,i)=flux.d*eup/fmax(rup,1.0e-300);
+            uface_diag2_(m,k,j,i)=flux.d/fmax(rup,1.0e-300);
           }
         }
         e1x2_(m,k,j,i) = flux.by;
@@ -343,7 +361,12 @@ void MHD::FOFCDiag(Driver *pdriver, int stage) {
                            eos.gamma*log(fmax(wkm1.d,1.0e-300)))/(eos.gamma-1.0);
             const Real sr=(log(fmax((eos.gamma-1.0)*wk.e,1.0e-300))-
                            eos.gamma*log(fmax(wk.d,1.0e-300)))/(eos.gamma-1.0);
-            entropy_diag3_(m,k,j,i)=flux.d*((flux.d >= 0.0) ? sl : sr);
+            const bool left=(flux.d >= 0.0);
+            const Real rup=left ? wkm1.d : wk.d;
+            const Real eup=left ? wkm1.e : wk.e;
+            entropy_diag3_(m,k,j,i)=flux.d*(left ? sl : sr);
+            eint_diag3_(m,k,j,i)=flux.d*eup/fmax(rup,1.0e-300);
+            uface_diag3_(m,k,j,i)=flux.d/fmax(rup,1.0e-300);
           }
         }
         e2x3_(m,k,j,i) = flux.by;
@@ -424,7 +447,12 @@ void MHD::FOFCDiag(Driver *pdriver, int stage) {
                            eos.gamma*log(fmax(wi.d,1.0e-300)))/(eos.gamma-1.0);
             const Real sr=(log(fmax((eos.gamma-1.0)*wip1.e,1.0e-300))-
                            eos.gamma*log(fmax(wip1.d,1.0e-300)))/(eos.gamma-1.0);
-            entropy_diag1_(m,k,j,i+1)=flux.d*((flux.d >= 0.0) ? sl : sr);
+            const bool left=(flux.d >= 0.0);
+            const Real rup=left ? wi.d : wip1.d;
+            const Real eup=left ? wi.e : wip1.e;
+            entropy_diag1_(m,k,j,i+1)=flux.d*(left ? sl : sr);
+            eint_diag1_(m,k,j,i+1)=flux.d*eup/fmax(rup,1.0e-300);
+            uface_diag1_(m,k,j,i+1)=flux.d/fmax(rup,1.0e-300);
           }
         }
         e3x1_(m,k,j,i+1) = flux.by;
@@ -487,7 +515,12 @@ void MHD::FOFCDiag(Driver *pdriver, int stage) {
                            eos.gamma*log(fmax(wj.d,1.0e-300)))/(eos.gamma-1.0);
             const Real sr=(log(fmax((eos.gamma-1.0)*wjp1.e,1.0e-300))-
                            eos.gamma*log(fmax(wjp1.d,1.0e-300)))/(eos.gamma-1.0);
-            entropy_diag2_(m,k,j+1,i)=flux.d*((flux.d >= 0.0) ? sl : sr);
+            const bool left=(flux.d >= 0.0);
+            const Real rup=left ? wj.d : wjp1.d;
+            const Real eup=left ? wj.e : wjp1.e;
+            entropy_diag2_(m,k,j+1,i)=flux.d*(left ? sl : sr);
+            eint_diag2_(m,k,j+1,i)=flux.d*eup/fmax(rup,1.0e-300);
+            uface_diag2_(m,k,j+1,i)=flux.d/fmax(rup,1.0e-300);
           }
         }
         e1x2_(m,k,j+1,i) = flux.by;
@@ -550,7 +583,12 @@ void MHD::FOFCDiag(Driver *pdriver, int stage) {
                            eos.gamma*log(fmax(wk.d,1.0e-300)))/(eos.gamma-1.0);
             const Real sr=(log(fmax((eos.gamma-1.0)*wkp1.e,1.0e-300))-
                            eos.gamma*log(fmax(wkp1.d,1.0e-300)))/(eos.gamma-1.0);
-            entropy_diag3_(m,k+1,j,i)=flux.d*((flux.d >= 0.0) ? sl : sr);
+            const bool left=(flux.d >= 0.0);
+            const Real rup=left ? wk.d : wkp1.d;
+            const Real eup=left ? wk.e : wkp1.e;
+            entropy_diag3_(m,k+1,j,i)=flux.d*(left ? sl : sr);
+            eint_diag3_(m,k+1,j,i)=flux.d*eup/fmax(rup,1.0e-300);
+            uface_diag3_(m,k+1,j,i)=flux.d/fmax(rup,1.0e-300);
           }
         }
         e2x3_(m,k+1,j,i) = flux.by;
@@ -569,4 +607,3 @@ void MHD::FOFCDiag(Driver *pdriver, int stage) {
 
 
 } // namespace mhd
-

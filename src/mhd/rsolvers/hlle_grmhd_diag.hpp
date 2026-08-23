@@ -29,7 +29,9 @@ void HLLE_GR_DIAG(TeamMember_t const &member, const EOS_Data &eos,
      const ScrArray2D<Real> &bl, const ScrArray2D<Real> &br, const DvceArray4D<Real> &bx,
      DvceArray5D<Real> flx, DvceArray4D<Real> ey, DvceArray4D<Real> ez,
      DvceArray4D<Real> diag_flux,
-     DvceArray4D<Real> diag_entropy_flux) {
+     DvceArray4D<Real> diag_entropy_flux,
+     DvceArray4D<Real> diag_internal_flux,
+     DvceArray4D<Real> diag_velocity_flux) {
   // Cyclic permutation of array indices corresponding to velocity/b_field components
   int ivy = IVX + ((ivx-IVX)+1)%3;
   int ivz = IVX + ((ivx-IVX)+2)%3;
@@ -290,13 +292,29 @@ void HLLE_GR_DIAG(TeamMember_t const &member, const EOS_Data &eos,
                        eos.gamma*log(fmax(wr_idn,1.0e-300)))/gm1;
       const Real ul_s=wl_idn*uul[0]*sl, ur_s=wr_idn*uur[0]*sr;
       const Real fl_s=wl_idn*uul[ivx]*sl, fr_s=wr_idn*uur[ivx]*sr;
+      // Treat comoving internal energy as a detached passive current e u^mu.  This
+      // uses exactly the reconstructed face states and HLL wave fan used by the MHD
+      // update, but neither array is ever read by the production solver.
+      const Real ul_e=wl(IEN,i)*uul[0], ur_e=wr(IEN,i)*uur[0];
+      const Real fl_e=wl(IEN,i)*uul[ivx], fr_e=wr(IEN,i)*uur[ivx];
       if (lambda_l >= 0.0) {
         diag_entropy_flux(m,k,j,i)=fl_s;
+        diag_internal_flux(m,k,j,i)=fl_e;
+        diag_velocity_flux(m,k,j,i)=uul[ivx];
       } else if (lambda_r <= 0.0) {
         diag_entropy_flux(m,k,j,i)=fr_s;
+        diag_internal_flux(m,k,j,i)=fr_e;
+        diag_velocity_flux(m,k,j,i)=uur[ivx];
       } else {
         diag_entropy_flux(m,k,j,i)=
             (lambda_r*fl_s-lambda_l*fr_s+qa*(ur_s-ul_s))*qb;
+        diag_internal_flux(m,k,j,i)=
+            (lambda_r*fl_e-lambda_l*fr_e+qa*(ur_e-ul_e))*qb;
+        // u^i is not conserved, so use the HLL wave-fan interface average without
+        // an artificial conserved-state jump.  Its divergence is the compatible
+        // Riemann-face volume-change rate used in the pressure-work diagnostic.
+        diag_velocity_flux(m,k,j,i)=
+            (lambda_r*uul[ivx]-lambda_l*uur[ivx])*qb;
       }
     }
   });
@@ -305,4 +323,3 @@ void HLLE_GR_DIAG(TeamMember_t const &member, const EOS_Data &eos,
 }
 } // namespace mhd
 #endif // MHD_RSOLVERS_HLLE_GRMHD_DIAG_HPP_
-

@@ -24,7 +24,7 @@
 namespace diagnostics {
 
 namespace {
-constexpr const char *kEnergyDiagImplementation = "physics-first-passive-v7";
+constexpr const char *kEnergyDiagImplementation = "physics-first-passive-v8";
 
 enum PhysicalStateIndex {
   PS_RHO=0, PS_EINT, PS_PRESSURE, PS_ENTROPY,
@@ -40,11 +40,13 @@ const char *EnergyDiagnostics::label[NENERGY_DIAG] = {
   "dE_gas_flux", "dE_gas_hlle", "dE_gas_fofc", "dE_gas_coord",
   "dE_gas_other", "dE_gas_rad", "dE_gas_abs", "dE_gas_compt",
   "dE_rad_reject", "dE_rad_spatial", "dE_rad_angular", "dE_rad_fix",
-  "dE_rad_source", "dE_gas_c2p", "dS_advect", "qent_rad",
+  "dE_rad_source", "dE_gas_c2p", "dS_advect", "dEint_advect", "dU_advect",
+  "dPcomp_spatial", "qent_rad_legacy", "qent_rad",
   "qent_total", "qent_centered", "qent_num",
   "dE_gas_actual", "dE_gas_closure", "dE_rad_actual", "dE_rad_closure",
   "q_storage", "q_advection", "q_compression", "q_diss_energy",
-  "q_thermo_closure", "expansion", "q_mag_loss", "q_hydro_diss",
+  "q_thermo_closure", "expansion", "q_advection_centered",
+  "q_compression_centered", "expansion_centered", "q_mag_loss", "q_hydro_diss",
   "shock_sensor", "current_sensor", "contact_sensor", "vort_sensor",
   "shear_sensor", "pressure_jump", "field_reversal",
   "rho", "eint", "pressure", "ut", "u1", "u2", "u3", "B1", "B2", "B3", "bsq",
@@ -67,6 +69,8 @@ EnergyDiagnostics::EnergyDiagnostics(MeshBlockPack *ppack, ParameterInput *pin) 
     hlle_energy_flux("energy_diag_hlle_flux",1,1,1,1),
     fofc_energy_flux("energy_diag_fofc_flux",1,1,1,1),
     entropy_flux("energy_diag_entropy_flux",1,1,1,1),
+    internal_energy_flux("energy_diag_internal_energy_flux",1,1,1,1),
+    four_velocity_flux("energy_diag_four_velocity_flux",1,1,1,1),
     flags("energy_diag_flags",1,1,1,1),
     pmy_pack_(ppack),
     sample_dt_(pin->GetOrAddReal("problem","energy_diagnostics_dt",1.0)),
@@ -115,6 +119,12 @@ EnergyDiagnostics::EnergyDiagnostics(MeshBlockPack *ppack, ParameterInput *pin) 
   Kokkos::realloc(entropy_flux.x1f,nmb,n3,n2,n1+1);
   Kokkos::realloc(entropy_flux.x2f,nmb,n3,n2+1,n1);
   Kokkos::realloc(entropy_flux.x3f,nmb,n3+1,n2,n1);
+  Kokkos::realloc(internal_energy_flux.x1f,nmb,n3,n2,n1+1);
+  Kokkos::realloc(internal_energy_flux.x2f,nmb,n3,n2+1,n1);
+  Kokkos::realloc(internal_energy_flux.x3f,nmb,n3+1,n2,n1);
+  Kokkos::realloc(four_velocity_flux.x1f,nmb,n3,n2,n1+1);
+  Kokkos::realloc(four_velocity_flux.x2f,nmb,n3,n2+1,n1);
+  Kokkos::realloc(four_velocity_flux.x3f,nmb,n3+1,n2,n1);
   Kokkos::realloc(flags,nmb,n3,n2,n1);
 
   Kokkos::deep_copy(step,0.0);
@@ -294,8 +304,14 @@ void EnergyDiagnostics::RecordRadiationCoupling() {
     const Real dm1=u(m,IM1,k,j,i)-before(m,1,k,j,i);
     const Real dm2=u(m,IM2,k,j,i)-before(m,2,k,j,i);
     const Real dm3=u(m,IM3,k,j,i)-before(m,3,k,j,i);
-    d(m,ED_QENT_RAD,k,j,i)+=usave(m,0,k,j,i)*de-usave(m,1,k,j,i)*dm1
-                            -usave(m,2,k,j,i)*dm2-usave(m,3,k,j,i)*dm3;
+    // The GRMHD conserved components are T^t_mu (covariant second index):
+    // IEN=T^t_t+D and IMi=T^t_i.  Therefore u^mu Delta(T^t_mu) has PLUS signs
+    // for all four components.  The previous minus-spatial contraction is kept as
+    // a detached QA channel so the sign correction is directly auditable.
+    d(m,ED_QENT_RAD_LEGACY,k,j,i)+=usave(m,0,k,j,i)*de-usave(m,1,k,j,i)*dm1
+                                   -usave(m,2,k,j,i)*dm2-usave(m,3,k,j,i)*dm3;
+    d(m,ED_QENT_RAD,k,j,i)+=usave(m,0,k,j,i)*de+usave(m,1,k,j,i)*dm1
+                            +usave(m,2,k,j,i)*dm2+usave(m,3,k,j,i)*dm3;
   });
   AccumulateGasEnergy(ED_GAS_RAD_TOTAL);
   AccumulateRadiationEnergy(ED_RAD_SOURCE_TOTAL);
@@ -326,6 +342,12 @@ TaskStatus EnergyDiagnostics::BeginStage(Driver *pdriver, int stage) {
   Kokkos::deep_copy(DevExeSpace(),entropy_flux.x1f,0.0);
   Kokkos::deep_copy(DevExeSpace(),entropy_flux.x2f,0.0);
   Kokkos::deep_copy(DevExeSpace(),entropy_flux.x3f,0.0);
+  Kokkos::deep_copy(DevExeSpace(),internal_energy_flux.x1f,0.0);
+  Kokkos::deep_copy(DevExeSpace(),internal_energy_flux.x2f,0.0);
+  Kokkos::deep_copy(DevExeSpace(),internal_energy_flux.x3f,0.0);
+  Kokkos::deep_copy(DevExeSpace(),four_velocity_flux.x1f,0.0);
+  Kokkos::deep_copy(DevExeSpace(),four_velocity_flux.x2f,0.0);
+  Kokkos::deep_copy(DevExeSpace(),four_velocity_flux.x3f,0.0);
   return TaskStatus::complete;
 }
 
@@ -404,7 +426,11 @@ void EnergyDiagnostics::RecordMHDFluxUpdate(Driver *pdriver, int stage) {
   auto hll = hlle_energy_flux;
   auto fof = fofc_energy_flux;
   auto sflx = entropy_flux;
+  auto eflx = internal_energy_flux;
+  auto uflx = four_velocity_flux;
   auto size = pmy_pack_->pmb->mb_size;
+  auto w = pmy_pack_->pmhd->w0;
+  const Real gm1 = pmy_pack_->pmhd->peos->eos_data.gamma-1.0;
   auto d = step;
   par_for("energy_diag_mhd_flux",DevExeSpace(),0,nmb1,indcs.ks,indcs.ke,
           indcs.js,indcs.je,indcs.is,indcs.ie,
@@ -413,22 +439,31 @@ void EnergyDiagnostics::RecordMHDFluxUpdate(Driver *pdriver, int stage) {
     Real dhll = (hll.x1f(m,k,j,i+1)-hll.x1f(m,k,j,i))/size.d_view(m).dx1;
     Real dfof = (fof.x1f(m,k,j,i+1)-fof.x1f(m,k,j,i))/size.d_view(m).dx1;
     Real divs = (sflx.x1f(m,k,j,i+1)-sflx.x1f(m,k,j,i))/size.d_view(m).dx1;
+    Real dive = (eflx.x1f(m,k,j,i+1)-eflx.x1f(m,k,j,i))/size.d_view(m).dx1;
+    Real divu = (uflx.x1f(m,k,j,i+1)-uflx.x1f(m,k,j,i))/size.d_view(m).dx1;
     if (multi_d) {
       total += (flx.x2f(m,IEN,k,j+1,i)-flx.x2f(m,IEN,k,j,i))/size.d_view(m).dx2;
       dhll += (hll.x2f(m,k,j+1,i)-hll.x2f(m,k,j,i))/size.d_view(m).dx2;
       dfof += (fof.x2f(m,k,j+1,i)-fof.x2f(m,k,j,i))/size.d_view(m).dx2;
       divs += (sflx.x2f(m,k,j+1,i)-sflx.x2f(m,k,j,i))/size.d_view(m).dx2;
+      dive += (eflx.x2f(m,k,j+1,i)-eflx.x2f(m,k,j,i))/size.d_view(m).dx2;
+      divu += (uflx.x2f(m,k,j+1,i)-uflx.x2f(m,k,j,i))/size.d_view(m).dx2;
     }
     if (three_d) {
       total += (flx.x3f(m,IEN,k+1,j,i)-flx.x3f(m,IEN,k,j,i))/size.d_view(m).dx3;
       dhll += (hll.x3f(m,k+1,j,i)-hll.x3f(m,k,j,i))/size.d_view(m).dx3;
       dfof += (fof.x3f(m,k+1,j,i)-fof.x3f(m,k,j,i))/size.d_view(m).dx3;
       divs += (sflx.x3f(m,k+1,j,i)-sflx.x3f(m,k,j,i))/size.d_view(m).dx3;
+      dive += (eflx.x3f(m,k+1,j,i)-eflx.x3f(m,k,j,i))/size.d_view(m).dx3;
+      divu += (uflx.x3f(m,k+1,j,i)-uflx.x3f(m,k,j,i))/size.d_view(m).dx3;
     }
     d(m,ED_GAS_FLUX,k,j,i) += -beta_dt*total;
     d(m,ED_GAS_HLLE,k,j,i) += -beta_dt*dhll;
     d(m,ED_GAS_FOFC,k,j,i) += -beta_dt*dfof;
     d(m,ED_DS_ADVECT,k,j,i) += -beta_dt*divs;
+    d(m,ED_DEINT_ADVECT,k,j,i) += -beta_dt*dive;
+    d(m,ED_DU_ADVECT,k,j,i) += -beta_dt*divu;
+    d(m,ED_DPCOMP_SPATIAL,k,j,i) += -beta_dt*gm1*w(m,IEN,k,j,i)*divu;
   });
 }
 
@@ -587,10 +622,19 @@ TaskStatus EnergyDiagnostics::FinalizeTimestep(Driver *pdriver, int stage) {
     const Real p0=phys0(m,PS_PRESSURE,k,j,i), p1=phys1(m,PS_PRESSURE,k,j,i);
     const Real rho0=phys0(m,PS_RHO,k,j,i), rho1=phys1(m,PS_RHO,k,j,i);
     const Real dut=(phys1(m,PS_UT,k,j,i)-phys0(m,PS_UT,k,j,i))/dt;
-    const Real expansion=dut+0.5*(div_u0+div_u1);
+    const Real expansion_centered=dut+0.5*(div_u0+div_u1);
     const Real qstore=(phys1(m,PS_EUT,k,j,i)-phys0(m,PS_EUT,k,j,i))/dt;
-    const Real qadv=0.5*(div_e0+div_e1);
-    const Real qcomp=-0.5*(p0+p1)*dut-0.5*(p0*div_u0+p1*div_u1);
+    const Real qadv_centered=0.5*(div_e0+div_e1);
+    const Real qcomp_centered=-0.5*(p0+p1)*dut-0.5*(p0*div_u0+p1*div_u1);
+    // Primary finite-volume terms use the same reconstructed face states, HLL wave fan,
+    // FOFC replacement, RK beta weights, and timestep as the production MHD update.
+    // dEint_advect=-integral dt div(F_e), so its corresponding rate has a minus sign.
+    const Real qadv=-d(m,ED_DEINT_ADVECT,k,j,i)/dt;
+    const Real divu_face=-d(m,ED_DU_ADVECT,k,j,i)/dt;
+    const Real expansion=dut+divu_face;
+    // Spatial p dV work is accumulated stage-by-stage with the Riemann-face velocity.
+    // The temporal part has no face flux and is endpoint-centered over this solver step.
+    const Real qcomp=d(m,ED_DPCOMP_SPATIAL,k,j,i)/dt-0.5*(p0+p1)*dut;
 
     const Real s_final=phys1(m,PS_ENTROPY,k,j,i);
     const Real delta_ds=u(m,IDN,k,j,i)*s_final-initial_s(m,0,k,j,i);
@@ -621,6 +665,9 @@ TaskStatus EnergyDiagnostics::FinalizeTimestep(Driver *pdriver, int stage) {
     out(m,ED_DISS_ENERGY,k,j,i)=qdiss_e;
     out(m,ED_THERMO_CLOSURE,k,j,i)=qdiss_e-out(m,ED_QENT_NUM,k,j,i);
     out(m,ED_EXPANSION,k,j,i)=expansion;
+    out(m,ED_INT_ADVECTION_CENTERED,k,j,i)=qadv_centered;
+    out(m,ED_COMPRESSION_CENTERED,k,j,i)=qcomp_centered;
+    out(m,ED_EXPANSION_CENTERED,k,j,i)=expansion_centered;
 
     // Covariant magnetic-energy identity for ideal GRMHD:
     //   u.d(b^2/2) + b^2 theta - b^mu b^nu nabla_mu u_nu = 0.
