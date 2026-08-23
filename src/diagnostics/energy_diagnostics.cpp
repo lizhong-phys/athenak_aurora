@@ -24,7 +24,7 @@
 namespace diagnostics {
 
 namespace {
-constexpr const char *kEnergyDiagImplementation = "physics-first-passive-v6";
+constexpr const char *kEnergyDiagImplementation = "physics-first-passive-v7";
 
 enum PhysicalStateIndex {
   PS_RHO=0, PS_EINT, PS_PRESSURE, PS_ENTROPY,

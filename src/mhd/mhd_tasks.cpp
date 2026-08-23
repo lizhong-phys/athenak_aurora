@@ -193,7 +193,15 @@ TaskStatus MHD::Fluxes(Driver *pdrive, int stage) {
   } else if (rsolver_method == MHD_RSolver::llf_gr) {
     CalculateFluxes<MHD_RSolver::llf_gr>(pdrive, stage);
   } else if (rsolver_method == MHD_RSolver::hlle_gr) {
-    CalculateFluxes<MHD_RSolver::hlle_gr>(pdrive, stage);
+    // During a sampled passive-diagnostic step, execute the arithmetic-identical
+    // GR-HLLE specialization that additionally writes detached HLLE and entropy face
+    // fluxes.  The evolved uflux/electric-field arrays are calculated exactly as in
+    // HLLE_GR; the sidecar arrays are never read by the solver.
+    if (pmy_pack->penergy_diag != nullptr && pmy_pack->penergy_diag->recording) {
+      CalculateFluxesDiag<MHD_RSolver::hlle_gr>(pdrive, stage);
+    } else {
+      CalculateFluxes<MHD_RSolver::hlle_gr>(pdrive, stage);
+    }
   }
 
   // Add viscous, resistive, heat-flux, etc fluxes
@@ -209,10 +217,18 @@ TaskStatus MHD::Fluxes(Driver *pdrive, int stage) {
 
   // call FOFC if necessary
   if (use_fofc) {
-    FOFC(pdrive, stage);
+    if (pmy_pack->penergy_diag != nullptr && pmy_pack->penergy_diag->recording) {
+      FOFCDiag(pdrive, stage);
+    } else {
+      FOFC(pdrive, stage);
+    }
   } else if (pmy_pack->pcoord->is_general_relativistic) {
     if (pmy_pack->pcoord->coord_data.bh_excise) {
-      FOFC(pdrive, stage);
+      if (pmy_pack->penergy_diag != nullptr && pmy_pack->penergy_diag->recording) {
+        FOFCDiag(pdrive, stage);
+      } else {
+        FOFC(pdrive, stage);
+      }
     }
   }
 
