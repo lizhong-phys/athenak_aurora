@@ -24,7 +24,7 @@
 namespace diagnostics {
 
 namespace {
-constexpr const char *kEnergyDiagImplementation = "physics-first-passive-v8";
+constexpr const char *kEnergyDiagImplementation = "bondi-passive-v8.1";
 
 enum PhysicalStateIndex {
   PS_RHO=0, PS_EINT, PS_PRESSURE, PS_ENTROPY,
@@ -50,7 +50,7 @@ const char *EnergyDiagnostics::label[NENERGY_DIAG] = {
   "shock_sensor", "current_sensor", "contact_sensor", "vort_sensor",
   "shear_sensor", "pressure_jump", "field_reversal",
   "rho", "eint", "pressure", "ut", "u1", "u2", "u3", "B1", "B2", "B3", "bsq",
-  "repair_flags"
+  "repair_flags", "sample_dt", "sample_time", "sample_id", "stencil_edge"
 };
 
 EnergyDiagnostics::EnergyDiagnostics(MeshBlockPack *ppack, ParameterInput *pin) :
@@ -78,6 +78,29 @@ EnergyDiagnostics::EnergyDiagnostics(MeshBlockPack *ppack, ParameterInput *pin) 
                                         ppack->pmesh->time)+sample_dt_) {
   if (ppack->pmhd == nullptr || ppack->prad == nullptr) {
     std::cout << "### FATAL ERROR: energy diagnostics currently require radiation+MHD"
+              << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+  // These sidecars have only been validated for fixed-metric GR, static mesh,
+  // GR-HLLE, and the low-storage RK2 recurrence used by the Bondi production runs.
+  if (!ppack->pcoord->is_general_relativistic ||
+      ppack->pcoord->is_dynamical_relativistic ||
+      pin->GetOrAddString("mhd","rsolver","hlle") != "hlle" ||
+      pin->GetOrAddString("time","integrator","rk2") != "rk2" ||
+      pin->GetOrAddString("mesh_refinement","refinement","none") == "adaptive") {
+    std::cout << "### FATAL ERROR: Bondi diagnostics require fixed GR, HLLE, RK2, "
+              << "and a nonadaptive mesh." << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+  if (!ppack->pmhd->peos->eos_data.is_ideal ||
+      ppack->pmhd->pvisc != nullptr || ppack->pmhd->presist != nullptr ||
+      ppack->pmhd->pcond != nullptr || ppack->pmhd->psrc != nullptr ||
+      ppack->pmhd->porb_u != nullptr || ppack->pturb != nullptr ||
+      ppack->prad->psrc != nullptr || pin->DoesBlockExist("shearing_box") ||
+      pin->GetOrAddBoolean("problem","ko_on",false) ||
+      pin->GetOrAddBoolean("problem","veldamp_on",false)) {
+    std::cout << "### FATAL ERROR: Bondi mechanism diagnostics require ideal EOS, "
+              << "no explicit diffusion, external driving, KO, or velocity damping."
               << std::endl;
     std::exit(EXIT_FAILURE);
   }
@@ -543,6 +566,9 @@ TaskStatus EnergyDiagnostics::FinalizeTimestep(Driver *pdriver, int stage) {
   const bool flat = pmy_pack_->pcoord->coord_data.is_minkowski;
   const Real spin = pmy_pack_->pcoord->coord_data.bh_spin;
 
+  const Real sampled_time = pmy_pack_->pmesh->time + dt;
+  const Real sampled_id = static_cast<Real>(sample_number_+1);
+
   par_for("energy_diag_finalize",DevExeSpace(),0,nmb1,indcs.ks,indcs.ke,
           indcs.js,indcs.je,indcs.is,indcs.ie,
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
@@ -825,6 +851,15 @@ TaskStatus EnergyDiagnostics::FinalizeTimestep(Driver *pdriver, int stage) {
     out(m,ED_B3,k,j,i)=b(m,IBZ,k,j,i);
     out(m,ED_BSQ,k,j,i)=phys1(m,PS_BSQ,k,j,i);
     out(m,ED_FLAGS,k,j,i)=static_cast<Real>(flg(m,k,j,i));
+    out(m,ED_SAMPLE_DT,k,j,i)=dt;
+    out(m,ED_SAMPLE_TIME,k,j,i)=sampled_time;
+    out(m,ED_SAMPLE_ID,k,j,i)=sampled_id;
+    // Diagnostic face fields are not refluxed at refinement interfaces. Restrict
+    // quantitative partitions to block interiors; expose the removed support.
+    out(m,ED_STENCIL_EDGE,k,j,i) =
+        (i < indcs.is+2 || i > indcs.ie-2 ||
+         (multi_d && (j < indcs.js+2 || j > indcs.je-2)) ||
+         (three_d && (k < indcs.ks+2 || k > indcs.ke-2))) ? 1.0 : 0.0;
   });
   ++sample_number_;
   const Real end_time = pmy_pack_->pmesh->time + pmy_pack_->pmesh->dt;

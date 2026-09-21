@@ -80,6 +80,11 @@ void IdealGRMHD::ConsToPrimOriginal(DvceArray5D<Real> &cons,
   const int nkji = (ku - kl + 1)*nji;
   const int nmkji = nmb*nkji;
 
+  const bool record_repairs = pmy_pack->penergy_diag != nullptr &&
+                              pmy_pack->penergy_diag->recording && !only_testfloors;
+  DvceArray4D<unsigned int> repair_flags;
+  if (record_repairs) repair_flags = pmy_pack->penergy_diag->flags;
+
   int nfloord_=0, nfloore_=0, nceilv_=0, nfail_=0, maxit_=0;
   Kokkos::parallel_reduce("grmhd_c2p",Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
   KOKKOS_LAMBDA(const int &idx, int &sumd, int &sume, int &sumv, int &sumf, int &max_it) {
@@ -270,6 +275,17 @@ void IdealGRMHD::ConsToPrimOriginal(DvceArray5D<Real> &cons,
 
 
 
+    }
+
+    // Record actual production decisions in detached arrays only.
+    if (record_repairs) {
+      unsigned int bits = 0u;
+      if (dfloor_used) bits |= diagnostics::EDF_DENSITY_FLOOR;
+      if (efloor_used) bits |= diagnostics::EDF_ENERGY_FLOOR;
+      if (vceiling_used) bits |= diagnostics::EDF_VELOCITY_CEIL;
+      if (c2p_failure) bits |= diagnostics::EDF_C2P_FAILURE;
+      if (excised) bits |= diagnostics::EDF_EXCISION;
+      repair_flags(m,k,j,i) |= bits;
     }
 
     // set FOFC flag and quit loop if this function called only to check floors

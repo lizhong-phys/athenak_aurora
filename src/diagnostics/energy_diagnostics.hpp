@@ -28,9 +28,9 @@ enum EnergyDiagIndex {
   ED_GAS_COORD,          // stationary metric/coordinate source increment
   ED_GAS_OTHER,          // explicit non-coordinate and user source increments
   ED_GAS_RAD_TOTAL,      // exact gas change across the radiation-coupling operator
-  ED_GAS_RAD_ABS,        // absorption/emission part (filled by coupling instrumentation)
-  ED_GAS_RAD_COMPT,      // Compton part (filled by coupling instrumentation)
-  ED_RAD_LIMIT_REJECT,   // proposed radiation exchange rejected by a limiter
+  ED_GAS_RAD_ABS,        // reserved; not populated by this passive implementation
+  ED_GAS_RAD_COMPT,      // reserved; not populated by this passive implementation
+  ED_RAD_LIMIT_REJECT,   // reserved; rejected proposals are not instrumented
   ED_RAD_SPATIAL,        // radiation spatial-transport increment
   ED_RAD_ANGULAR,        // radiation angular-transport increment
   ED_RAD_FIX,            // positivity/excision correction in the radiation update
@@ -74,6 +74,7 @@ enum EnergyDiagIndex {
   ED_B1, ED_B2, ED_B3,   // cell-centered coordinate magnetic field
   ED_BSQ,                // comoving magnetic four-vector squared
   ED_FLAGS,              // bit mask converted to Real for binary output
+  ED_SAMPLE_DT, ED_SAMPLE_TIME, ED_SAMPLE_ID, ED_STENCIL_EDGE,
   NENERGY_DIAG
 };
 

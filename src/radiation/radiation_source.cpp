@@ -109,15 +109,8 @@ Real RadBacktrackLambda(Real d, Real m1, Real m2, Real m3, Real e,
 //! gr_rad branch, radiation/coupling/emission.cpp commit be7f84565b.
 
 TaskStatus Radiation::RadFluidCoupling(Driver *pdriver, int stage) {
-  // Always execute the production coupling.  The diagnostic only snapshots the accepted
-  // four-momentum exchange before/afterward and cannot influence limiter decisions.
-  auto *pdiag=pmy_pack->penergy_diag;
-  if (pdiag != nullptr && pdiag->recording) pdiag->SaveRadiationCouplingState();
-  TaskStatus status=RadFluidCouplingOriginal(pdriver, stage);
-  if (pdiag != nullptr && pdiag->recording && status == TaskStatus::complete) {
-    pdiag->RecordRadiationCoupling();
-  }
-  return status;
+  // The source records its accepted exchange after its own pre-source C2P.
+  return RadFluidCouplingOriginal(pdriver, stage);
 }
 
 TaskStatus Radiation::RadFluidCouplingOriginal(Driver *pdriver, int stage) {
@@ -232,6 +225,9 @@ TaskStatus Radiation::RadFluidCouplingOriginal(Driver *pdriver, int stage) {
       pmy_pack->pmhd->peos->ConsToPrim(u0_,b0_,w0_,bcc0_,false,is,ie,js,je,ks,ke);
     }
   }
+
+  auto *pdiag = pmy_pack->penergy_diag;
+  if (pdiag != nullptr && pdiag->recording) pdiag->SaveRadiationCouplingState();
 
   // compute implicit source term
   par_for("radiation_source",DevExeSpace(),0,nmb1,ks,ke,js,je,is,ie,
@@ -865,6 +861,8 @@ TaskStatus Radiation::RadFluidCouplingOriginal(Driver *pdriver, int stage) {
       }
     }
   });
+
+  if (pdiag != nullptr && pdiag->recording) pdiag->RecordRadiationCoupling();
 
   return TaskStatus::complete;
 }

@@ -169,7 +169,7 @@ BaseTypeOutput::BaseTypeOutput(ParameterInput *pin, Mesh *pm, OutputParameters o
        << std::endl << "Input file is likely missing corresponding block" << std::endl;
     exit(EXIT_FAILURE);
   }
-  if ((ivar==153) && (pm->pmb_pack->penergy_diag == nullptr)) {
+  if ((ivar==153 || ivar==154) && (pm->pmb_pack->penergy_diag == nullptr)) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
        << "Output variable 'bhl_energy_diag' requires "
        << "<problem>/energy_diagnostics=true." << std::endl;
@@ -616,7 +616,7 @@ BaseTypeOutput::BaseTypeOutput(ParameterInput *pin, Mesh *pm, OutputParameters o
       outvars.emplace_back("force3",2,&(pm->pmb_pack->pturb->force));
     }
 
-    if (variable.compare("bhl_energy_diag") == 0) {
+    if (variable.compare("bhl_energy_diag") == 0 || variable.compare("bondi_energy_diag") == 0) {
       auto *pdiag = pm->pmb_pack->penergy_diag;
       for (int n=0; n<diagnostics::NENERGY_DIAG; ++n) {
         outvars.emplace_back(diagnostics::EnergyDiagnostics::label[n],n,&(pdiag->output));
