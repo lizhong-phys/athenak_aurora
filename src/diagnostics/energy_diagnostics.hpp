@@ -122,9 +122,9 @@ class EnergyDiagnostics {
   // static-refinement interfaces.  Without it the sidecar divergences do not close
   // on the two outermost cell layers of every block, which is the sole reason
   // stencil_edge marks them.  Variable order is fixed by SidecarVar below.
+  enum SidecarVar {SC_HLLE=0, SC_FOFC, SC_ENTROPY, SC_EINT, SC_UVEL, NSIDECAR};
   DvceFaceFld5D<Real> sidecar_flx;
   MeshBoundaryValuesCC *pbval_sidecar = nullptr;
-  enum SidecarVar {SC_HLLE=0, SC_FOFC, SC_ENTROPY, SC_EINT, SC_UVEL, NSIDECAR};
   void GatherSidecarFluxes();     // 4D sidecars -> sidecar_flx
   void ScatterSidecarFluxes();    // sidecar_flx -> 4D sidecars
   TaskStatus SendSidecarFlux();

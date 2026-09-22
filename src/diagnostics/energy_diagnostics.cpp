@@ -71,6 +71,8 @@ EnergyDiagnostics::EnergyDiagnostics(MeshBlockPack *ppack, ParameterInput *pin) 
     entropy_flux("energy_diag_entropy_flux",1,1,1,1),
     internal_energy_flux("energy_diag_internal_energy_flux",1,1,1,1),
     four_velocity_flux("energy_diag_four_velocity_flux",1,1,1,1),
+    // DvceFaceFld5D has no default constructor; sized for real in the body.
+    sidecar_flx("energy_diag_sidecar_flx",1,NSIDECAR,1,1,1),
     flags("energy_diag_flags",1,1,1,1),
     pmy_pack_(ppack),
     sample_dt_(pin->GetOrAddReal("problem","energy_diagnostics_dt",1.0)),
