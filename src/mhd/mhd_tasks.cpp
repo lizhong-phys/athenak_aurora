@@ -50,7 +50,12 @@ void MHD::AssembleMHDTasks(std::map<std::string, std::shared_ptr<TaskList>> tl) 
   id.flux      = tl["stagen"]->AddTask(&MHD::Fluxes, this, id.copyu);
   id.sendf     = tl["stagen"]->AddTask(&MHD::SendFlux, this, id.flux);
   id.recvf     = tl["stagen"]->AddTask(&MHD::RecvFlux, this, id.sendf);
-  id.rkupdt    = tl["stagen"]->AddTask(&MHD::RKUpdate, this, id.recvf);
+  // Correct the detached diagnostic face fluxes the same way, so their divergences
+  // close on block boundaries too. Both are no-ops unless a diagnostic sample is
+  // being recorded on this step, and unless the mesh is multilevel.
+  id.sendfd    = tl["stagen"]->AddTask(&MHD::SendFluxDiag, this, id.recvf);
+  id.recvfd    = tl["stagen"]->AddTask(&MHD::RecvFluxDiag, this, id.sendfd);
+  id.rkupdt    = tl["stagen"]->AddTask(&MHD::RKUpdate, this, id.recvfd);
   id.srctrms   = tl["stagen"]->AddTask(&MHD::MHDSrcTerms, this, id.rkupdt);
   id.sendu_oa  = tl["stagen"]->AddTask(&MHD::SendU_OA, this, id.srctrms);
   id.recvu_oa  = tl["stagen"]->AddTask(&MHD::RecvU_OA, this, id.sendu_oa);
@@ -120,6 +125,14 @@ TaskStatus MHD::InitRecv(Driver *pdrive, int stage) {
     if (pmy_pack->pmesh->multilevel) {
       tstat = pbval_u->InitFluxRecv(nmhd+nscalars);
       if (tstat != TaskStatus::complete) return tstat;
+      // Same for the passive diagnostic sidecar fluxes. Posted on every step, not
+      // only sampled ones: `recording` is decided later in the step, and an
+      // unposted receive would deadlock RecvAndUnpackFluxCC.
+      auto *pdiag = pmy_pack->penergy_diag;
+      if (pdiag != nullptr && pdiag->pbval_sidecar != nullptr) {
+        tstat = pdiag->pbval_sidecar->InitFluxRecv(diagnostics::EnergyDiagnostics::NSIDECAR);
+        if (tstat != TaskStatus::complete) return tstat;
+      }
     }
     // post receives for fluxes of B, which are used even with uniform grids
     tstat = pbval_b->InitFluxRecv(3);
@@ -261,6 +274,25 @@ TaskStatus MHD::RecvFlux(Driver *pdrive, int stage) {
     tstat = pbval_u->RecvAndUnpackFluxCC(uflx);
   }
   return tstat;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn MHD::SendFluxDiag / MHD::RecvFluxDiag
+//! \brief Flux correction for the passive energy-diagnostic face arrays. uflx is
+//! already corrected by SendFlux/RecvFlux above; without these the sidecar
+//! divergences are wrong on every block's outer layers, which is what stencil_edge
+//! was introduced to hide.
+
+TaskStatus MHD::SendFluxDiag(Driver *pdrive, int stage) {
+  auto *pdiag = pmy_pack->penergy_diag;
+  if (pdiag == nullptr || !pmy_pack->pmesh->multilevel) return TaskStatus::complete;
+  return pdiag->SendSidecarFlux();
+}
+
+TaskStatus MHD::RecvFluxDiag(Driver *pdrive, int stage) {
+  auto *pdiag = pmy_pack->penergy_diag;
+  if (pdiag == nullptr || !pmy_pack->pmesh->multilevel) return TaskStatus::complete;
+  return pdiag->RecvSidecarFlux();
 }
 
 //----------------------------------------------------------------------------------------

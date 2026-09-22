@@ -148,6 +148,14 @@ EnergyDiagnostics::EnergyDiagnostics(MeshBlockPack *ppack, ParameterInput *pin) 
   Kokkos::realloc(four_velocity_flux.x1f,nmb,n3,n2,n1+1);
   Kokkos::realloc(four_velocity_flux.x2f,nmb,n3,n2+1,n1);
   Kokkos::realloc(four_velocity_flux.x3f,nmb,n3+1,n2,n1);
+  // Staging array + its own boundary buffers for sidecar flux correction.
+  Kokkos::realloc(sidecar_flx.x1f,nmb,NSIDECAR,n3,n2,n1+1);
+  Kokkos::realloc(sidecar_flx.x2f,nmb,NSIDECAR,n3,n2+1,n1);
+  Kokkos::realloc(sidecar_flx.x3f,nmb,NSIDECAR,n3+1,n2,n1);
+  if (pmy_pack_->pmesh->multilevel) {
+    pbval_sidecar = new MeshBoundaryValuesCC(pmy_pack_, pin, false);
+    pbval_sidecar->InitializeBuffers(NSIDECAR);
+  }
   Kokkos::realloc(flags,nmb,n3,n2,n1);
 
   Kokkos::deep_copy(step,0.0);
@@ -436,6 +444,100 @@ void EnergyDiagnostics::AccumulateRadiationEnergy(int channel) {
     for (int n=0; n<nang; ++n) e += i0(m,n,k,j,i)*omega.d_view(n);
     d(m,channel,k,j,i) += e-scratch(m,0,k,j,i);
   });
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn EnergyDiagnostics::GatherSidecarFluxes / ScatterSidecarFluxes
+//! \brief Move the five detached face fields in and out of the 5D staging array.
+//!
+//! A copy rather than aliasing: the Riemann kernels in mhd_fluxes_diag.cpp capture
+//! the 4D views directly, and rewriting those captures would touch the audited
+//! flux path. Both copies run only on a sampled step (recording==true), i.e. ~10
+//! times per 10 M continuation, so the cost is irrelevant.
+
+void EnergyDiagnostics::GatherSidecarFluxes() {
+  auto &sc = sidecar_flx;
+  auto h1 = hlle_energy_flux.x1f, h2 = hlle_energy_flux.x2f, h3 = hlle_energy_flux.x3f;
+  auto f1 = fofc_energy_flux.x1f, f2 = fofc_energy_flux.x2f, f3 = fofc_energy_flux.x3f;
+  auto s1 = entropy_flux.x1f, s2 = entropy_flux.x2f, s3 = entropy_flux.x3f;
+  auto e1 = internal_energy_flux.x1f, e2 = internal_energy_flux.x2f,
+       e3 = internal_energy_flux.x3f;
+  auto u1 = four_velocity_flux.x1f, u2 = four_velocity_flux.x2f,
+       u3 = four_velocity_flux.x3f;
+  const int nmb1 = pmy_pack_->nmb_thispack-1;
+  int k1 = sc.x1f.extent_int(2), j1 = sc.x1f.extent_int(3), i1 = sc.x1f.extent_int(4);
+  par_for("ed_sidecar_gather1",DevExeSpace(),0,nmb1,0,k1-1,0,j1-1,0,i1-1,
+  KOKKOS_LAMBDA(int m,int k,int j,int i) {
+    sc.x1f(m,SC_HLLE,k,j,i)=h1(m,k,j,i);  sc.x1f(m,SC_FOFC,k,j,i)=f1(m,k,j,i);
+    sc.x1f(m,SC_ENTROPY,k,j,i)=s1(m,k,j,i); sc.x1f(m,SC_EINT,k,j,i)=e1(m,k,j,i);
+    sc.x1f(m,SC_UVEL,k,j,i)=u1(m,k,j,i);
+  });
+  int k2 = sc.x2f.extent_int(2), j2 = sc.x2f.extent_int(3), i2 = sc.x2f.extent_int(4);
+  par_for("ed_sidecar_gather2",DevExeSpace(),0,nmb1,0,k2-1,0,j2-1,0,i2-1,
+  KOKKOS_LAMBDA(int m,int k,int j,int i) {
+    sc.x2f(m,SC_HLLE,k,j,i)=h2(m,k,j,i);  sc.x2f(m,SC_FOFC,k,j,i)=f2(m,k,j,i);
+    sc.x2f(m,SC_ENTROPY,k,j,i)=s2(m,k,j,i); sc.x2f(m,SC_EINT,k,j,i)=e2(m,k,j,i);
+    sc.x2f(m,SC_UVEL,k,j,i)=u2(m,k,j,i);
+  });
+  int k3 = sc.x3f.extent_int(2), j3 = sc.x3f.extent_int(3), i3 = sc.x3f.extent_int(4);
+  par_for("ed_sidecar_gather3",DevExeSpace(),0,nmb1,0,k3-1,0,j3-1,0,i3-1,
+  KOKKOS_LAMBDA(int m,int k,int j,int i) {
+    sc.x3f(m,SC_HLLE,k,j,i)=h3(m,k,j,i);  sc.x3f(m,SC_FOFC,k,j,i)=f3(m,k,j,i);
+    sc.x3f(m,SC_ENTROPY,k,j,i)=s3(m,k,j,i); sc.x3f(m,SC_EINT,k,j,i)=e3(m,k,j,i);
+    sc.x3f(m,SC_UVEL,k,j,i)=u3(m,k,j,i);
+  });
+}
+
+void EnergyDiagnostics::ScatterSidecarFluxes() {
+  auto &sc = sidecar_flx;
+  auto h1 = hlle_energy_flux.x1f, h2 = hlle_energy_flux.x2f, h3 = hlle_energy_flux.x3f;
+  auto f1 = fofc_energy_flux.x1f, f2 = fofc_energy_flux.x2f, f3 = fofc_energy_flux.x3f;
+  auto s1 = entropy_flux.x1f, s2 = entropy_flux.x2f, s3 = entropy_flux.x3f;
+  auto e1 = internal_energy_flux.x1f, e2 = internal_energy_flux.x2f,
+       e3 = internal_energy_flux.x3f;
+  auto u1 = four_velocity_flux.x1f, u2 = four_velocity_flux.x2f,
+       u3 = four_velocity_flux.x3f;
+  const int nmb1 = pmy_pack_->nmb_thispack-1;
+  int k1 = sc.x1f.extent_int(2), j1 = sc.x1f.extent_int(3), i1 = sc.x1f.extent_int(4);
+  par_for("ed_sidecar_scatter1",DevExeSpace(),0,nmb1,0,k1-1,0,j1-1,0,i1-1,
+  KOKKOS_LAMBDA(int m,int k,int j,int i) {
+    h1(m,k,j,i)=sc.x1f(m,SC_HLLE,k,j,i);  f1(m,k,j,i)=sc.x1f(m,SC_FOFC,k,j,i);
+    s1(m,k,j,i)=sc.x1f(m,SC_ENTROPY,k,j,i); e1(m,k,j,i)=sc.x1f(m,SC_EINT,k,j,i);
+    u1(m,k,j,i)=sc.x1f(m,SC_UVEL,k,j,i);
+  });
+  int k2 = sc.x2f.extent_int(2), j2 = sc.x2f.extent_int(3), i2 = sc.x2f.extent_int(4);
+  par_for("ed_sidecar_scatter2",DevExeSpace(),0,nmb1,0,k2-1,0,j2-1,0,i2-1,
+  KOKKOS_LAMBDA(int m,int k,int j,int i) {
+    h2(m,k,j,i)=sc.x2f(m,SC_HLLE,k,j,i);  f2(m,k,j,i)=sc.x2f(m,SC_FOFC,k,j,i);
+    s2(m,k,j,i)=sc.x2f(m,SC_ENTROPY,k,j,i); e2(m,k,j,i)=sc.x2f(m,SC_EINT,k,j,i);
+    u2(m,k,j,i)=sc.x2f(m,SC_UVEL,k,j,i);
+  });
+  int k3 = sc.x3f.extent_int(2), j3 = sc.x3f.extent_int(3), i3 = sc.x3f.extent_int(4);
+  par_for("ed_sidecar_scatter3",DevExeSpace(),0,nmb1,0,k3-1,0,j3-1,0,i3-1,
+  KOKKOS_LAMBDA(int m,int k,int j,int i) {
+    h3(m,k,j,i)=sc.x3f(m,SC_HLLE,k,j,i);  f3(m,k,j,i)=sc.x3f(m,SC_FOFC,k,j,i);
+    s3(m,k,j,i)=sc.x3f(m,SC_ENTROPY,k,j,i); e3(m,k,j,i)=sc.x3f(m,SC_EINT,k,j,i);
+    u3(m,k,j,i)=sc.x3f(m,SC_UVEL,k,j,i);
+  });
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn EnergyDiagnostics::SendSidecarFlux / RecvSidecarFlux
+//! \brief Apply AthenaK's own fine->coarse flux restriction to the sidecar arrays,
+//! the same call MHD::SendFlux/RecvFlux make for uflx. No-op without SMR.
+
+TaskStatus EnergyDiagnostics::SendSidecarFlux() {
+  if (!recording || pbval_sidecar == nullptr) return TaskStatus::complete;
+  GatherSidecarFluxes();
+  return pbval_sidecar->PackAndSendFluxCC(sidecar_flx);
+}
+
+TaskStatus EnergyDiagnostics::RecvSidecarFlux() {
+  if (!recording || pbval_sidecar == nullptr) return TaskStatus::complete;
+  TaskStatus tstat = pbval_sidecar->RecvAndUnpackFluxCC(sidecar_flx);
+  if (tstat != TaskStatus::complete) return tstat;
+  ScatterSidecarFluxes();
+  return TaskStatus::complete;
 }
 
 void EnergyDiagnostics::RecordMHDFluxUpdate(Driver *pdriver, int stage) {

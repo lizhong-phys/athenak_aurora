@@ -50,6 +50,8 @@ struct MHDTaskIDs {
   TaskID copyu;
   TaskID flux;
   TaskID sendf;
+  TaskID sendfd;   // diagnostic sidecar flux correction
+  TaskID recvfd;
   TaskID recvf;
   TaskID rkupdt;
   TaskID srctrms;
@@ -158,6 +160,8 @@ class MHD {
   TaskStatus Fluxes(Driver *d, int stage);
   TaskStatus SendFlux(Driver *d, int stage);
   TaskStatus RecvFlux(Driver *d, int stage);
+  TaskStatus SendFluxDiag(Driver *d, int stage);
+  TaskStatus RecvFluxDiag(Driver *d, int stage);
   TaskStatus RKUpdate(Driver *d, int stage);
   TaskStatus MHDSrcTerms(Driver *d, int stage);
   TaskStatus SendU_OA(Driver *d, int stage);

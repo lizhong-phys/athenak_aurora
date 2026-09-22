@@ -14,6 +14,7 @@
 
 #include "athena.hpp"
 #include "tasklist/task_list.hpp"
+#include "bvals/bvals.hpp"
 
 class Driver;
 class MeshBlockPack;
@@ -93,7 +94,7 @@ enum EnergyDiagFlag : unsigned int {
 class EnergyDiagnostics {
  public:
   EnergyDiagnostics(MeshBlockPack *ppack, ParameterInput *pin);
-  ~EnergyDiagnostics() = default;
+  ~EnergyDiagnostics() { delete pbval_sidecar; }
 
   static const char *label[NENERGY_DIAG];
 
@@ -115,6 +116,19 @@ class EnergyDiagnostics {
   DvceFaceFld4D<Real> entropy_flux;   // passive entropy flux used only by diagnostics
   DvceFaceFld4D<Real> internal_energy_flux; // passive HLL flux of e u^mu
   DvceFaceFld4D<Real> four_velocity_flux;   // Riemann-face normal u^i for p dV work
+
+  // The five sidecar face fields above are staged into this 5D array so they can
+  // be passed through the SAME restriction/correction AthenaK applies to uflx at
+  // static-refinement interfaces.  Without it the sidecar divergences do not close
+  // on the two outermost cell layers of every block, which is the sole reason
+  // stencil_edge marks them.  Variable order is fixed by SidecarVar below.
+  DvceFaceFld5D<Real> sidecar_flx;
+  MeshBoundaryValuesCC *pbval_sidecar = nullptr;
+  enum SidecarVar {SC_HLLE=0, SC_FOFC, SC_ENTROPY, SC_EINT, SC_UVEL, NSIDECAR};
+  void GatherSidecarFluxes();     // 4D sidecars -> sidecar_flx
+  void ScatterSidecarFluxes();    // sidecar_flx -> 4D sidecars
+  TaskStatus SendSidecarFlux();
+  TaskStatus RecvSidecarFlux();
   DvceArray4D<unsigned int> flags;
 
   void AssembleTasks(std::map<std::string, std::shared_ptr<TaskList>> tl);
