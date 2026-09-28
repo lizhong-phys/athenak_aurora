@@ -6,8 +6,10 @@
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <vector>
 #include "diagnostics/energy_diagnostics.hpp"
 #include "diagnostics/em_budget.hpp"
+#include "diagnostics/state_summary.hpp"
 #include "coordinates/cell_locations.hpp"
 #include "driver/driver.hpp"
 #include "mesh/mesh.hpp"
@@ -33,31 +35,56 @@ void WriteEnergyFingerprint(ParameterInput *pin, Mesh *mesh) {
     bits=(bits^(bits>>27))*0x94d049bb133111ebull;
     h2+=bits^(bits>>31);
   };
-  auto cc=[&](const DvceArray5D<Real> &device) {
+  std::ostringstream fields;
+  fields<<std::setprecision(17);
+  bool first_field=true;
+  auto write_summary=[&](const std::string &name,const StateSummary &summary) {
+    if (!first_field) fields<<",";
+    first_field=false;
+    fields<<"\""<<name<<"\":";
+    summary.Write(fields);
+  };
+  auto cc=[&](const DvceArray5D<Real> &device,const std::string &prefix,bool hash) {
     auto host=Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(),device);
+    std::vector<StateSummary> summaries(device.extent_int(1));
     for (int m=0; m<pack->nmb_thispack; ++m) for (int n=0; n<device.extent_int(1); ++n)
       for (int k=ix.ks; k<=ix.ke; ++k) for (int j=ix.js; j<=ix.je; ++j)
-        for (int i=ix.is; i<=ix.ie; ++i) add(host(m,n,k,j,i));
+        for (int i=ix.is; i<=ix.ie; ++i) {
+          const Real value=host(m,n,k,j,i);
+          if (hash) add(value);
+          summaries[n].Add(value);
+        }
+    for (int n=0; n<device.extent_int(1); ++n)
+      write_summary(prefix+"_"+std::to_string(n),summaries[n]);
   };
   auto fc=[&](const DvceArray4D<Real> &device,int dir) {
     auto host=Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(),device);
+    StateSummary summary;
     for (int m=0; m<pack->nmb_thispack; ++m)
       for (int k=ix.ks; k<=ix.ke+(dir==3); ++k)
         for (int j=ix.js; j<=ix.je+(dir==2); ++j)
-          for (int i=ix.is; i<=ix.ie+(dir==1); ++i) add(host(m,k,j,i));
+          for (int i=ix.is; i<=ix.ie+(dir==1); ++i) {
+            const Real value=host(m,k,j,i);
+            add(value); summary.Add(value);
+          }
+    write_summary("Bface_"+std::to_string(dir),summary);
   };
   if (pack->pmhd==nullptr || pack->prad==nullptr)
     Kokkos::abort("Energy fingerprint requires radiation MHD");
-  cc(pack->pmhd->u0);
+  cc(pack->pmhd->u0,"conserved",true);
   fc(pack->pmhd->b0.x1f,1); fc(pack->pmhd->b0.x2f,2); fc(pack->pmhd->b0.x3f,3);
-  cc(pack->prad->i0);
+  cc(pack->prad->i0,"radiation",true);
+  cc(pack->pmhd->w0,"primitive",false);
   std::ostringstream name;
   name<<"fingerprint_rank_"<<std::setw(8)<<std::setfill('0')<<global_variable::my_rank<<".json";
   std::ofstream f(name.str());
   if (!f) Kokkos::abort("Cannot write passive state fingerprint");
   f<<std::setprecision(17)<<"{\"time\":"<<mesh->time<<",\"cycle\":"<<mesh->ncycle
    <<",\"dt\":"<<mesh->dt<<",\"values\":"<<count<<",\"hash\":\""
-   <<std::hex<<std::setw(16)<<std::setfill('0')<<h1<<std::setw(16)<<h2<<"\"}\n";
+   <<std::hex<<std::setw(16)<<std::setfill('0')<<h1<<std::setw(16)<<h2<<std::dec
+   <<"\",\"summary_format\":\"major-field-summary-v1\",\"mesh\":["
+   <<pack->nmb_thispack<<","<<ix.nx1<<","<<ix.nx2<<","<<ix.nx3
+   <<"],\"fields\":{"<<fields.str()<<"}}\n";
 }
 
 namespace {

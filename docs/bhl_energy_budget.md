@@ -20,8 +20,11 @@ energy_diagnostics_dt = 1
 With both absent/false there is no diagnostic object. The optional
 `energy_fingerprint=true` switch enrolls a read-only end-of-run check independently
 of those switches. It hashes active conserved/scalar fields, all active magnetic
-faces, and every active radiation intensity. Ghost zones and scratch arrays are
-not fingerprinted. Each rank writes a tiny JSON file.
+faces, and every active radiation intensity. It also records means, absolute
+means, RMS, extrema, and finite/NaN/Inf counts for those components and the gas
+primitives. Ghost zones and scratch arrays are excluded. Each rank writes a
+compact JSON file marked `major-field-summary-v1`; this host-only read never
+feeds the evolution.
 
 One prerequisite repair is **not** switch-gated: the split-restart reader now
 passes `single_file_per_rank` to `GetPosition`. Otherwise it calls MPI on a FILE*
@@ -118,9 +121,13 @@ overwriting it. The analysis verifies interval coverage, not just file counts.
 
 Default: 10 rg/c, ten interval diagnostic volumes, one ordinary end-state volume.
 No extra 3-D volumes are required by the default passivity preflight: two short
-runs produce per-rank state fingerprints instead. The fingerprint comparison is
-high-confidence bit-pattern checking, not a collision-free mathematical proof.
-Local regression additionally compares complete restart payload bytes.
+runs produce per-rank main-field summaries instead. The analysis_5 gate compares
+these with relative tolerance 1e-10 and zero absolute tolerance by default; time,
+cycle, dt, mesh, and cell/non-finite counts must match. Hash mismatches alone do
+not stop the run. Matching non-finite counts are reported, not a clean-health
+certificate. Aggregate agreement cannot bound individual-cell differences.
+Old hash-only records cannot establish numerical agreement. Local CPU regression
+additionally compares complete restart payload bytes.
 
 The compact diagnostic output contains 47 float32 fields. Size is approximately
 47 * 4 * active_cell_count bytes per volume, plus headers; there are ten volumes.
@@ -157,4 +164,3 @@ NaN/Inf flags check the evolved conserved state, recovered primitives, magnetic
 field, and every radiation intensity at each recorded step end. This does not
 inspect every transient nonlinear-iteration state. Non-finite diagnostics are
 also counted independently. Overflow cells do not silently enter physical sums.
-
