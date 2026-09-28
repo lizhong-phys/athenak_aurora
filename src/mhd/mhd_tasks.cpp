@@ -204,15 +204,12 @@ TaskStatus MHD::Fluxes(Driver *pdrive, int stage) {
   } else if (rsolver_method == MHD_RSolver::llf_gr) {
     CalculateFluxes<MHD_RSolver::llf_gr>(pdrive, stage);
   } else if (rsolver_method == MHD_RSolver::hlle_gr) {
-    // During a sampled passive-diagnostic step, execute the arithmetic-identical
-    // GR-HLLE specialization that additionally writes detached HLLE and entropy face
-    // fluxes.  The evolved uflux/electric-field arrays are calculated exactly as in
-    // HLLE_GR; the sidecar arrays are never read by the solver.
-    if (pmy_pack->penergy_diag != nullptr && pmy_pack->penergy_diag->recording) {
-      CalculateFluxesDiag<MHD_RSolver::hlle_gr>(pdrive, stage);
-    } else {
-      CalculateFluxes<MHD_RSolver::hlle_gr>(pdrive, stage);
-    }
+    // Always execute the identical production kernel, with diagnostics ON or OFF.
+    CalculateFluxes<MHD_RSolver::hlle_gr>(pdrive, stage);
+  }
+  if (pmy_pack->penergy_diag != nullptr && pmy_pack->penergy_diag->recording) {
+    // Reconstruct diagnostic currents separately. This pass has no production outputs.
+    CalculateFluxesDiag<MHD_RSolver::hlle_gr>(pdrive, stage);
   }
 
   // Add viscous, resistive, heat-flux, etc fluxes
@@ -226,21 +223,12 @@ TaskStatus MHD::Fluxes(Driver *pdrive, int stage) {
     pcond->AddHeatFlux(w0, peos->eos_data, uflx);
   }
 
-  // call FOFC if necessary
-  if (use_fofc) {
-    if (pmy_pack->penergy_diag != nullptr && pmy_pack->penergy_diag->recording) {
-      FOFCDiag(pdrive, stage);
-    } else {
-      FOFC(pdrive, stage);
-    }
-  } else if (pmy_pack->pcoord->is_general_relativistic) {
-    if (pmy_pack->pcoord->coord_data.bh_excise) {
-      if (pmy_pack->penergy_diag != nullptr && pmy_pack->penergy_diag->recording) {
-        FOFCDiag(pdrive, stage);
-      } else {
-        FOFC(pdrive, stage);
-      }
-    }
+  // Record a before-image only when the production correction will run.
+  if (use_fofc || (pmy_pack->pcoord->is_general_relativistic &&
+                   pmy_pack->pcoord->coord_data.bh_excise)) {
+    if (pmy_pack->penergy_diag != nullptr && pmy_pack->penergy_diag->recording)
+      SnapshotFOFCEnergy();
+    FOFC(pdrive, stage);
   }
 
   return TaskStatus::complete;

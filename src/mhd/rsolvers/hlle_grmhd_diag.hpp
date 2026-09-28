@@ -6,7 +6,7 @@
 // Licensed under the 3-clause BSD License (the "LICENSE")
 //========================================================================================
 //! \file hlle_grmhd.hpp
-//! \brief HLLE Riemann solver for general relativistic MHD.
+//! \brief Read-only reconstruction of GR-HLLE diagnostic currents; not an evolution solver.
 //!
 //! Notes:
 //!  - cf. HLLE solver in hlle_mhd_rel_no_transform.cpp in Athena++
@@ -27,7 +27,6 @@ void HLLE_GR_DIAG(TeamMember_t const &member, const EOS_Data &eos,
      const int m, const int k, const int j, const int il, const int iu, const int ivx,
      const ScrArray2D<Real> &wl, const ScrArray2D<Real> &wr,
      const ScrArray2D<Real> &bl, const ScrArray2D<Real> &br, const DvceArray4D<Real> &bx,
-     DvceArray5D<Real> flx, DvceArray4D<Real> ey, DvceArray4D<Real> ez,
      DvceArray4D<Real> diag_flux,
      DvceArray4D<Real> diag_entropy_flux,
      DvceArray4D<Real> diag_internal_flux,
@@ -225,62 +224,9 @@ void HLLE_GR_DIAG(TeamMember_t const &member, const EOS_Data &eos,
     du.by = (bur[ivy]*uur[0] - bur[0]*uur[ivy]) - (bul[ivy]*uul[0] - bul[0]*uul[ivy]);
     du.bz = (bur[ivz]*uur[0] - bur[0]*uur[ivz]) - (bul[ivz]*uul[0] - bul[0]*uul[ivz]);
 
-    // Calculate fluxes in L region (rho u^i and T^i_\mu, where i = ivx)
-    MHDCons1D fl;
-    qa = wtot_l * uul[ivx];
-    fl.d  = wl_idn * uul[ivx];
-    fl.mx = qa * ull[ivx] - bul[ivx] * bll[ivx] + ptot_l;
-    fl.my = qa * ull[ivy] - bul[ivx] * bll[ivy];
-    fl.mz = qa * ull[ivz] - bul[ivx] * bll[ivz];
-    fl.e  = qa * ull[0]   - bul[ivx] * bll[0];
-    fl.by = bul[ivy] * uul[ivx] - bul[ivx] * uul[ivy];
-    fl.bz = bul[ivz] * uul[ivx] - bul[ivx] * uul[ivz];
-
-    // Calculate fluxes in R region (rho u^i and T^i_\mu, where i = ivx)
-    MHDCons1D fr;
-    qa = wtot_r * uur[ivx];
-    fr.d  = wr_idn * uur[ivx];
-    fr.mx = qa * ulr[ivx] - bur[ivx] * blr[ivx] + ptot_r;
-    fr.my = qa * ulr[ivy] - bur[ivx] * blr[ivy];
-    fr.mz = qa * ulr[ivz] - bur[ivx] * blr[ivz];
-    fr.e  = qa * ulr[0]   - bur[ivx] * blr[0];
-    fr.by = bur[ivy] * uur[ivx] - bur[ivx] * uur[ivy];
-    fr.bz = bur[ivz] * uur[ivx] - bur[ivx] * uur[ivz];
-
-    // Calculate fluxes in HLL region
-    MHDCons1D flux_hll;
+    // Diagnostic-only wave-fan factors. No production flux/EMF views are passed.
     qa = lambda_r*lambda_l;
     qb = 1.0/(lambda_r - lambda_l);
-    flux_hll.d  = (lambda_r*fl.d  - lambda_l*fr.d  + qa*du.d ) * qb;
-    flux_hll.mx = (lambda_r*fl.mx - lambda_l*fr.mx + qa*du.mx) * qb;
-    flux_hll.my = (lambda_r*fl.my - lambda_l*fr.my + qa*du.my) * qb;
-    flux_hll.mz = (lambda_r*fl.mz - lambda_l*fr.mz + qa*du.mz) * qb;
-    flux_hll.e  = (lambda_r*fl.e  - lambda_l*fr.e  + qa*du.e ) * qb;
-    flux_hll.by = (lambda_r*fl.by - lambda_l*fr.by + qa*du.by) * qb;
-    flux_hll.bz = (lambda_r*fl.bz - lambda_l*fr.bz + qa*du.bz) * qb;
-
-    // Determine region of wavefan
-    MHDCons1D *flux_interface;
-    if (lambda_l >= 0.0) {  // L region
-      flux_interface = &fl;
-    } else if (lambda_r <= 0.0) { // R region
-      flux_interface = &fr;
-    } else {  // HLL region
-      flux_interface = &flux_hll;
-    }
-
-    // Set fluxes
-    flx(m,IDN,k,j,i) = flux_interface->d;
-    flx(m,ivx,k,j,i) = flux_interface->mx;
-    flx(m,ivy,k,j,i) = flux_interface->my;
-    flx(m,ivz,k,j,i) = flux_interface->mz;
-    flx(m,IEN,k,j,i) = flux_interface->e;
-
-    ey(m,k,j,i) = -flux_interface->by;
-    ez(m,k,j,i) =  flux_interface->bz;
-
-    // We evolve tau = T^t_t + D
-    flx(m,IEN,k,j,i) += flx(m,IDN,k,j,i);
 
     if (em_budget) {
       // Linear split of the SAME HLLE operator into EM and matter stresses.

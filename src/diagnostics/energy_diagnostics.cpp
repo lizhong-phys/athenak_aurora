@@ -24,7 +24,7 @@
 namespace diagnostics {
 
 namespace {
-constexpr const char *kEnergyDiagImplementation = "bhl-passive-budget-v1";
+constexpr const char *kEnergyDiagImplementation = "bhl-passive-budget-v2-isolated";
 
 enum PhysicalStateIndex {
   PS_RHO=0, PS_EINT, PS_PRESSURE, PS_ENTROPY,

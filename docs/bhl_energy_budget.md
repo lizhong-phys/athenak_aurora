@@ -1,13 +1,32 @@
-# Passive BHL energy budget — implementation v1
+# Passive BHL energy budget — implementation v2 (isolated observers)
 
 This is a new, self-contained workflow. It does not depend on `frontier_server`.
-The executable marker is `bhl-passive-budget-v1`.
+The executable marker is `bhl-passive-budget-v2-isolated`. The unchanged binary
+field layout remains budget schema 1; implementation version and data schema are
+different identifiers.
 
 ## What changes, and what does not
 
 The BHL energy-check pgen uses the same initial conditions, wind boundaries,
 radiation coupling, primitive recovery, floors, Riemann solver, and CT evolution.
 New arrays never feed the evolved state, timestep, reconstruction, or refinement.
+In v1 the diagnostic HLLE/FOFC kernels also wrote production fluxes and EMFs.
+Although their evolution expressions matched the originals, that was not an
+isolated observer: diagnostic code could change GPU compiler optimization and
+subsequent nonlinear recovery/limiter decisions. Frontier's two-step comparison
+reported a 0.7048 relative difference in a rank's maximum internal energy. The
+summary does not identify the first diverging operation or establish its cause.
+
+Version 2 always calls the original CalculateFluxes and FOFC kernels. A separate
+reconstruction computes diagnostic currents, without any production-flux or EMF
+output arguments. The original FOFC's accepted fluxes are read before/after its
+correction. An observer reads the actual flags before they are cleared, updates
+each diagnostic face once, and uses the accepted mass flux for upwind entropy
+and internal energy. It performs no additional floor-test/C2P and does not alter
+production flags. Original HLLE, FOFC, reconstruction, source, recovery, and CT
+arithmetic is unchanged. This removes the replacement-kernel failure path;
+Frontier passivity must still be confirmed rather than inferred from CPU tests.
+
 Two switches are required for the continuous ledger:
 
 ```
@@ -21,10 +40,9 @@ With both absent/false there is no diagnostic object. The optional
 `energy_fingerprint=true` switch enrolls a read-only end-of-run check independently
 of those switches. It hashes active conserved/scalar fields, all active magnetic
 faces, and every active radiation intensity. It also records means, absolute
-means, RMS, extrema, and finite/NaN/Inf counts for those components and the gas
-primitives. Ghost zones and scratch arrays are excluded. Each rank writes a
-compact JSON file marked `major-field-summary-v1`; this host-only read never
-feeds the evolution.
+means, RMS, extrema, and finite/NaN/Inf counts for each component of those fields
+and the gas primitives. Ghost zones and scratch arrays are excluded. Each rank
+writes a compact JSON file; this read-only host summary does not alter evolution.
 
 One prerequisite repair is **not** switch-gated: the split-restart reader now
 passes `single_file_per_rank` to `GetPosition`. Otherwise it calls MPI on a FILE*
@@ -121,13 +139,15 @@ overwriting it. The analysis verifies interval coverage, not just file counts.
 
 Default: 10 rg/c, ten interval diagnostic volumes, one ordinary end-state volume.
 No extra 3-D volumes are required by the default passivity preflight: two short
-runs produce per-rank main-field summaries instead. The analysis_5 gate compares
-these with relative tolerance 1e-10 and zero absolute tolerance by default; time,
-cycle, dt, mesh, and cell/non-finite counts must match. Hash mismatches alone do
-not stop the run. Matching non-finite counts are reported, not a clean-health
-certificate. Aggregate agreement cannot bound individual-cell differences.
-Old hash-only records cannot establish numerical agreement. Local CPU regression
-additionally compares complete restart payload bytes.
+runs produce per-rank main-field summaries instead. The gate compares these at a
+default relative tolerance of 1e-10, with zero absolute tolerance. For each
+statistic its scale is the larger absolute value or either state's absolute mean
+(with a 1e-300 numerical floor). Time, cycle, dt, mesh, and cell/non-finite counts
+must agree. Hash mismatches are informational only. Matching non-finite counts
+are reported, not interpreted as proof that a run is healthy. Summary agreement
+cannot bound cellwise differences or prove diagnostic accuracy. Old hash-only
+records cannot be compared numerically; rebuild with `major-field-summary-v1`.
+Local CPU regression additionally compares complete restart payload bytes.
 
 The compact diagnostic output contains 47 float32 fields. Size is approximately
 47 * 4 * active_cell_count bytes per volume, plus headers; there are ten volumes.

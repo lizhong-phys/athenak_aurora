@@ -57,7 +57,7 @@
 //! path is unchanged when the switch is absent or false.
 //! With the additional <problem>/energy_budget=true switch, bhl_energy_budget output
 //! contains continuous interval averages and a face-based EM four-momentum ledger.
-//! Implementation: diagnostics/energy_budget.cpp. This pgen's ICs, wind BCs, floors,
+//! Implementation: diagnostics/energy_budget.cpp; v2 uses isolated read-only flux passes. This pgen's ICs, wind BCs, floors,
 //! radiation physics, and evolution are NOT changed by either diagnostic switch.
 //!
 //! Inside the horizon: primitives replaced by excision floors (dexcise, pexcise).

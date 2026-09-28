@@ -15,6 +15,7 @@
 #include "eos/eos.hpp"
 #include "mhd/rsolvers/llf_mhd_singlestate.hpp"
 #include "mhd.hpp"
+#include "diagnostics/energy_diagnostics.hpp"
 
 namespace mhd {
 //----------------------------------------------------------------------------------------
@@ -481,6 +482,11 @@ void MHD::FOFC(Driver *pdriver, int stage) {
       }
     }
   });
+
+  // Observe the accepted correction after BOTH production face kernels finish.
+  // No changed arithmetic, extra C2P, or diagnostic writes in those kernels.
+  if (pmy_pack->penergy_diag != nullptr && pmy_pack->penergy_diag->recording)
+    RecordFOFCDiagnostics();
 
   // reset FOFC flag (do not reset excision flag)
   if (use_fofc_) {

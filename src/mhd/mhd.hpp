@@ -199,7 +199,8 @@ class MHD {
 
   // first-order flux correction
   void FOFC(Driver *d, int stage);
-  void FOFCDiag(Driver *d, int stage);
+  void SnapshotFOFCEnergy();       // read-only before-image of production fluxes
+  void RecordFOFCDiagnostics();   // read-only observer before production flags reset
 
   DvceArray5D<Real> utest, bcctest;  // scratch arrays for FOFC
 
