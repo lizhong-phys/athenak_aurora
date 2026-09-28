@@ -38,6 +38,7 @@ add_executable(
         driver/driver.cpp
 
         diagnostics/energy_diagnostics.cpp
+        diagnostics/energy_budget.cpp
 
         dyn_grmhd/dyn_grmhd.cpp
         dyn_grmhd/dyn_grmhd_fluxes.cpp

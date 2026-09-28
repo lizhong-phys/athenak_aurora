@@ -12,6 +12,7 @@
 #include "srcterms/srcterms.hpp"
 #include "driver/driver.hpp"
 #include "mhd.hpp"
+#include "diagnostics/energy_diagnostics.hpp"
 
 namespace mhd {
 //----------------------------------------------------------------------------------------
@@ -21,6 +22,7 @@ namespace mhd {
 //  Temporal update uses multi-step SSP integrators, e.g. RK2, RK3
 
 TaskStatus MHD::CT(Driver *pdriver, int stage) {
+  if (pmy_pack->penergy_diag != nullptr) pmy_pack->penergy_diag->RecordCT(pdriver,stage);
   auto &indcs = pmy_pack->pmesh->mb_indcs;
   int is = indcs.is, ie = indcs.ie;
   int js = indcs.js, je = indcs.je;

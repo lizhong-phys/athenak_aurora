@@ -41,6 +41,7 @@ struct RadiationTaskIDs {
   TaskID hyd_sendf;
   TaskID rad_recvf;
   TaskID mhd_recvf;
+  TaskID mhd_sendfd, mhd_recvfd;
   TaskID hyd_recvf;
   TaskID rad_rkupdt;
   TaskID mhd_rkupdt;

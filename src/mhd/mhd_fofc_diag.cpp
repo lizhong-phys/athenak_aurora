@@ -13,6 +13,7 @@
 #include "coordinates/cartesian_ks.hpp"
 #include "coordinates/cell_locations.hpp"
 #include "diagnostics/energy_diagnostics.hpp"
+#include "diagnostics/em_budget.hpp"
 #include "eos/eos.hpp"
 #include "mhd/rsolvers/llf_mhd_singlestate.hpp"
 #include "mhd.hpp"
@@ -123,6 +124,8 @@ void MHD::FOFCDiag(Driver *pdriver, int stage) {
   auto &excision_flux_ = pmy_pack->pcoord->excision_flux;
   auto &w0_ = w0;
   auto &b0_ = b0;
+  const bool em_budget = pmy_pack->penergy_diag->budget_enabled;
+  auto emflx = pmy_pack->penergy_diag->sidecar_flx;
   DvceArray4D<Real> fofc_diag1_, fofc_diag2_, fofc_diag3_;
   DvceArray4D<Real> entropy_diag1_, entropy_diag2_, entropy_diag3_;
   DvceArray4D<Real> eint_diag1_, eint_diag2_, eint_diag3_;
@@ -206,6 +209,12 @@ void MHD::FOFCDiag(Driver *pdriver, int stage) {
           Real &x3max = size.d_view(m).x3max;
           Real x3v = CellCenterX(k-ks, nx3, x3min, x3max);
           SingleStateLLF_GRMHD(wim1, wi, bxi, x1v, x2v, x3v, IVX, coord, eos, flux);
+          if (em_budget) {
+            Real fe[4];
+            diagnostics::EMFluxLLF(wim1, wi,bxi,x1v,x2v,x3v,IVX,coord,eos,fe);
+            for (int n=0; n<4; ++n)
+              emflx.x1f(m,diagnostics::EnergyDiagnostics::SC_EM0+n,k,j,i)=fe[n];
+          }
         } else if (is_sr) {
           SingleStateLLF_SRMHD(wim1, wi, bxi, eos, flux);
         } else {
@@ -274,6 +283,12 @@ void MHD::FOFCDiag(Driver *pdriver, int stage) {
           Real &x3max = size.d_view(m).x3max;
           Real x3v = CellCenterX(k-ks, nx3, x3min, x3max);
           SingleStateLLF_GRMHD(wjm1, wj, bxi, x1v, x2v, x3v, IVY, coord, eos, flux);
+          if (em_budget) {
+            Real fe[4];
+            diagnostics::EMFluxLLF(wjm1, wj,bxi,x1v,x2v,x3v,IVY,coord,eos,fe);
+            for (int n=0; n<4; ++n)
+              emflx.x2f(m,diagnostics::EnergyDiagnostics::SC_EM0+n,k,j,i)=fe[n];
+          }
         } else if (is_sr) {
           SingleStateLLF_SRMHD(wjm1, wj, bxi, eos, flux);
         } else {
@@ -342,6 +357,12 @@ void MHD::FOFCDiag(Driver *pdriver, int stage) {
           Real &x3max = size.d_view(m).x3max;
           Real x3v = LeftEdgeX(k-ks, nx3, x3min, x3max);
           SingleStateLLF_GRMHD(wkm1, wk, bxi, x1v, x2v, x3v, IVZ, coord, eos, flux);
+          if (em_budget) {
+            Real fe[4];
+            diagnostics::EMFluxLLF(wkm1, wk,bxi,x1v,x2v,x3v,IVZ,coord,eos,fe);
+            for (int n=0; n<4; ++n)
+              emflx.x3f(m,diagnostics::EnergyDiagnostics::SC_EM0+n,k,j,i)=fe[n];
+          }
         } else if (is_sr) {
           SingleStateLLF_SRMHD(wkm1, wk, bxi, eos, flux);
         } else {
@@ -428,6 +449,12 @@ void MHD::FOFCDiag(Driver *pdriver, int stage) {
           Real &x3max = size.d_view(m).x3max;
           Real x3v = CellCenterX(k-ks, nx3, x3min, x3max);
           SingleStateLLF_GRMHD(wi, wip1, bxi, x1v, x2v, x3v, IVX, coord, eos, flux);
+          if (em_budget) {
+            Real fe[4];
+            diagnostics::EMFluxLLF(wi, wip1,bxi,x1v,x2v,x3v,IVX,coord,eos,fe);
+            for (int n=0; n<4; ++n)
+              emflx.x1f(m,diagnostics::EnergyDiagnostics::SC_EM0+n,k,j,i+1)=fe[n];
+          }
         } else if (is_sr) {
           SingleStateLLF_SRMHD(wi, wip1, bxi, eos, flux);
         } else {
@@ -496,6 +523,12 @@ void MHD::FOFCDiag(Driver *pdriver, int stage) {
           Real &x3max = size.d_view(m).x3max;
           Real x3v = CellCenterX(k-ks, nx3, x3min, x3max);
           SingleStateLLF_GRMHD(wj, wjp1, bxi, x1v, x2v, x3v, IVY, coord, eos, flux);
+          if (em_budget) {
+            Real fe[4];
+            diagnostics::EMFluxLLF(wj, wjp1,bxi,x1v,x2v,x3v,IVY,coord,eos,fe);
+            for (int n=0; n<4; ++n)
+              emflx.x2f(m,diagnostics::EnergyDiagnostics::SC_EM0+n,k,j+1,i)=fe[n];
+          }
         } else if (is_sr) {
           SingleStateLLF_SRMHD(wj, wjp1, bxi, eos, flux);
         } else {
@@ -564,6 +597,12 @@ void MHD::FOFCDiag(Driver *pdriver, int stage) {
           Real &x3max = size.d_view(m).x3max;
           Real x3v = LeftEdgeX(k+1-ks, nx3, x3min, x3max);
           SingleStateLLF_GRMHD(wk, wkp1, bxi, x1v, x2v, x3v, IVZ, coord, eos, flux);
+          if (em_budget) {
+            Real fe[4];
+            diagnostics::EMFluxLLF(wk, wkp1,bxi,x1v,x2v,x3v,IVZ,coord,eos,fe);
+            for (int n=0; n<4; ++n)
+              emflx.x3f(m,diagnostics::EnergyDiagnostics::SC_EM0+n,k+1,j,i)=fe[n];
+          }
         } else if (is_sr) {
           SingleStateLLF_SRMHD(wk, wkp1, bxi, eos, flux);
         } else {

@@ -44,9 +44,11 @@ void IdealGRMHD::ConsToPrim(DvceArray5D<Real> &cons, const DvceFaceFld4D<Real> &
   // Physics diagnostics are sidecars: primitive recovery always uses the production
   // implementation, independent of whether the runtime diagnostic switch is enabled.
   auto *pdiag=pmy_pack->penergy_diag;
-  if (pdiag != nullptr && pdiag->recording && !only_testfloors) pdiag->SaveGasEnergy();
+  const bool record = pdiag != nullptr && pdiag->recording && !only_testfloors &&
+                      cons.data()==pmy_pack->pmhd->u0.data();
+  if (record) pdiag->SaveGasEnergy();
   ConsToPrimOriginal(cons,b,prim,bcc,only_testfloors,il,iu,jl,ju,kl,ku);
-  if (pdiag != nullptr && pdiag->recording && !only_testfloors) {
+  if (record) {
     pdiag->AccumulateGasEnergy(diagnostics::ED_GAS_C2P);
   }
 }
@@ -81,7 +83,8 @@ void IdealGRMHD::ConsToPrimOriginal(DvceArray5D<Real> &cons,
   const int nmkji = nmb*nkji;
 
   const bool record_repairs = pmy_pack->penergy_diag != nullptr &&
-                              pmy_pack->penergy_diag->recording && !only_testfloors;
+                              pmy_pack->penergy_diag->recording && !only_testfloors &&
+                              cons.data()==pmy_pack->pmhd->u0.data();
   DvceArray4D<unsigned int> repair_flags;
   if (record_repairs) repair_flags = pmy_pack->penergy_diag->flags;
 

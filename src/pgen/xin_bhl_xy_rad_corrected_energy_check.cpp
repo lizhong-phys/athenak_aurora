@@ -55,6 +55,10 @@
 //! arrays record the discrete gas/radiation energy ledger, a conservative entropy
 //! residual, solver-repair flags, and radiation luminosities.  The ordinary production
 //! path is unchanged when the switch is absent or false.
+//! With the additional <problem>/energy_budget=true switch, bhl_energy_budget output
+//! contains continuous interval averages and a face-based EM four-momentum ledger.
+//! Implementation: diagnostics/energy_budget.cpp. This pgen's ICs, wind BCs, floors,
+//! radiation physics, and evolution are NOT changed by either diagnostic switch.
 //!
 //! Inside the horizon: primitives replaced by excision floors (dexcise, pexcise).
 //!
@@ -144,6 +148,8 @@ void WindFluxes(HistoryData *pdata, Mesh *pm);
 //! Compile with '-D PROBLEM=xin_bhl_xy_rad_corrected_energy_check'.
 
 void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
+  if (pin->GetOrAddBoolean("problem","energy_fingerprint",false))
+    pgen_final_func=diagnostics::WriteEnergyFingerprint;
   MeshBlockPack *pmbp = pmy_mesh_->pmb_pack;
   if (!pmbp->pcoord->is_general_relativistic &&
       !pmbp->pcoord->is_dynamical_relativistic) {

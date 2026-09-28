@@ -19,8 +19,11 @@
 class Driver;
 class MeshBlockPack;
 class ParameterInput;
+class Mesh;
 
 namespace diagnostics {
+// Optional end-of-run read-only state fingerprint, independent of the budget switch.
+void WriteEnergyFingerprint(ParameterInput *pin, Mesh *mesh);
 
 enum EnergyDiagIndex {
   ED_GAS_FLUX = 0,       // complete conservative MHD flux-divergence increment
@@ -76,6 +79,12 @@ enum EnergyDiagIndex {
   ED_BSQ,                // comoving magnetic four-vector squared
   ED_FLAGS,              // bit mask converted to Real for binary output
   ED_SAMPLE_DT, ED_SAMPLE_TIME, ED_SAMPLE_ID, ED_STENCIL_EDGE,
+  // Independent EM four-momentum budget (not the centered q_mag_loss proxy).
+  ED_EM_R0, ED_EM_R1, ED_EM_R2, ED_EM_R3,
+  ED_MAG_BUDGET, ED_MECH_BUDGET, ED_MAG_SOURCE, ED_MAG_QUADRATURE,
+  ED_MAG_POS, ED_MAG_NEG, ED_MECH_POS, ED_MECH_NEG, ED_TOTAL_POS, ED_TOTAL_NEG,
+  ED_CT_CLOSURE, ED_GAS_CLOSURE_ABS, ED_THERMO_CLOSURE_ABS,
+  ED_WINDOW_STEPS, ED_BUDGET_VERSION, ED_EM_BULK_WORK, ED_MAG_HEAT_INF, ED_MASS_D,
   NENERGY_DIAG
 };
 
@@ -88,7 +97,8 @@ enum EnergyDiagFlag : unsigned int {
   EDF_FOFC          = 1u << 5,
   EDF_RAD_FIX       = 1u << 6,
   EDF_RAD_LIMIT     = 1u << 7,
-  EDF_RAD_BAD       = 1u << 8
+  EDF_RAD_BAD       = 1u << 8,
+  EDF_NONFINITE     = 1u << 9
 };
 
 class EnergyDiagnostics {
@@ -99,6 +109,7 @@ class EnergyDiagnostics {
   static const char *label[NENERGY_DIAG];
 
   bool recording = false;
+  bool budget_enabled = false;  // second opt-in; continuous interval ledger
   DvceArray5D<Real> step;       // RK-consistent increments for the current timestep
   DvceArray5D<Real> output;     // rates/sensors from the last completed timestep
   DvceArray5D<Real> gas_initial;
@@ -122,7 +133,8 @@ class EnergyDiagnostics {
   // static-refinement interfaces.  Without it the sidecar divergences do not close
   // on the two outermost cell layers of every block, which is the sole reason
   // stencil_edge marks them.  Variable order is fixed by SidecarVar below.
-  enum SidecarVar {SC_HLLE=0, SC_FOFC, SC_ENTROPY, SC_EINT, SC_UVEL, NSIDECAR};
+  enum SidecarVar {SC_HLLE=0, SC_FOFC, SC_ENTROPY, SC_EINT, SC_UVEL,
+                  SC_EM0, SC_EM1, SC_EM2, SC_EM3, NSIDECAR};
   DvceFaceFld5D<Real> sidecar_flx;
   MeshBoundaryValuesCC *pbval_sidecar = nullptr;
   void GatherSidecarFluxes();     // 4D sidecars -> sidecar_flx
@@ -145,8 +157,26 @@ class EnergyDiagnostics {
   void RecordRadiationUpdate(Driver *pdriver, int stage);
   void SaveRadiationCouplingState();
   void RecordRadiationCoupling();
+  void InitializeBudget();
+  void BeginBudgetStep();
+  void BeginBudgetStage(Driver *pdriver, int stage);
+  void RecordEMFlux(Driver *pdriver, int stage);
+  void SaveEMSourceState();
+  void FinishBudgetStage();
+  void RecordCT(Driver *pdriver, int stage);
+  void FinalizeBudgetStep();
+  void FinalizeBudgetThermodynamics();
+  void PublishBudgetWindow(bool publish);
 
  private:
+  // budget_state: initial mixed EM four-momentum (4), initial Bcc (3), initial u (4).
+  // budget_delta: RK-integrated -div(F_EM)+G (4), source-induced EM change (4),
+  //               actual corrected-edge CT curl increment (3).
+  DvceArray5D<Real> budget_state, budget_delta, em_source_before, budget_window;
+  DvceArray4D<unsigned int> window_flags;
+  Real window_dt_ = 0.0;
+  int window_steps_ = 0;
+  bool source_pending_ = false;
   MeshBlockPack *pmy_pack_;
   Real sample_dt_;
   Real next_sample_time_;

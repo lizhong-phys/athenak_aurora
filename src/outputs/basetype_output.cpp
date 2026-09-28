@@ -169,7 +169,7 @@ BaseTypeOutput::BaseTypeOutput(ParameterInput *pin, Mesh *pm, OutputParameters o
        << std::endl << "Input file is likely missing corresponding block" << std::endl;
     exit(EXIT_FAILURE);
   }
-  if ((ivar==153 || ivar==154) && (pm->pmb_pack->penergy_diag == nullptr)) {
+  if ((ivar==153 || ivar==154 || ivar==155) && (pm->pmb_pack->penergy_diag == nullptr)) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
        << "Output variable 'bhl_energy_diag' requires "
        << "<problem>/energy_diagnostics=true." << std::endl;
@@ -614,6 +614,26 @@ BaseTypeOutput::BaseTypeOutput(ParameterInput *pin, Mesh *pm, OutputParameters o
       outvars.emplace_back("force1",0,&(pm->pmb_pack->pturb->force));
       outvars.emplace_back("force2",1,&(pm->pmb_pack->pturb->force));
       outvars.emplace_back("force3",2,&(pm->pmb_pack->pturb->force));
+    }
+
+    if (variable.compare("bhl_energy_budget") == 0) {
+      auto *pd=pm->pmb_pack->penergy_diag;
+      if (!pd->budget_enabled) {
+        std::cerr << "bhl_energy_budget requires <problem>/energy_budget=true" << std::endl;
+        std::exit(EXIT_FAILURE);
+      }
+      using namespace diagnostics;
+      const int fields[]={ED_INT_STORAGE,ED_INT_ADVECTION,ED_COMPRESSION,
+        ED_DISS_ENERGY,ED_QENT_RAD,ED_QENT_NUM,ED_THERMO_CLOSURE,
+        ED_GAS_ACTUAL,ED_GAS_FLUX,ED_GAS_COORD,ED_GAS_OTHER,ED_GAS_RAD_TOTAL,ED_GAS_C2P,
+        ED_GAS_CLOSURE,ED_RAD_ACTUAL,ED_RAD_CLOSURE,ED_RAD_FIX,
+        ED_RHO,ED_EINT,ED_BSQ,ED_UT,ED_FLAGS,ED_SAMPLE_DT,ED_SAMPLE_TIME,ED_SAMPLE_ID,
+        ED_EM_R0,ED_EM_R1,ED_EM_R2,ED_EM_R3,ED_MAG_BUDGET,ED_MECH_BUDGET,
+        ED_MAG_SOURCE,ED_MAG_QUADRATURE,ED_MAG_POS,ED_MAG_NEG,ED_MECH_POS,ED_MECH_NEG,
+        ED_TOTAL_POS,ED_TOTAL_NEG,ED_CT_CLOSURE,ED_GAS_CLOSURE_ABS,
+        ED_THERMO_CLOSURE_ABS,ED_WINDOW_STEPS,ED_BUDGET_VERSION,
+        ED_EM_BULK_WORK,ED_MAG_HEAT_INF,ED_MASS_D};
+      for (int n:fields) outvars.emplace_back(EnergyDiagnostics::label[n],n,&(pd->output));
     }
 
     if (variable.compare("bhl_energy_diag") == 0 || variable.compare("bondi_energy_diag") == 0) {

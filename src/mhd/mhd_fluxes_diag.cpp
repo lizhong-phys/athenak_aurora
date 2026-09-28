@@ -60,6 +60,10 @@ void MHD::CalculateFluxesDiag(Driver *pdriver, int stage) {
   auto &coord_ = pmy_pack->pcoord->coord_data;
   auto &w0_ = w0;
   auto &b0_ = bcc0;
+  const bool em_budget = pmy_pack->penergy_diag->budget_enabled;
+  auto em1 = pmy_pack->penergy_diag->sidecar_flx.x1f;
+  auto em2 = pmy_pack->penergy_diag->sidecar_flx.x2f;
+  auto em3 = pmy_pack->penergy_diag->sidecar_flx.x3f;
   DvceArray4D<Real> hlle_diag1_, hlle_diag2_, hlle_diag3_;
   DvceArray4D<Real> entropy_diag1_, entropy_diag2_, entropy_diag3_;
   DvceArray4D<Real> eint_diag1_, eint_diag2_, eint_diag3_;
@@ -167,7 +171,7 @@ void MHD::CalculateFluxesDiag(Driver *pdriver, int stage) {
     } else if constexpr (rsolver_method_ == MHD_RSolver::hlle_gr) {
       HLLE_GR_DIAG(member,eos,indcs,size,coord,m,k,j,il,iu,IVX,
                             wl,wr,bl,br,bx,flx1,e31,e21,diag1,sdiag1,
-                            ediag1,udiag1);
+                            ediag1,udiag1,em1,em_budget);
     }
     member.team_barrier();
 
@@ -294,7 +298,7 @@ void MHD::CalculateFluxesDiag(Driver *pdriver, int stage) {
           } else if constexpr (rsolver_method_ == MHD_RSolver::hlle_gr) {
             HLLE_GR_DIAG(member,eos,indcs,size,coord,
                     m,k,j,is-1,ie+1,IVY,wl,wr,bl,br,by,flx2,e12,e32,
-                    diag2,sdiag2,ediag2,udiag2);
+                    diag2,sdiag2,ediag2,udiag2,em2,em_budget);
           }
           member.team_barrier();
         }
@@ -419,7 +423,7 @@ void MHD::CalculateFluxesDiag(Driver *pdriver, int stage) {
           } else if constexpr (rsolver_method_ == MHD_RSolver::hlle_gr) {
             HLLE_GR_DIAG(member,eos,indcs,size,coord,
                     m,k,j,is-1,ie+1,IVZ,wl,wr,bl,br,bz,flx3,e23,e13,
-                    diag3,sdiag3,ediag3,udiag3);
+                    diag3,sdiag3,ediag3,udiag3,em3,em_budget);
           }
           member.team_barrier();
         }

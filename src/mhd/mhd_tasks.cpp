@@ -125,11 +125,9 @@ TaskStatus MHD::InitRecv(Driver *pdrive, int stage) {
     if (pmy_pack->pmesh->multilevel) {
       tstat = pbval_u->InitFluxRecv(nmhd+nscalars);
       if (tstat != TaskStatus::complete) return tstat;
-      // Same for the passive diagnostic sidecar fluxes. Posted on every step, not
-      // only sampled ones: `recording` is decided later in the step, and an
-      // unposted receive would deadlock RecvAndUnpackFluxCC.
+      // BeginTimestep set recording before this stage. Match send/receive gates.
       auto *pdiag = pmy_pack->penergy_diag;
-      if (pdiag != nullptr && pdiag->pbval_sidecar != nullptr) {
+      if (pdiag != nullptr && pdiag->recording && pdiag->pbval_sidecar != nullptr) {
         tstat = pdiag->pbval_sidecar->InitFluxRecv(diagnostics::EnergyDiagnostics::NSIDECAR);
         if (tstat != TaskStatus::complete) return tstat;
       }
@@ -604,6 +602,7 @@ TaskStatus MHD::ConToPrim(Driver *pdrive, int stage) {
   int n2m1 = (indcs.nx2 > 1)? (indcs.nx2 + 2*ng - 1) : 0;
   int n3m1 = (indcs.nx3 > 1)? (indcs.nx3 + 2*ng - 1) : 0;
   peos->ConsToPrim(u0, b0, w0, bcc0, false, 0, n1m1, 0, n2m1, 0, n3m1);
+  if (pmy_pack->penergy_diag != nullptr) pmy_pack->penergy_diag->FinishBudgetStage();
   return TaskStatus::complete;
 }
 
@@ -634,6 +633,11 @@ TaskStatus MHD::ClearSend(Driver *pdrive, int stage) {
     if (pmy_pack->pmesh->multilevel) {
       tstat = pbval_u->ClearFluxSend();
       if (tstat != TaskStatus::complete) return tstat;
+      auto *pd=pmy_pack->penergy_diag;
+      if (pd != nullptr && pd->recording && pd->pbval_sidecar != nullptr) {
+        tstat=pd->pbval_sidecar->ClearFluxSend();
+        if (tstat != TaskStatus::complete) return tstat;
+      }
     }
     // check sends of restricted fluxes of B complete even for uniform grids
     tstat = pbval_b->ClearFluxSend();
@@ -694,6 +698,11 @@ TaskStatus MHD::ClearRecv(Driver *pdrive, int stage) {
     if (pmy_pack->pmesh->multilevel) {
       tstat = pbval_u->ClearFluxRecv();
       if (tstat != TaskStatus::complete) return tstat;
+      auto *pd=pmy_pack->penergy_diag;
+      if (pd != nullptr && pd->recording && pd->pbval_sidecar != nullptr) {
+        tstat=pd->pbval_sidecar->ClearFluxRecv();
+        if (tstat != TaskStatus::complete) return tstat;
+      }
     }
     // with SMR/AMR check receives of restricted fluxes of B complete
     tstat = pbval_b->ClearFluxRecv();

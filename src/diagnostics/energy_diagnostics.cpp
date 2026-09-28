@@ -24,7 +24,7 @@
 namespace diagnostics {
 
 namespace {
-constexpr const char *kEnergyDiagImplementation = "bondi-passive-v8.1";
+constexpr const char *kEnergyDiagImplementation = "bhl-passive-budget-v1";
 
 enum PhysicalStateIndex {
   PS_RHO=0, PS_EINT, PS_PRESSURE, PS_ENTROPY,
@@ -50,7 +50,12 @@ const char *EnergyDiagnostics::label[NENERGY_DIAG] = {
   "shock_sensor", "current_sensor", "contact_sensor", "vort_sensor",
   "shear_sensor", "pressure_jump", "field_reversal",
   "rho", "eint", "pressure", "ut", "u1", "u2", "u3", "B1", "B2", "B3", "bsq",
-  "repair_flags", "sample_dt", "sample_time", "sample_id", "stencil_edge"
+  "repair_flags", "sample_dt", "sample_time", "sample_id", "stencil_edge",
+  "em_residual_0", "em_residual_1", "em_residual_2", "em_residual_3",
+  "q_mag_budget", "q_mech_budget", "q_mag_source", "q_mag_quadrature",
+  "q_mag_positive", "q_mag_negative", "q_mech_positive", "q_mech_negative",
+  "q_total_positive", "q_total_negative", "ct_closure", "gas_closure_abs",
+  "thermo_closure_abs", "window_steps", "budget_version", "em_bulk_work_inf", "mag_heat_inf", "D"
 };
 
 EnergyDiagnostics::EnergyDiagnostics(MeshBlockPack *ppack, ParameterInput *pin) :
@@ -111,10 +116,11 @@ EnergyDiagnostics::EnergyDiagnostics(MeshBlockPack *ppack, ParameterInput *pin) 
               << std::endl;
     std::exit(EXIT_FAILURE);
   }
+  budget_enabled=pin->GetOrAddBoolean("problem","energy_budget",false);
   if (global_variable::my_rank == 0) {
     std::cout << "ENERGY_DIAG implementation=" << kEnergyDiagImplementation
               << " passive=true start=" << (next_sample_time_-sample_dt_)
-              << " cadence=" << sample_dt_ << std::endl;
+              << " cadence=" << sample_dt_ << " continuous=" << budget_enabled << std::endl;
   }
 
   const int nmb = std::max(ppack->nmb_thispack, ppack->pmesh->nmb_maxperrank);
@@ -163,6 +169,7 @@ EnergyDiagnostics::EnergyDiagnostics(MeshBlockPack *ppack, ParameterInput *pin) 
   Kokkos::deep_copy(step,0.0);
   Kokkos::deep_copy(output,0.0);
   Kokkos::deep_copy(flags,0u);
+  if (budget_enabled) InitializeBudget();
 }
 
 void EnergyDiagnostics::AssembleTasks(
@@ -264,10 +271,10 @@ TaskStatus EnergyDiagnostics::BeginTimestep(Driver *pdriver, int stage) {
   // Match Driver's 32-bit output-time comparison.  The ledger is intentionally active
   // only on a step whose end time crosses a requested diagnostic output time.
   const Real end_time = pmy_pack_->pmesh->time + pmy_pack_->pmesh->dt;
-  recording = (static_cast<float>(end_time) >=
+  recording = budget_enabled || (static_cast<float>(end_time) >=
                static_cast<float>(next_sample_time_));
   if (!recording) return TaskStatus::complete;
-  if (global_variable::my_rank == 0) {
+  if (!budget_enabled && global_variable::my_rank == 0) {
     std::cout << "ENERGY_DIAG sample_begin=" << (sample_number_+1)
               << " step_time=[" << pmy_pack_->pmesh->time << "," << end_time
               << "] target=" << next_sample_time_ << std::endl;
@@ -290,6 +297,7 @@ TaskStatus EnergyDiagnostics::BeginTimestep(Driver *pdriver, int stage) {
   });
 
   FillPhysicalState(physical_initial);
+  if (budget_enabled) BeginBudgetStep();
 
   SaveRadiationEnergy();
   Kokkos::deep_copy(DevExeSpace(),rad_initial,rad_scratch);
@@ -298,6 +306,7 @@ TaskStatus EnergyDiagnostics::BeginTimestep(Driver *pdriver, int stage) {
 
 void EnergyDiagnostics::SaveRadiationCouplingState() {
   if (!recording) return;
+  if (budget_enabled) SaveEMSourceState();
   auto u=pmy_pack_->pmhd->u0;
   auto before=gas_four_scratch;
   auto usave=ucon_scratch;
@@ -352,6 +361,7 @@ void EnergyDiagnostics::RecordRadiationCoupling() {
 
 TaskStatus EnergyDiagnostics::BeginStage(Driver *pdriver, int stage) {
   if (!recording) return TaskStatus::complete;
+  if (budget_enabled) BeginBudgetStage(pdriver,stage);
   if (stage == 1) {
     Kokkos::deep_copy(DevExeSpace(),step,0.0);
     Kokkos::deep_copy(DevExeSpace(),flags,0u);
@@ -544,6 +554,7 @@ TaskStatus EnergyDiagnostics::RecvSidecarFlux() {
 
 void EnergyDiagnostics::RecordMHDFluxUpdate(Driver *pdriver, int stage) {
   if (!recording) return;
+  if (budget_enabled) RecordEMFlux(pdriver,stage);
   auto &indcs = pmy_pack_->pmesh->mb_indcs;
   const int nmb1 = pmy_pack_->nmb_thispack-1;
   const bool multi_d = pmy_pack_->pmesh->multi_d;
@@ -640,9 +651,103 @@ void EnergyDiagnostics::RecordRadiationUpdate(Driver *pdriver, int stage) {
   });
 }
 
+void EnergyDiagnostics::FinalizeBudgetThermodynamics() {
+  const auto ix=pmy_pack_->pmesh->mb_indcs;
+  const Real dt=pmy_pack_->pmesh->dt;
+  auto p0=physical_initial, p1=physical_final, out=output, d=step;
+  auto u=pmy_pack_->pmhd->u0, w=pmy_pack_->pmhd->w0, b=pmy_pack_->pmhd->bcc0;
+  auto ig=gas_initial, ir=rad_initial, is=entropy_initial;
+  auto fl=flags;
+  auto prad=pmy_pack_->prad;
+  auto intensity=prad->i0;
+  auto omega=prad->prgeo->solid_angles;
+  const int nang=prad->prgeo->nangles;
+  auto tet=prad->tet_c;
+  auto nh=prad->nh_c;
+  auto rf=rad_energy_flux;
+  par_for("budget_thermodynamics",DevExeSpace(),0,pmy_pack_->nmb_thispack-1,
+          ix.ks,ix.ke,ix.js,ix.je,ix.is,ix.ie,
+  KOKKOS_LAMBDA(int m,int k,int j,int i) {
+    for (int n=0; n<=ED_QENT_RAD; ++n) out(m,n,k,j,i)=d(m,n,k,j,i)/dt;
+    Real erad=0.0, radflux[3]={0.0};
+    for (int n=0; n<nang; ++n) {
+      const Real value=intensity(m,n,k,j,i);
+      if (!isfinite(value)) fl(m,k,j,i)|=EDF_NONFINITE;
+      const Real io=value*omega.d_view(n);
+      erad+=io;
+      for (int a=0; a<3; ++a) for (int c=0; c<4; ++c)
+        radflux[a]+=tet(m,c,a+1,k,j,i)*nh.d_view(n,c)*io/tet(m,0,0,k,j,i);
+    }
+    for (int a=0; a<3; ++a) rf(m,a,k,j,i)=radflux[a];
+    const Real dg=u(m,IEN,k,j,i)-ig(m,0,k,j,i);
+    const Real dr=erad-ir(m,0,k,j,i);
+    const Real gsum=d(m,ED_GAS_FLUX,k,j,i)+d(m,ED_GAS_COORD,k,j,i)
+        +d(m,ED_GAS_OTHER,k,j,i)+d(m,ED_GAS_RAD_TOTAL,k,j,i)+d(m,ED_GAS_C2P,k,j,i);
+    const Real rsum=d(m,ED_RAD_SPATIAL,k,j,i)+d(m,ED_RAD_ANGULAR,k,j,i)
+        +d(m,ED_RAD_FIX,k,j,i)+d(m,ED_RAD_SOURCE_TOTAL,k,j,i);
+    out(m,ED_GAS_ACTUAL,k,j,i)=dg/dt;
+    out(m,ED_GAS_CLOSURE,k,j,i)=(dg-gsum)/dt;
+    out(m,ED_RAD_ACTUAL,k,j,i)=dr/dt;
+    out(m,ED_RAD_CLOSURE,k,j,i)=(dr-rsum)/dt;
+    const Real dut=(p1(m,PS_UT,k,j,i)-p0(m,PS_UT,k,j,i))/dt;
+    const Real storage=(p1(m,PS_EUT,k,j,i)-p0(m,PS_EUT,k,j,i))/dt;
+    const Real adv=-d(m,ED_DEINT_ADVECT,k,j,i)/dt;
+    const Real comp=d(m,ED_DPCOMP_SPATIAL,k,j,i)/dt
+        -0.5*(p0(m,PS_PRESSURE,k,j,i)+p1(m,PS_PRESSURE,k,j,i))*dut;
+    const Real temp=0.5*(p0(m,PS_PRESSURE,k,j,i)/p0(m,PS_RHO,k,j,i)
+                       +p1(m,PS_PRESSURE,k,j,i)/p1(m,PS_RHO,k,j,i));
+    const Real ds=u(m,IDN,k,j,i)*p1(m,PS_ENTROPY,k,j,i)-is(m,0,k,j,i);
+    const Real entropy=temp*(ds-d(m,ED_DS_ADVECT,k,j,i))/dt;
+    const Real qrad=out(m,ED_QENT_RAD,k,j,i);
+    out(m,ED_INT_STORAGE,k,j,i)=storage;
+    out(m,ED_INT_ADVECTION,k,j,i)=adv;
+    out(m,ED_COMPRESSION,k,j,i)=comp;
+    out(m,ED_DISS_ENERGY,k,j,i)=storage+adv-comp+qrad;
+    out(m,ED_QENT_TOTAL,k,j,i)=entropy;
+    out(m,ED_QENT_NUM,k,j,i)=entropy+qrad;
+    out(m,ED_THERMO_CLOSURE,k,j,i)=storage+adv-comp-entropy;
+    out(m,ED_EXPANSION,k,j,i)=dut-d(m,ED_DU_ADVECT,k,j,i)/dt;
+    // Store RAW state checks, not floored copies, so NaNs cannot be disguised.
+    out(m,ED_RHO,k,j,i)=w(m,IDN,k,j,i);
+    out(m,ED_MASS_D,k,j,i)=u(m,IDN,k,j,i);
+    out(m,ED_EINT,k,j,i)=w(m,IEN,k,j,i);
+    out(m,ED_PRESSURE,k,j,i)=p1(m,PS_PRESSURE,k,j,i);
+    out(m,ED_BSQ,k,j,i)=p1(m,PS_BSQ,k,j,i);
+    for (int n=0; n<4; ++n) out(m,ED_UT+n,k,j,i)=p1(m,PS_UT+n,k,j,i);
+    for (int n=0; n<3; ++n) out(m,ED_B1+n,k,j,i)=b(m,n,k,j,i);
+    for (int n=0; n<5; ++n)
+      if (!isfinite(w(m,n,k,j,i)) || !isfinite(u(m,n,k,j,i))) fl(m,k,j,i)|=EDF_NONFINITE;
+    for (int n=0; n<3; ++n) if (!isfinite(b(m,n,k,j,i))) fl(m,k,j,i)|=EDF_NONFINITE;
+  });
+}
+
 TaskStatus EnergyDiagnostics::FinalizeTimestep(Driver *pdriver, int stage) {
   if (!recording) return TaskStatus::complete;
   FillPhysicalState(physical_final);
+  if (budget_enabled) {
+    // Avoid running the legacy gradient-based morphology classifier on every step.
+    FinalizeBudgetThermodynamics();
+    FinalizeBudgetStep();
+    const Real end=pmy_pack_->pmesh->time+pmy_pack_->pmesh->dt;
+    // Driver withholds cadence outputs when float(time)==float(tlim), then writes
+    // the final output after reaching the DOUBLE-precision stopping time. Do not
+    // reset the last window early: a tiny roundoff-sized last step could otherwise
+    // replace a complete interval by an almost-zero-duration sample.
+    const bool publish=(static_cast<float>(end)<static_cast<float>(pdriver->tlim) &&
+                        static_cast<float>(end)>=static_cast<float>(next_sample_time_))
+                       || end>=pdriver->tlim || (pdriver->nlim>=0 &&
+                           pmy_pack_->pmesh->ncycle+1>=pdriver->nlim);
+    PublishBudgetWindow(publish);
+    if (publish) {
+      ++sample_number_;
+      do {next_sample_time_+=sample_dt_;}
+      while (static_cast<float>(next_sample_time_)<=static_cast<float>(end));
+      if (global_variable::my_rank==0)
+        std::cout << "ENERGY_BUDGET interval=" << sample_number_
+                  << " end=" << end << " next=" << next_sample_time_ << std::endl;
+    }
+    return TaskStatus::complete;
+  }
   auto &indcs = pmy_pack_->pmesh->mb_indcs;
   const int nmb1 = pmy_pack_->nmb_thispack-1;
   const bool multi_d = pmy_pack_->pmesh->multi_d;
@@ -958,15 +1063,15 @@ TaskStatus EnergyDiagnostics::FinalizeTimestep(Driver *pdriver, int stage) {
     out(m,ED_SAMPLE_DT,k,j,i)=dt;
     out(m,ED_SAMPLE_TIME,k,j,i)=sampled_time;
     out(m,ED_SAMPLE_ID,k,j,i)=sampled_id;
-    // Diagnostic face fields are not refluxed at refinement interfaces. Restrict
-    // quantitative partitions to block interiors; expose the removed support.
+    // Centered QA stencils still use block ghosts. This flag is NOT a rejection
+    // mask for the now-refluxed face budget, which uses all active leaf cells.
     out(m,ED_STENCIL_EDGE,k,j,i) =
         (i < indcs.is+2 || i > indcs.ie-2 ||
          (multi_d && (j < indcs.js+2 || j > indcs.je-2)) ||
          (three_d && (k < indcs.ks+2 || k > indcs.ke-2))) ? 1.0 : 0.0;
   });
-  ++sample_number_;
   const Real end_time = pmy_pack_->pmesh->time + pmy_pack_->pmesh->dt;
+  ++sample_number_;
   // Normally one interval is crossed (dt_sim << sample_dt).  Jump arithmetically if a
   // deliberately coarse test step crosses several targets; do not iterate over each one.
   const Real crossed = std::floor((end_time-next_sample_time_)/sample_dt_)+1.0;

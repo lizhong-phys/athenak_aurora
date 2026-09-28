@@ -31,7 +31,8 @@ void HLLE_GR_DIAG(TeamMember_t const &member, const EOS_Data &eos,
      DvceArray4D<Real> diag_flux,
      DvceArray4D<Real> diag_entropy_flux,
      DvceArray4D<Real> diag_internal_flux,
-     DvceArray4D<Real> diag_velocity_flux) {
+     DvceArray4D<Real> diag_velocity_flux,
+     DvceArray5D<Real> diag_em_flux, const bool em_budget) {
   // Cyclic permutation of array indices corresponding to velocity/b_field components
   int ivy = IVX + ((ivx-IVX)+1)%3;
   int ivz = IVX + ((ivx-IVX)+2)%3;
@@ -280,6 +281,22 @@ void HLLE_GR_DIAG(TeamMember_t const &member, const EOS_Data &eos,
 
     // We evolve tau = T^t_t + D
     flx(m,IEN,k,j,i) += flx(m,IDN,k,j,i);
+
+    if (em_budget) {
+      // Linear split of the SAME HLLE operator into EM and matter stresses.
+      // These are diagnostic fluxes; CT, not this split, evolves B.
+      for (int n=0; n<4; ++n) {
+        const Real ul=bsq_l*uul[0]*ull[n]-bul[0]*bll[n]+(n==0 ? 0.5*bsq_l : 0.0);
+        const Real ur=bsq_r*uur[0]*ulr[n]-bur[0]*blr[n]+(n==0 ? 0.5*bsq_r : 0.0);
+        const Real fl=bsq_l*uul[ivx]*ull[n]-bul[ivx]*bll[n]
+                      +(n==ivx ? 0.5*bsq_l : 0.0);
+        const Real fr=bsq_r*uur[ivx]*ulr[n]-bur[ivx]*blr[n]
+                      +(n==ivx ? 0.5*bsq_r : 0.0);
+        diag_em_flux(m,diagnostics::EnergyDiagnostics::SC_EM0+n,k,j,i)=
+            lambda_l>=0.0 ? fl : (lambda_r<=0.0 ? fr :
+              (lambda_r*fl-lambda_l*fr+qa*(ur-ul))*qb);
+      }
+    }
 
     // Passive diagnostic only: isolate the jump term in the evolved-energy HLLE flux.
     // This view is detached from the solver flux and is never read by the evolution.
