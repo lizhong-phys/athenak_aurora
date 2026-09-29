@@ -125,12 +125,6 @@ TaskStatus MHD::InitRecv(Driver *pdrive, int stage) {
     if (pmy_pack->pmesh->multilevel) {
       tstat = pbval_u->InitFluxRecv(nmhd+nscalars);
       if (tstat != TaskStatus::complete) return tstat;
-      // BeginTimestep set recording before this stage. Match send/receive gates.
-      auto *pdiag = pmy_pack->penergy_diag;
-      if (pdiag != nullptr && pdiag->recording && pdiag->pbval_sidecar != nullptr) {
-        tstat = pdiag->pbval_sidecar->InitFluxRecv(diagnostics::EnergyDiagnostics::NSIDECAR);
-        if (tstat != TaskStatus::complete) return tstat;
-      }
     }
     // post receives for fluxes of B, which are used even with uniform grids
     tstat = pbval_b->InitFluxRecv(3);
@@ -621,11 +615,6 @@ TaskStatus MHD::ClearSend(Driver *pdrive, int stage) {
     if (pmy_pack->pmesh->multilevel) {
       tstat = pbval_u->ClearFluxSend();
       if (tstat != TaskStatus::complete) return tstat;
-      auto *pd=pmy_pack->penergy_diag;
-      if (pd != nullptr && pd->recording && pd->pbval_sidecar != nullptr) {
-        tstat=pd->pbval_sidecar->ClearFluxSend();
-        if (tstat != TaskStatus::complete) return tstat;
-      }
     }
     // check sends of restricted fluxes of B complete even for uniform grids
     tstat = pbval_b->ClearFluxSend();
@@ -686,11 +675,6 @@ TaskStatus MHD::ClearRecv(Driver *pdrive, int stage) {
     if (pmy_pack->pmesh->multilevel) {
       tstat = pbval_u->ClearFluxRecv();
       if (tstat != TaskStatus::complete) return tstat;
-      auto *pd=pmy_pack->penergy_diag;
-      if (pd != nullptr && pd->recording && pd->pbval_sidecar != nullptr) {
-        tstat=pd->pbval_sidecar->ClearFluxRecv();
-        if (tstat != TaskStatus::complete) return tstat;
-      }
     }
     // with SMR/AMR check receives of restricted fluxes of B complete
     tstat = pbval_b->ClearFluxRecv();

@@ -13,6 +13,7 @@
 #include <string>
 
 #include "athena.hpp"
+#include "diagnostics/observer.hpp"
 #include "tasklist/task_list.hpp"
 #include "bvals/bvals.hpp"
 
@@ -98,6 +99,7 @@ enum EnergyDiagFlag : unsigned int {
   EDF_RAD_FIX       = 1u << 6,
   EDF_RAD_LIMIT     = 1u << 7,
   EDF_RAD_BAD       = 1u << 8,
+  EDF_C2P_REPAIR    = 1u << 10, // measured change, not a reconstructed floor reason
   EDF_NONFINITE     = 1u << 9
 };
 
@@ -148,6 +150,11 @@ class EnergyDiagnostics {
   TaskStatus BeginStage(Driver *pdriver, int stage);
   TaskStatus FinalizeTimestep(Driver *pdriver, int stage);
 
+  // Detached copies for reconstruction helpers whose APIs accept mutable Views.
+  DvceArray5D<Real> reconstruction_w, reconstruction_b;
+  void SnapshotReconstruction();
+  void SavePrimitiveRecoveryState();
+  void RecordPrimitiveRecovery();
   void SaveGasEnergy();
   void AccumulateGasEnergy(int channel);
   void FillPhysicalState(DvceArray5D<Real> &state);
@@ -174,6 +181,7 @@ class EnergyDiagnostics {
   //               actual corrected-edge CT curl increment (3).
   DvceArray5D<Real> budget_state, budget_delta, em_source_before, budget_window;
   DvceArray4D<unsigned int> window_flags;
+  DvceArray5D<Real> recovery_before;
   Real window_dt_ = 0.0;
   int window_steps_ = 0;
   bool source_pending_ = false;

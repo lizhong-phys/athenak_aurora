@@ -11,11 +11,12 @@ namespace mhd {
 void MHD::SnapshotFOFCEnergy() {
   auto *diag=pmy_pack->penergy_diag;
   if (diag==nullptr || !diag->recording) return;
+  diagnostics::ObserverPhase phase;
   const auto ix=pmy_pack->pmesh->mb_indcs;
   for (int dir=1; dir<=3; ++dir) {
     if (dir==2 && !pmy_pack->pmesh->multi_d) continue;
     if (dir==3 && !pmy_pack->pmesh->three_d) continue;
-    const auto flux=dir==1 ? uflx.x1f : (dir==2 ? uflx.x2f : uflx.x3f);
+    const auto flux=diagnostics::ReadOnly(dir==1 ? uflx.x1f : (dir==2 ? uflx.x2f : uflx.x3f));
     const auto before=dir==1 ? diag->fofc_energy_flux.x1f :
                       (dir==2 ? diag->fofc_energy_flux.x2f : diag->fofc_energy_flux.x3f);
     par_for("diagnostic_fofc_before",DevExeSpace(),0,pmy_pack->nmb_thispack-1,
@@ -27,9 +28,10 @@ void MHD::SnapshotFOFCEnergy() {
 void MHD::RecordFOFCDiagnostics() {
   auto *diag=pmy_pack->penergy_diag;
   if (diag==nullptr || !diag->recording) return;
+  diagnostics::ObserverPhase phase;
   const auto ix=pmy_pack->pmesh->mb_indcs;
-  const auto w=w0, b=bcc0;
-  const auto ff=fofc;
+  const auto w=diagnostics::ReadOnly(w0), b=diagnostics::ReadOnly(bcc0);
+  const auto ff=diagnostics::ReadOnly(fofc);
   const bool use_ff=use_fofc;
   const bool excise=pmy_pack->pcoord->coord_data.bh_excise;
   const bool em=diag->budget_enabled;
@@ -51,8 +53,8 @@ void MHD::RecordFOFCDiagnostics() {
     if (dir==3 && !pmy_pack->pmesh->three_d) continue;
     const int ivy=1+dir%3, ivz=1+(dir+1)%3;
     const int iby=ivy-1, ibz=ivz-1;
-    const auto flux=dir==1 ? uflx.x1f : (dir==2 ? uflx.x2f : uflx.x3f);
-    const auto bf=dir==1 ? b0.x1f : (dir==2 ? b0.x2f : b0.x3f);
+    const auto flux=diagnostics::ReadOnly(dir==1 ? uflx.x1f : (dir==2 ? uflx.x2f : uflx.x3f));
+    const auto bf=diagnostics::ReadOnly(dir==1 ? b0.x1f : (dir==2 ? b0.x2f : b0.x3f));
     const auto delta=dir==1 ? diag->fofc_energy_flux.x1f :
                      (dir==2 ? diag->fofc_energy_flux.x2f : diag->fofc_energy_flux.x3f);
     const auto sf=dir==1 ? diag->entropy_flux.x1f :

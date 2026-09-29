@@ -184,7 +184,6 @@ class Radiation {
 
  private:
   TaskStatus RadFluidCouplingOriginal(Driver *d, int stage);
-  TaskStatus RadFluidCouplingDiagnostic(Driver *d, int stage);
   MeshBlockPack* pmy_pack;  // ptr to MeshBlockPack containing this Radiation
 };
 

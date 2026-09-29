@@ -29,6 +29,8 @@ template <MHD_RSolver rsolver_method_>
 void MHD::CalculateFluxesDiag(Driver *pdriver, int stage) {
   static_assert(rsolver_method_ == MHD_RSolver::hlle_gr);
   if (pmy_pack->penergy_diag == nullptr || !pmy_pack->penergy_diag->recording) return;
+  diagnostics::ObserverPhase phase;
+  pmy_pack->penergy_diag->SnapshotReconstruction();
   RegionIndcs &indcs_ = pmy_pack->pmesh->mb_indcs;
   int is = indcs_.is, ie = indcs_.ie;
   int js = indcs_.js, je = indcs_.je;
@@ -46,8 +48,8 @@ void MHD::CalculateFluxesDiag(Driver *pdriver, int stage) {
   auto &eos_ = peos->eos_data;
   auto &size_ = pmy_pack->pmb->mb_size;
   auto &coord_ = pmy_pack->pcoord->coord_data;
-  auto &w0_ = w0;
-  auto &b0_ = bcc0;
+  auto &w0_ = pmy_pack->penergy_diag->reconstruction_w;
+  auto &b0_ = pmy_pack->penergy_diag->reconstruction_b;
   const bool em_budget = pmy_pack->penergy_diag->budget_enabled;
   auto em1 = pmy_pack->penergy_diag->sidecar_flx.x1f;
   auto em2 = pmy_pack->penergy_diag->sidecar_flx.x2f;
@@ -78,7 +80,7 @@ void MHD::CalculateFluxesDiag(Driver *pdriver, int stage) {
                      ScrArray2D<Real>::shmem_size(3, ncells1)) * 2;
   int scr_level = 0;
 
-  auto &bx_ = b0.x1f;
+  auto bx_ = diagnostics::ReadOnly(b0.x1f);
 
   // set the loop limits for 1D/2D/3D problems
   int jl,ju,kl,ku;
@@ -150,7 +152,7 @@ void MHD::CalculateFluxesDiag(Driver *pdriver, int stage) {
     scr_size = (ScrArray2D<Real>::shmem_size(nvars, ncells1) +
                 ScrArray2D<Real>::shmem_size(3, ncells1)) * 3;
 
-    auto &by_ = b0.x2f;
+    auto by_ = diagnostics::ReadOnly(b0.x2f);
 
     // set the loop limits for 2D/3D problems
     if (pmy_pack->pmesh->two_d) {
@@ -239,7 +241,7 @@ void MHD::CalculateFluxesDiag(Driver *pdriver, int stage) {
     scr_size = (ScrArray2D<Real>::shmem_size(nvars, ncells1) +
                 ScrArray2D<Real>::shmem_size(3, ncells1)) * 3;
 
-    auto &bz_ = b0.x3f;
+    auto bz_ = diagnostics::ReadOnly(b0.x3f);
 
     // set the loop limits
     kl = ks-1, ku = ke+1;

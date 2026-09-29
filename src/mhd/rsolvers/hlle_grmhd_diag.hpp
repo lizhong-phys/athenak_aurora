@@ -26,7 +26,7 @@ void HLLE_GR_DIAG(TeamMember_t const &member, const EOS_Data &eos,
      const RegionIndcs &indcs,const DualArray1D<RegionSize> &size,const CoordData &coord,
      const int m, const int k, const int j, const int il, const int iu, const int ivx,
      const ScrArray2D<Real> &wl, const ScrArray2D<Real> &wr,
-     const ScrArray2D<Real> &bl, const ScrArray2D<Real> &br, const DvceArray4D<Real> &bx,
+     const ScrArray2D<Real> &bl, const ScrArray2D<Real> &br, const DvceArray4D<const Real> &bx,
      DvceArray4D<Real> diag_flux,
      DvceArray4D<Real> diag_entropy_flux,
      DvceArray4D<Real> diag_internal_flux,
@@ -68,7 +68,7 @@ void HLLE_GR_DIAG(TeamMember_t const &member, const EOS_Data &eos,
     wr_ipr = eos.IdealGasPressure(wr(IEN,i));
 
     // reference to longitudinal field
-    Real &bxi = bx(m,k,j,i);
+    const Real &bxi = bx(m,k,j,i);
 
     // Extract components of metric
     Real &x1min = size.d_view(m).x1min;

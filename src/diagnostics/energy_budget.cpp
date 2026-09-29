@@ -89,7 +89,7 @@ void WriteEnergyFingerprint(ParameterInput *pin, Mesh *mesh) {
 
 namespace {
 KOKKOS_INLINE_FUNCTION
-void CellEM(const DvceArray5D<Real> &w, const DvceArray5D<Real> &bcc,
+void CellEM(const DvceArray5D<const Real> &w, const DvceArray5D<const Real> &bcc,
             const DualArray1D<RegionSize> &size, const RegionIndcs &ix,
             bool flat, Real spin, int m, int k, int j, int i,
             Real g[4][4], Real gi[4][4], Real u[4], Real b[4], Real &b2,
@@ -117,7 +117,8 @@ void EnergyDiagnostics::InitializeBudget() {
 }
 
 void EnergyDiagnostics::BeginBudgetStep() {
-  auto w=pmy_pack_->pmhd->w0, bcc=pmy_pack_->pmhd->bcc0;
+  ObserverPhase phase;
+  auto w=ReadOnly(pmy_pack_->pmhd->w0), bcc=ReadOnly(pmy_pack_->pmhd->bcc0);
   auto size=pmy_pack_->pmb->mb_size;
   const auto ix=pmy_pack_->pmesh->mb_indcs;
   const bool flat=pmy_pack_->pcoord->coord_data.is_minkowski;
@@ -134,6 +135,7 @@ void EnergyDiagnostics::BeginBudgetStep() {
 }
 
 void EnergyDiagnostics::BeginBudgetStage(Driver *driver,int stage) {
+  ObserverPhase phase;
   if (stage==1) {
     Kokkos::deep_copy(DevExeSpace(),budget_delta,0.0);
   } else {
@@ -151,7 +153,8 @@ void EnergyDiagnostics::BeginBudgetStage(Driver *driver,int stage) {
 }
 
 void EnergyDiagnostics::RecordEMFlux(Driver *driver,int stage) {
-  auto w=pmy_pack_->pmhd->w0, bcc=pmy_pack_->pmhd->bcc0;
+  ObserverPhase phase;
+  auto w=ReadOnly(pmy_pack_->pmhd->w0), bcc=ReadOnly(pmy_pack_->pmhd->bcc0);
   auto size=pmy_pack_->pmb->mb_size;
   const auto ix=pmy_pack_->pmesh->mb_indcs;
   const bool flat=pmy_pack_->pcoord->coord_data.is_minkowski;
@@ -184,9 +187,10 @@ void EnergyDiagnostics::RecordEMFlux(Driver *driver,int stage) {
 }
 
 void EnergyDiagnostics::SaveEMSourceState() {
+  ObserverPhase phase;
   // Called only AFTER radiation's existing pre-source primitive recovery.
   source_pending_=true;
-  auto w=pmy_pack_->pmhd->w0, bcc=pmy_pack_->pmhd->bcc0;
+  auto w=ReadOnly(pmy_pack_->pmhd->w0), bcc=ReadOnly(pmy_pack_->pmhd->bcc0);
   auto size=pmy_pack_->pmb->mb_size;
   const auto ix=pmy_pack_->pmesh->mb_indcs;
   const bool flat=pmy_pack_->pcoord->coord_data.is_minkowski;
@@ -203,10 +207,11 @@ void EnergyDiagnostics::SaveEMSourceState() {
 
 void EnergyDiagnostics::FinishBudgetStage() {
   if (!budget_enabled || !recording || !source_pending_) return;
+  ObserverPhase phase;
   // AFTER the solver's normal end-stage recovery: no stale primitives, no extra C2P.
   // Includes any post-source repairs. Flagged cells remain separately identifiable.
   source_pending_=false;
-  auto w=pmy_pack_->pmhd->w0, bcc=pmy_pack_->pmhd->bcc0;
+  auto w=ReadOnly(pmy_pack_->pmhd->w0), bcc=ReadOnly(pmy_pack_->pmhd->bcc0);
   auto size=pmy_pack_->pmb->mb_size;
   const auto ix=pmy_pack_->pmesh->mb_indcs;
   const bool flat=pmy_pack_->pcoord->coord_data.is_minkowski;
@@ -223,10 +228,11 @@ void EnergyDiagnostics::FinishBudgetStage() {
 
 void EnergyDiagnostics::RecordCT(Driver *driver,int stage) {
   if (!budget_enabled || !recording) return;
+  ObserverPhase phase;
   const auto ix=pmy_pack_->pmesh->mb_indcs;
   const bool md=pmy_pack_->pmesh->multi_d, td=pmy_pack_->pmesh->three_d;
   auto size=pmy_pack_->pmb->mb_size;
-  auto e=pmy_pack_->pmhd->efld;
+  ReadOnlyEdgeField e(pmy_pack_->pmhd->efld);
   auto d=budget_delta;
   const Real h=driver->beta[stage-1]*pmy_pack_->pmesh->dt;
   // Sum the actual corrected-edge curls at both faces of each cell. This checks
@@ -249,7 +255,8 @@ void EnergyDiagnostics::RecordCT(Driver *driver,int stage) {
 }
 
 void EnergyDiagnostics::FinalizeBudgetStep() {
-  auto w=pmy_pack_->pmhd->w0, bcc=pmy_pack_->pmhd->bcc0;
+  ObserverPhase phase;
+  auto w=ReadOnly(pmy_pack_->pmhd->w0), bcc=ReadOnly(pmy_pack_->pmhd->bcc0);
   auto size=pmy_pack_->pmb->mb_size;
   const auto ix=pmy_pack_->pmesh->mb_indcs;
   const bool flat=pmy_pack_->pcoord->coord_data.is_minkowski;
@@ -299,6 +306,7 @@ void EnergyDiagnostics::FinalizeBudgetStep() {
 }
 
 void EnergyDiagnostics::PublishBudgetWindow(bool publish) {
+  ObserverPhase phase;
   const Real dt=pmy_pack_->pmesh->dt;
   window_dt_+=dt;
   ++window_steps_;
@@ -327,7 +335,7 @@ void EnergyDiagnostics::PublishBudgetWindow(bool publish) {
       out(m,ED_SAMPLE_TIME,k,j,i)=time;
       out(m,ED_SAMPLE_ID,k,j,i)=id;
       out(m,ED_WINDOW_STEPS,k,j,i)=steps;
-      out(m,ED_BUDGET_VERSION,k,j,i)=1.0;
+      out(m,ED_BUDGET_VERSION,k,j,i)=2.0;  // detached C2P repair flag (bit 1024)
     }
   });
   if (publish) {window_dt_=0.0; window_steps_=0;}

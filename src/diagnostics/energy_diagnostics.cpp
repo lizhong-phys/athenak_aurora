@@ -24,7 +24,7 @@
 namespace diagnostics {
 
 namespace {
-constexpr const char *kEnergyDiagImplementation = "bhl-passive-budget-v2-isolated";
+constexpr const char *kEnergyDiagImplementation = "bhl-passive-budget-v3-fenced";
 
 enum PhysicalStateIndex {
   PS_RHO=0, PS_EINT, PS_PRESSURE, PS_ENTROPY,
@@ -119,7 +119,7 @@ EnergyDiagnostics::EnergyDiagnostics(MeshBlockPack *ppack, ParameterInput *pin) 
   budget_enabled=pin->GetOrAddBoolean("problem","energy_budget",false);
   if (global_variable::my_rank == 0) {
     std::cout << "ENERGY_DIAG implementation=" << kEnergyDiagImplementation
-              << " passive=true start=" << (next_sample_time_-sample_dt_)
+              << " observer=fenced-readonly start=" << (next_sample_time_-sample_dt_)
               << " cadence=" << sample_dt_ << " continuous=" << budget_enabled << std::endl;
   }
 
@@ -165,6 +165,9 @@ EnergyDiagnostics::EnergyDiagnostics(MeshBlockPack *ppack, ParameterInput *pin) 
     pbval_sidecar->InitializeBuffers(NSIDECAR);
   }
   Kokkos::realloc(flags,nmb,n3,n2,n1);
+  Kokkos::realloc(recovery_before,nmb,5,n3,n2,n1);
+  Kokkos::realloc(reconstruction_w,nmb,ppack->pmhd->w0.extent_int(1),n3,n2,n1);
+  Kokkos::realloc(reconstruction_b,nmb,3,n3,n2,n1);
 
   Kokkos::deep_copy(step,0.0);
   Kokkos::deep_copy(output,0.0);
@@ -198,8 +201,9 @@ void EnergyDiagnostics::AssembleTasks(
 // has sqrt(-g)=1, so no metric determinant is required in the stored currents.
 void EnergyDiagnostics::FillPhysicalState(DvceArray5D<Real> &state) {
   if (!recording) return;
-  auto w = pmy_pack_->pmhd->w0;
-  auto b = pmy_pack_->pmhd->bcc0;
+  ObserverPhase phase;
+  auto w = ReadOnly(pmy_pack_->pmhd->w0);
+  auto b = ReadOnly(pmy_pack_->pmhd->bcc0);
   auto qstate = state;
   auto size = pmy_pack_->pmb->mb_size;
   auto &indcs = pmy_pack_->pmesh->mb_indcs;
@@ -274,13 +278,14 @@ TaskStatus EnergyDiagnostics::BeginTimestep(Driver *pdriver, int stage) {
   recording = budget_enabled || (static_cast<float>(end_time) >=
                static_cast<float>(next_sample_time_));
   if (!recording) return TaskStatus::complete;
+  ObserverPhase phase;
   if (!budget_enabled && global_variable::my_rank == 0) {
     std::cout << "ENERGY_DIAG sample_begin=" << (sample_number_+1)
               << " step_time=[" << pmy_pack_->pmesh->time << "," << end_time
               << "] target=" << next_sample_time_ << std::endl;
   }
-  auto gas = pmy_pack_->pmhd->u0;
-  auto prim = pmy_pack_->pmhd->w0;
+  auto gas = ReadOnly(pmy_pack_->pmhd->u0);
+  auto prim = ReadOnly(pmy_pack_->pmhd->w0);
   auto initial = gas_initial;
   auto sinitial = entropy_initial;
   const Real gamma = pmy_pack_->pmhd->peos->eos_data.gamma;
@@ -306,8 +311,9 @@ TaskStatus EnergyDiagnostics::BeginTimestep(Driver *pdriver, int stage) {
 
 void EnergyDiagnostics::SaveRadiationCouplingState() {
   if (!recording) return;
+  ObserverPhase phase;
   if (budget_enabled) SaveEMSourceState();
-  auto u=pmy_pack_->pmhd->u0;
+  auto u=ReadOnly(pmy_pack_->pmhd->u0);
   auto before=gas_four_scratch;
   auto usave=ucon_scratch;
   auto qstate=physical_final;
@@ -333,7 +339,8 @@ void EnergyDiagnostics::SaveRadiationCouplingState() {
 
 void EnergyDiagnostics::RecordRadiationCoupling() {
   if (!recording) return;
-  auto u=pmy_pack_->pmhd->u0;
+  ObserverPhase phase;
+  auto u=ReadOnly(pmy_pack_->pmhd->u0);
   auto before=gas_four_scratch;
   auto usave=ucon_scratch;
   auto d=step;
@@ -361,6 +368,7 @@ void EnergyDiagnostics::RecordRadiationCoupling() {
 
 TaskStatus EnergyDiagnostics::BeginStage(Driver *pdriver, int stage) {
   if (!recording) return TaskStatus::complete;
+  ObserverPhase phase;
   if (budget_enabled) BeginBudgetStage(pdriver,stage);
   if (stage == 1) {
     Kokkos::deep_copy(DevExeSpace(),step,0.0);
@@ -394,9 +402,49 @@ TaskStatus EnergyDiagnostics::BeginStage(Driver *pdriver, int stage) {
   return TaskStatus::complete;
 }
 
+void EnergyDiagnostics::SnapshotReconstruction() {
+  if (!recording) return;
+  ObserverPhase phase;
+  Kokkos::deep_copy(DevExeSpace(),reconstruction_w,ReadOnly(pmy_pack_->pmhd->w0));
+  Kokkos::deep_copy(DevExeSpace(),reconstruction_b,ReadOnly(pmy_pack_->pmhd->bcc0));
+}
+
+void EnergyDiagnostics::SavePrimitiveRecoveryState() {
+  if (!recording) return;
+  ObserverPhase phase;
+  const auto u=ReadOnly(pmy_pack_->pmhd->u0);
+  auto before=recovery_before;
+  const auto ix=pmy_pack_->pmesh->mb_indcs;
+  par_for("observer_c2p_before",DevExeSpace(),0,pmy_pack_->nmb_thispack-1,0,4,
+          ix.ks,ix.ke,ix.js,ix.je,ix.is,ix.ie,
+  KOKKOS_LAMBDA(int m,int n,int k,int j,int i) { before(m,n,k,j,i)=u(m,n,k,j,i); });
+}
+
+void EnergyDiagnostics::RecordPrimitiveRecovery() {
+  if (!recording) return;
+  ObserverPhase phase;
+  const auto u=ReadOnly(pmy_pack_->pmhd->u0);
+  const auto before=ReadOnly(recovery_before);
+  const auto excision=ReadOnly(pmy_pack_->pcoord->excision_floor);
+  const bool excise=pmy_pack_->pcoord->coord_data.bh_excise;
+  auto d=step;
+  auto f=flags;
+  const auto ix=pmy_pack_->pmesh->mb_indcs;
+  par_for("observer_c2p_after",DevExeSpace(),0,pmy_pack_->nmb_thispack-1,
+          ix.ks,ix.ke,ix.js,ix.je,ix.is,ix.ie,
+  KOKKOS_LAMBDA(int m,int k,int j,int i) {
+    bool changed=false;
+    for (int n=0; n<5; ++n) changed |= u(m,n,k,j,i)!=before(m,n,k,j,i);
+    d(m,ED_GAS_C2P,k,j,i)+=u(m,IEN,k,j,i)-before(m,IEN,k,j,i);
+    if (changed) f(m,k,j,i)|=EDF_C2P_REPAIR;
+    if (excise && excision(m,k,j,i)) f(m,k,j,i)|=EDF_EXCISION;
+  });
+}
+
 void EnergyDiagnostics::SaveGasEnergy() {
   if (!recording) return;
-  auto gas = pmy_pack_->pmhd->u0;
+  ObserverPhase phase;
+  auto gas = ReadOnly(pmy_pack_->pmhd->u0);
   auto scratch = gas_scratch;
   auto &indcs = pmy_pack_->pmesh->mb_indcs;
   const int nmb1 = pmy_pack_->nmb_thispack-1;
@@ -409,7 +457,8 @@ void EnergyDiagnostics::SaveGasEnergy() {
 
 void EnergyDiagnostics::AccumulateGasEnergy(int channel) {
   if (!recording) return;
-  auto gas = pmy_pack_->pmhd->u0;
+  ObserverPhase phase;
+  auto gas = ReadOnly(pmy_pack_->pmhd->u0);
   auto scratch = gas_scratch;
   auto d = step;
   auto &indcs = pmy_pack_->pmesh->mb_indcs;
@@ -423,8 +472,9 @@ void EnergyDiagnostics::AccumulateGasEnergy(int channel) {
 
 void EnergyDiagnostics::SaveRadiationEnergy() {
   if (!recording) return;
+  ObserverPhase phase;
   auto prad = pmy_pack_->prad;
-  auto i0 = prad->i0;
+  auto i0 = ReadOnly(prad->i0);
   auto omega = prad->prgeo->solid_angles;
   const int nang = prad->prgeo->nangles;
   auto scratch = rad_scratch;
@@ -441,8 +491,9 @@ void EnergyDiagnostics::SaveRadiationEnergy() {
 
 void EnergyDiagnostics::AccumulateRadiationEnergy(int channel) {
   if (!recording) return;
+  ObserverPhase phase;
   auto prad = pmy_pack_->prad;
-  auto i0 = prad->i0;
+  auto i0 = ReadOnly(prad->i0);
   auto omega = prad->prgeo->solid_angles;
   const int nang = prad->prgeo->nangles;
   auto scratch = rad_scratch;
@@ -463,9 +514,8 @@ void EnergyDiagnostics::AccumulateRadiationEnergy(int channel) {
 //! \brief Move the five detached face fields in and out of the 5D staging array.
 //!
 //! A copy rather than aliasing: the Riemann kernels in mhd_fluxes_diag.cpp capture
-//! the 4D views directly, and rewriting those captures would touch the audited
-//! flux path. Both copies run only on a sampled step (recording==true), i.e. ~10
-//! times per 10 M continuation, so the cost is irrelevant.
+//! the 4D views directly. Both copies run only on recorded steps; the continuous
+//! budget records every step, while the older sampled mode records selected steps.
 
 void EnergyDiagnostics::GatherSidecarFluxes() {
   auto &sc = sidecar_flx;
@@ -540,13 +590,24 @@ void EnergyDiagnostics::ScatterSidecarFluxes() {
 
 TaskStatus EnergyDiagnostics::SendSidecarFlux() {
   if (!recording || pbval_sidecar == nullptr) return TaskStatus::complete;
+  ObserverPhase phase;
+  // Own buffers and duplicated communicator; no requests in MHD's lifecycle.
+  TaskStatus status=pbval_sidecar->InitFluxRecv(NSIDECAR);
+  if (status != TaskStatus::complete) return status;
   GatherSidecarFluxes();
   return pbval_sidecar->PackAndSendFluxCC(sidecar_flx);
 }
 
 TaskStatus EnergyDiagnostics::RecvSidecarFlux() {
   if (!recording || pbval_sidecar == nullptr) return TaskStatus::complete;
+  ObserverPhase phase;
   TaskStatus tstat = pbval_sidecar->RecvAndUnpackFluxCC(sidecar_flx);
+  if (tstat != TaskStatus::complete) return tstat;
+  // Finish unpack kernels and retire sends before any sidecar buffer is reused.
+  Kokkos::fence("energy observer sidecar unpack");
+  tstat=pbval_sidecar->ClearFluxSend();
+  if (tstat != TaskStatus::complete) return tstat;
+  tstat=pbval_sidecar->ClearFluxRecv();
   if (tstat != TaskStatus::complete) return tstat;
   ScatterSidecarFluxes();
   return TaskStatus::complete;
@@ -554,20 +615,21 @@ TaskStatus EnergyDiagnostics::RecvSidecarFlux() {
 
 void EnergyDiagnostics::RecordMHDFluxUpdate(Driver *pdriver, int stage) {
   if (!recording) return;
+  ObserverPhase phase;
   if (budget_enabled) RecordEMFlux(pdriver,stage);
   auto &indcs = pmy_pack_->pmesh->mb_indcs;
   const int nmb1 = pmy_pack_->nmb_thispack-1;
   const bool multi_d = pmy_pack_->pmesh->multi_d;
   const bool three_d = pmy_pack_->pmesh->three_d;
   const Real beta_dt = pdriver->beta[stage-1]*pmy_pack_->pmesh->dt;
-  auto flx = pmy_pack_->pmhd->uflx;
+  ReadOnlyFaceFlux flx(pmy_pack_->pmhd->uflx);
   auto hll = hlle_energy_flux;
   auto fof = fofc_energy_flux;
   auto sflx = entropy_flux;
   auto eflx = internal_energy_flux;
   auto uflx = four_velocity_flux;
   auto size = pmy_pack_->pmb->mb_size;
-  auto w = pmy_pack_->pmhd->w0;
+  auto w = ReadOnly(pmy_pack_->pmhd->w0);
   const Real gm1 = pmy_pack_->pmhd->peos->eos_data.gamma-1.0;
   auto d = step;
   par_for("energy_diag_mhd_flux",DevExeSpace(),0,nmb1,indcs.ks,indcs.ke,
@@ -607,6 +669,7 @@ void EnergyDiagnostics::RecordMHDFluxUpdate(Driver *pdriver, int stage) {
 
 void EnergyDiagnostics::RecordRadiationUpdate(Driver *pdriver, int stage) {
   if (!recording) return;
+  ObserverPhase phase;
   auto prad = pmy_pack_->prad;
   auto &indcs = pmy_pack_->pmesh->mb_indcs;
   const int nmb1 = pmy_pack_->nmb_thispack-1;
@@ -617,10 +680,10 @@ void EnergyDiagnostics::RecordRadiationUpdate(Driver *pdriver, int stage) {
   const Real gam1 = pdriver->gam1[stage-1];
   const Real beta_dt = pdriver->beta[stage-1]*pmy_pack_->pmesh->dt;
   const int nang = prad->prgeo->nangles;
-  auto i0 = prad->i0;
-  auto i1 = prad->i1;
-  auto flx = prad->iflx;
-  auto divfa = prad->divfa;
+  auto i0 = ReadOnly(prad->i0);
+  auto i1 = ReadOnly(prad->i1);
+  ReadOnlyFaceFlux flx(prad->iflx);
+  auto divfa = ReadOnly(prad->divfa);
   auto omega = prad->prgeo->solid_angles;
   auto size = pmy_pack_->pmb->mb_size;
   auto before = rad_scratch;
@@ -652,14 +715,15 @@ void EnergyDiagnostics::RecordRadiationUpdate(Driver *pdriver, int stage) {
 }
 
 void EnergyDiagnostics::FinalizeBudgetThermodynamics() {
+  ObserverPhase phase;
   const auto ix=pmy_pack_->pmesh->mb_indcs;
   const Real dt=pmy_pack_->pmesh->dt;
   auto p0=physical_initial, p1=physical_final, out=output, d=step;
-  auto u=pmy_pack_->pmhd->u0, w=pmy_pack_->pmhd->w0, b=pmy_pack_->pmhd->bcc0;
+  auto u=ReadOnly(pmy_pack_->pmhd->u0), w=ReadOnly(pmy_pack_->pmhd->w0), b=ReadOnly(pmy_pack_->pmhd->bcc0);
   auto ig=gas_initial, ir=rad_initial, is=entropy_initial;
   auto fl=flags;
   auto prad=pmy_pack_->prad;
-  auto intensity=prad->i0;
+  auto intensity=ReadOnly(prad->i0);
   auto omega=prad->prgeo->solid_angles;
   const int nang=prad->prgeo->nangles;
   auto tet=prad->tet_c;
@@ -723,6 +787,7 @@ void EnergyDiagnostics::FinalizeBudgetThermodynamics() {
 
 TaskStatus EnergyDiagnostics::FinalizeTimestep(Driver *pdriver, int stage) {
   if (!recording) return TaskStatus::complete;
+  ObserverPhase phase;
   FillPhysicalState(physical_final);
   if (budget_enabled) {
     // Avoid running the legacy gradient-based morphology classifier on every step.
@@ -754,10 +819,10 @@ TaskStatus EnergyDiagnostics::FinalizeTimestep(Driver *pdriver, int stage) {
   const bool three_d = pmy_pack_->pmesh->three_d;
   const Real dt = pmy_pack_->pmesh->dt;
   const Real gamma = pmy_pack_->pmhd->peos->eos_data.gamma;
-  auto u = pmy_pack_->pmhd->u0;
-  auto w = pmy_pack_->pmhd->w0;
-  auto b = pmy_pack_->pmhd->bcc0;
-  auto i0 = pmy_pack_->prad->i0;
+  auto u = ReadOnly(pmy_pack_->pmhd->u0);
+  auto w = ReadOnly(pmy_pack_->pmhd->w0);
+  auto b = ReadOnly(pmy_pack_->pmhd->bcc0);
+  auto i0 = ReadOnly(pmy_pack_->prad->i0);
   auto omega = pmy_pack_->prad->prgeo->solid_angles;
   auto nh = pmy_pack_->prad->nh_c;
   auto tet = pmy_pack_->prad->tet_c;
