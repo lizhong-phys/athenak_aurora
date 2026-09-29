@@ -632,7 +632,8 @@ BaseTypeOutput::BaseTypeOutput(ParameterInput *pin, Mesh *pm, OutputParameters o
         ED_MAG_SOURCE,ED_MAG_QUADRATURE,ED_MAG_POS,ED_MAG_NEG,ED_MECH_POS,ED_MECH_NEG,
         ED_TOTAL_POS,ED_TOTAL_NEG,ED_CT_CLOSURE,ED_GAS_CLOSURE_ABS,
         ED_THERMO_CLOSURE_ABS,ED_WINDOW_STEPS,ED_BUDGET_VERSION,
-        ED_EM_BULK_WORK,ED_MAG_HEAT_INF,ED_MASS_D};
+        ED_EM_BULK_WORK,ED_MAG_HEAT_INF,ED_MASS_D,
+        ED_QRECOVERY,ED_QRECOVERY_ABS,ED_ENTROPY_LEGACY,ED_DISS_LEGACY,ED_ENTROPY_MASS_TERM};
       for (int n:fields) outvars.emplace_back(EnergyDiagnostics::label[n],n,&(pd->output));
     }
 

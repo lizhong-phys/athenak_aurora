@@ -335,7 +335,7 @@ void EnergyDiagnostics::PublishBudgetWindow(bool publish) {
       out(m,ED_SAMPLE_TIME,k,j,i)=time;
       out(m,ED_SAMPLE_ID,k,j,i)=id;
       out(m,ED_WINDOW_STEPS,k,j,i)=steps;
-      out(m,ED_BUDGET_VERSION,k,j,i)=2.0;  // detached C2P repair flag (bit 1024)
+      out(m,ED_BUDGET_VERSION,k,j,i)=3.0;  // explicit recovery source + finite-step Gibbs identity
     }
   });
   if (publish) {window_dt_=0.0; window_steps_=0;}

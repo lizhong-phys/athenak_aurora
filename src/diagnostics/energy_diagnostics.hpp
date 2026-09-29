@@ -41,15 +41,18 @@ enum EnergyDiagIndex {
   ED_RAD_FIX,            // positivity/excision correction in the radiation update
   ED_RAD_SOURCE_TOTAL,   // exact radiation change across the coupling operator
   ED_GAS_C2P,            // exact conserved-energy change made by C2P/floors/excision
-  ED_DS_ADVECT,           // RK-integrated change -dt div(F_S) from solver face fluxes
-  ED_DEINT_ADVECT,        // RK-integrated change -dt div(F_e) from solver face fluxes
+  ED_DS_ADVECT,           // RK-integrated -dt div(F_S), auxiliary entropy face flux
+  ED_DEINT_ADVECT,        // RK-integrated -dt div(F_e), auxiliary internal-energy flux
   ED_DU_ADVECT,           // RK-integrated change -dt div(u^i_face)
   ED_DPCOMP_SPATIAL,      // RK-integrated spatial pressure work -dt p div(u^i_face)
+  ED_DM_ADVECT,           // actual accepted RK mass-flux increment
+  ED_QRECOVERY,           // comoving thermal source from recovery corrections
+  ED_QRECOVERY_ABS,       // RK-weighted absolute recovery source increments
   ED_QENT_RAD_LEGACY,     // old radiation contraction retained only for sign QA
   ED_QENT_RAD,            // comoving gas-to-radiation loss Lambda (positive = emission)
   ED_QENT_TOTAL,          // T[(D s)^{n+1}-(D s)^n-dS_advect]/dt
   ED_QENT_CENTERED,       // legacy centered-current entropy estimate retained for QA
-  ED_QENT_NUM,            // irreversible entropy heating qent_total + Lambda
+  ED_QENT_NUM,            // entropy heating estimate, minus recovery source in budget mode
   ED_GAS_ACTUAL,         // measured gas conserved-energy change over the timestep
   ED_GAS_CLOSURE,        // actual minus independently recorded gas terms
   ED_RAD_ACTUAL,         // measured coordinate radiation-energy change over the timestep
@@ -57,7 +60,7 @@ enum EnergyDiagIndex {
   ED_INT_STORAGE,        // d(e u^t)/dt in Cartesian Kerr-Schild coordinates
   ED_INT_ADVECTION,      // div(e u^i), centered in time over the sampled timestep
   ED_COMPRESSION,        // -p div_4(u), centered in time over the sampled timestep
-  ED_DISS_ENERGY,        // storage + advection - compression + gas-to-radiation loss
+  ED_DISS_ENERGY,        // internal-energy residual minus recovery source in budget mode
   ED_THERMO_CLOSURE,     // energy-equation dissipation minus entropy dissipation
   ED_EXPANSION,          // covariant expansion theta = div_4(u)
   ED_INT_ADVECTION_CENTERED, // legacy centered div(e u^i), QA only
@@ -86,6 +89,7 @@ enum EnergyDiagIndex {
   ED_MAG_POS, ED_MAG_NEG, ED_MECH_POS, ED_MECH_NEG, ED_TOTAL_POS, ED_TOTAL_NEG,
   ED_CT_CLOSURE, ED_GAS_CLOSURE_ABS, ED_THERMO_CLOSURE_ABS,
   ED_WINDOW_STEPS, ED_BUDGET_VERSION, ED_EM_BULK_WORK, ED_MAG_HEAT_INF, ED_MASS_D,
+  ED_ENTROPY_LEGACY, ED_DISS_LEGACY, ED_ENTROPY_MASS_TERM,
   NENERGY_DIAG
 };
 

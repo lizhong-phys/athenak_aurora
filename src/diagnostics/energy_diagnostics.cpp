@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <limits>
 
 #include "athena.hpp"
 #include "parameter_input.hpp"
@@ -19,12 +20,13 @@
 #include "coordinates/cartesian_ks.hpp"
 #include "coordinates/cell_locations.hpp"
 #include "diagnostics/energy_diagnostics.hpp"
+#include "diagnostics/thermodynamic_budget.hpp"
 #include "globals.hpp"
 
 namespace diagnostics {
 
 namespace {
-constexpr const char *kEnergyDiagImplementation = "bhl-passive-budget-v3-fenced";
+constexpr const char *kEnergyDiagImplementation = "bhl-passive-budget-v4-physics";
 
 enum PhysicalStateIndex {
   PS_RHO=0, PS_EINT, PS_PRESSURE, PS_ENTROPY,
@@ -41,7 +43,7 @@ const char *EnergyDiagnostics::label[NENERGY_DIAG] = {
   "dE_gas_other", "dE_gas_rad", "dE_gas_abs", "dE_gas_compt",
   "dE_rad_reject", "dE_rad_spatial", "dE_rad_angular", "dE_rad_fix",
   "dE_rad_source", "dE_gas_c2p", "dS_advect", "dEint_advect", "dU_advect",
-  "dPcomp_spatial", "qent_rad_legacy", "qent_rad",
+  "dPcomp_spatial", "dM_advect", "q_recovery", "q_recovery_abs", "qent_rad_legacy", "qent_rad",
   "qent_total", "qent_centered", "qent_num",
   "dE_gas_actual", "dE_gas_closure", "dE_rad_actual", "dE_rad_closure",
   "q_storage", "q_advection", "q_compression", "q_diss_energy",
@@ -55,7 +57,8 @@ const char *EnergyDiagnostics::label[NENERGY_DIAG] = {
   "q_mag_budget", "q_mech_budget", "q_mag_source", "q_mag_quadrature",
   "q_mag_positive", "q_mag_negative", "q_mech_positive", "q_mech_negative",
   "q_total_positive", "q_total_negative", "ct_closure", "gas_closure_abs",
-  "thermo_closure_abs", "window_steps", "budget_version", "em_bulk_work_inf", "mag_heat_inf", "D"
+  "thermo_closure_abs", "window_steps", "budget_version", "em_bulk_work_inf", "mag_heat_inf", "D",
+  "qent_num_legacy", "q_diss_energy_legacy", "q_entropy_mass_source"
 };
 
 EnergyDiagnostics::EnergyDiagnostics(MeshBlockPack *ppack, ParameterInput *pin) :
@@ -425,6 +428,9 @@ void EnergyDiagnostics::RecordPrimitiveRecovery() {
   ObserverPhase phase;
   const auto u=ReadOnly(pmy_pack_->pmhd->u0);
   const auto before=ReadOnly(recovery_before);
+  const auto w=ReadOnly(pmy_pack_->pmhd->w0);
+  const auto size=pmy_pack_->pmb->mb_size;
+  const auto coord=pmy_pack_->pcoord->coord_data;
   const auto excision=ReadOnly(pmy_pack_->pcoord->excision_floor);
   const bool excise=pmy_pack_->pcoord->coord_data.bh_excise;
   auto d=step;
@@ -436,7 +442,29 @@ void EnergyDiagnostics::RecordPrimitiveRecovery() {
     bool changed=false;
     for (int n=0; n<5; ++n) changed |= u(m,n,k,j,i)!=before(m,n,k,j,i);
     d(m,ED_GAS_C2P,k,j,i)+=u(m,IEN,k,j,i)-before(m,IEN,k,j,i);
-    if (changed) f(m,k,j,i)|=EDF_C2P_REPAIR;
+    if (changed) {
+      f(m,k,j,i)|=EDF_C2P_REPAIR;
+      // Source accounting, not cell rejection. No extra primitive recovery.
+      // IEN=T^t_t+D: q=-u^nu Delta(T^t_nu)-Delta D removes rest-mass injection.
+      // Post-recovery velocity is a source quadrature choice, not an exact
+      // nonlinear thermal-energy difference for a large velocity correction.
+      const auto sz=size.d_view(m);
+      const Real x=CellCenterX(i-ix.is,ix.nx1,sz.x1min,sz.x1max);
+      const Real y=CellCenterX(j-ix.js,ix.nx2,sz.x2min,sz.x2max);
+      const Real z=CellCenterX(k-ix.ks,ix.nx3,sz.x3min,sz.x3max);
+      Real gl[4][4], gu[4][4];
+      ComputeMetricAndInverse(x,y,z,coord.is_minkowski,coord.bh_spin,gl,gu);
+      const Real v[3]={w(m,IVX,k,j,i),w(m,IVY,k,j,i),w(m,IVZ,k,j,i)};
+      Real usq=0.0;
+      for (int a=0; a<3; ++a) for (int b=0; b<3; ++b) usq+=gl[a+1][b+1]*v[a]*v[b];
+      const Real alpha=sqrt(-1.0/gu[0][0]), lor=sqrt(1.0+fmax(usq,0.0));
+      const Real ut=lor/alpha, dm=u(m,IDN,k,j,i)-before(m,IDN,k,j,i);
+      Real heat=-ut*(u(m,IEN,k,j,i)-before(m,IEN,k,j,i)-dm)-dm;
+      for (int a=0; a<3; ++a)
+        heat-=(v[a]-alpha*lor*gu[0][a+1])*(u(m,IM1+a,k,j,i)-before(m,IM1+a,k,j,i));
+      d(m,ED_QRECOVERY,k,j,i)+=heat;
+      d(m,ED_QRECOVERY_ABS,k,j,i)+=fabs(heat);
+    }
     if (excise && excision(m,k,j,i)) f(m,k,j,i)|=EDF_EXCISION;
   });
 }
@@ -636,6 +664,7 @@ void EnergyDiagnostics::RecordMHDFluxUpdate(Driver *pdriver, int stage) {
           indcs.js,indcs.je,indcs.is,indcs.ie,
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
     Real total = (flx.x1f(m,IEN,k,j,i+1)-flx.x1f(m,IEN,k,j,i))/size.d_view(m).dx1;
+    Real divm = (flx.x1f(m,IDN,k,j,i+1)-flx.x1f(m,IDN,k,j,i))/size.d_view(m).dx1;
     Real dhll = (hll.x1f(m,k,j,i+1)-hll.x1f(m,k,j,i))/size.d_view(m).dx1;
     Real dfof = (fof.x1f(m,k,j,i+1)-fof.x1f(m,k,j,i))/size.d_view(m).dx1;
     Real divs = (sflx.x1f(m,k,j,i+1)-sflx.x1f(m,k,j,i))/size.d_view(m).dx1;
@@ -643,6 +672,7 @@ void EnergyDiagnostics::RecordMHDFluxUpdate(Driver *pdriver, int stage) {
     Real divu = (uflx.x1f(m,k,j,i+1)-uflx.x1f(m,k,j,i))/size.d_view(m).dx1;
     if (multi_d) {
       total += (flx.x2f(m,IEN,k,j+1,i)-flx.x2f(m,IEN,k,j,i))/size.d_view(m).dx2;
+      divm += (flx.x2f(m,IDN,k,j+1,i)-flx.x2f(m,IDN,k,j,i))/size.d_view(m).dx2;
       dhll += (hll.x2f(m,k,j+1,i)-hll.x2f(m,k,j,i))/size.d_view(m).dx2;
       dfof += (fof.x2f(m,k,j+1,i)-fof.x2f(m,k,j,i))/size.d_view(m).dx2;
       divs += (sflx.x2f(m,k,j+1,i)-sflx.x2f(m,k,j,i))/size.d_view(m).dx2;
@@ -651,6 +681,7 @@ void EnergyDiagnostics::RecordMHDFluxUpdate(Driver *pdriver, int stage) {
     }
     if (three_d) {
       total += (flx.x3f(m,IEN,k+1,j,i)-flx.x3f(m,IEN,k,j,i))/size.d_view(m).dx3;
+      divm += (flx.x3f(m,IDN,k+1,j,i)-flx.x3f(m,IDN,k,j,i))/size.d_view(m).dx3;
       dhll += (hll.x3f(m,k+1,j,i)-hll.x3f(m,k,j,i))/size.d_view(m).dx3;
       dfof += (fof.x3f(m,k+1,j,i)-fof.x3f(m,k,j,i))/size.d_view(m).dx3;
       divs += (sflx.x3f(m,k+1,j,i)-sflx.x3f(m,k,j,i))/size.d_view(m).dx3;
@@ -658,6 +689,7 @@ void EnergyDiagnostics::RecordMHDFluxUpdate(Driver *pdriver, int stage) {
       divu += (uflx.x3f(m,k+1,j,i)-uflx.x3f(m,k,j,i))/size.d_view(m).dx3;
     }
     d(m,ED_GAS_FLUX,k,j,i) += -beta_dt*total;
+    d(m,ED_DM_ADVECT,k,j,i) += -beta_dt*divm;
     d(m,ED_GAS_HLLE,k,j,i) += -beta_dt*dhll;
     d(m,ED_GAS_FOFC,k,j,i) += -beta_dt*dfof;
     d(m,ED_DS_ADVECT,k,j,i) += -beta_dt*divs;
@@ -680,6 +712,7 @@ void EnergyDiagnostics::RecordRadiationUpdate(Driver *pdriver, int stage) {
   const Real gam1 = pdriver->gam1[stage-1];
   const Real beta_dt = pdriver->beta[stage-1]*pmy_pack_->pmesh->dt;
   const int nang = prad->prgeo->nangles;
+  const Real roundoff=64.0*(nang+1)*std::numeric_limits<Real>::epsilon();
   auto i0 = ReadOnly(prad->i0);
   auto i1 = ReadOnly(prad->i1);
   ReadOnlyFaceFlux flx(prad->iflx);
@@ -708,7 +741,9 @@ void EnergyDiagnostics::RecordRadiationUpdate(Driver *pdriver, int stage) {
     d(m,ED_RAD_ANGULAR,k,j,i) += angular_inc;
     const Real fix=total-spatial-angular_inc;
     d(m,ED_RAD_FIX,k,j,i) += fix;
-    if (fabs(fix) > 1.0e-12*(fabs(total)+fabs(spatial)+fabs(angular_inc)+1.0e-30)) {
+    const Real state_scale=fabs(e_after)+fabs(gam0*before(m,0,k,j,i))
+        +fabs(gam1*e_i1)+fabs(spatial)+fabs(angular_inc);
+    if (fabs(fix) > roundoff*state_scale) {
       flg(m,k,j,i) |= EDF_RAD_FIX;
     }
   });
@@ -718,6 +753,7 @@ void EnergyDiagnostics::FinalizeBudgetThermodynamics() {
   ObserverPhase phase;
   const auto ix=pmy_pack_->pmesh->mb_indcs;
   const Real dt=pmy_pack_->pmesh->dt;
+  const Real gamma=pmy_pack_->pmhd->peos->eos_data.gamma;
   auto p0=physical_initial, p1=physical_final, out=output, d=step;
   auto u=ReadOnly(pmy_pack_->pmhd->u0), w=ReadOnly(pmy_pack_->pmhd->w0), b=ReadOnly(pmy_pack_->pmhd->bcc0);
   auto ig=gas_initial, ir=rad_initial, is=entropy_initial;
@@ -756,19 +792,32 @@ void EnergyDiagnostics::FinalizeBudgetThermodynamics() {
     const Real dut=(p1(m,PS_UT,k,j,i)-p0(m,PS_UT,k,j,i))/dt;
     const Real storage=(p1(m,PS_EUT,k,j,i)-p0(m,PS_EUT,k,j,i))/dt;
     const Real adv=-d(m,ED_DEINT_ADVECT,k,j,i)/dt;
-    const Real comp=d(m,ED_DPCOMP_SPATIAL,k,j,i)/dt
+    const Real comp_old=d(m,ED_DPCOMP_SPATIAL,k,j,i)/dt
         -0.5*(p0(m,PS_PRESSURE,k,j,i)+p1(m,PS_PRESSURE,k,j,i))*dut;
     const Real temp=0.5*(p0(m,PS_PRESSURE,k,j,i)/p0(m,PS_RHO,k,j,i)
                        +p1(m,PS_PRESSURE,k,j,i)/p1(m,PS_RHO,k,j,i));
     const Real ds=u(m,IDN,k,j,i)*p1(m,PS_ENTROPY,k,j,i)-is(m,0,k,j,i);
-    const Real entropy=temp*(ds-d(m,ED_DS_ADVECT,k,j,i))/dt;
+    const Real entropy_old=temp*(ds-d(m,ED_DS_ADVECT,k,j,i))/dt;
+    const Real d0=p0(m,PS_RHO,k,j,i)*p0(m,PS_UT,k,j,i);
+    const Real d1=p1(m,PS_RHO,k,j,i)*p1(m,PS_UT,k,j,i);
+    const Real s0=p0(m,PS_ENTROPY,k,j,i), s1=p1(m,PS_ENTROPY,k,j,i);
+    const auto tw=ThermoWeights(p0(m,PS_EUT,k,j,i),p1(m,PS_EUT,k,j,i),
+        d0,d1,p0(m,PS_UT,k,j,i),p1(m,PS_UT,k,j,i),s0,s1,gamma);
+    const Real ds_physical=(0.5*d0+0.5*d1)*(s1-s0)+(0.5*s0+0.5*s1)*(d1-d0);
+    const Real mass_term=tw.mass*(d1-d0-d(m,ED_DM_ADVECT,k,j,i))/dt;
+    const Real entropy=tw.temperature*(ds_physical-d(m,ED_DS_ADVECT,k,j,i))/dt+mass_term;
+    const Real comp=d(m,ED_DPCOMP_SPATIAL,k,j,i)/dt-tw.pressure*dut;
     const Real qrad=out(m,ED_QENT_RAD,k,j,i);
+    const Real recovery=out(m,ED_QRECOVERY,k,j,i);
     out(m,ED_INT_STORAGE,k,j,i)=storage;
     out(m,ED_INT_ADVECTION,k,j,i)=adv;
     out(m,ED_COMPRESSION,k,j,i)=comp;
-    out(m,ED_DISS_ENERGY,k,j,i)=storage+adv-comp+qrad;
+    out(m,ED_DISS_ENERGY,k,j,i)=storage+adv-comp+qrad-recovery;
     out(m,ED_QENT_TOTAL,k,j,i)=entropy;
-    out(m,ED_QENT_NUM,k,j,i)=entropy+qrad;
+    out(m,ED_QENT_NUM,k,j,i)=entropy+qrad-recovery;
+    out(m,ED_ENTROPY_LEGACY,k,j,i)=entropy_old+qrad;
+    out(m,ED_DISS_LEGACY,k,j,i)=storage+adv-comp_old+qrad;
+    out(m,ED_ENTROPY_MASS_TERM,k,j,i)=mass_term;
     out(m,ED_THERMO_CLOSURE,k,j,i)=storage+adv-comp-entropy;
     out(m,ED_EXPANSION,k,j,i)=dut-d(m,ED_DU_ADVECT,k,j,i)/dt;
     // Store RAW state checks, not floored copies, so NaNs cannot be disguised.
