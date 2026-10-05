@@ -47,37 +47,6 @@ struct EOS_Data {
   Real sigma_max;             // ceiling on sigma_cold = b^2/rho
   // Real sceiling;
 
-  // Enabled only by the BHL density-ramp pgen. All densities and entropy
-  // coefficients are expressed in the fixed checkpoint units. Keep the initial
-  // dense-gas prescription; use the reference runs for lower-density material.
-  bool bhl_local_entropy = false;
-  Real bhl_rho_start = 0.0, bhl_rho_mid = 0.0, bhl_rho_low = 0.0;
-  Real bhl_s_mid = 0.0, bhl_s_low = 0.0;
-
-  KOKKOS_INLINE_FUNCTION
-  Real EntropyFloor(const Real dens) const {
-    // This is the existing MHD entropy law, including extrapolation and its cap.
-    const Real log_s = log10(sfloor1) + (log10(dens)-log10(rho1)) *
-        (log10(sfloor2)-log10(sfloor1))/(log10(rho2)-log10(rho1));
-    const Real original = fmax(sfloor, pow(10.0, log_s));
-    if (!bhl_local_entropy || dens >= bhl_rho_start) return original;
-    if (dens <= bhl_rho_low) return bhl_s_low;
-    Real r_hi, r_lo, s_hi, s_lo;
-    if (dens >= bhl_rho_mid) {
-      r_hi = bhl_rho_start; r_lo = bhl_rho_mid;
-      const Real log_start = log10(sfloor1) +
-          (log10(r_hi)-log10(rho1)) *
-          (log10(sfloor2)-log10(sfloor1))/(log10(rho2)-log10(rho1));
-      s_hi = fmax(sfloor, pow(10.0, log_start));
-      s_lo = bhl_s_mid;
-    } else {
-      r_hi = bhl_rho_mid; r_lo = bhl_rho_low;
-      s_hi = bhl_s_mid; s_lo = bhl_s_low;
-    }
-    const Real fraction = log(dens/r_hi)/log(r_lo/r_hi);
-    return s_hi*exp(fraction*log(s_lo/s_hi));
-  }
-
   // IDEAL GAS PRESSURE: converts primitive variable (either internal energy density e
   // or temperature e/d) into pressure.
   KOKKOS_INLINE_FUNCTION
