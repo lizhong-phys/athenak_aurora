@@ -1,6 +1,6 @@
-# Partial input, loaded AFTER the old checkpoint with -r ... -i this_file.
-# Keep mesh, radiation configuration, rho0 and units from the checkpoint.
-# In particular, units/density_cgs MUST stay 1e-6; final code density is 1e-6.
+# Partial input, loaded AFTER the original dense checkpoint with -r ... -i.
+# Keep mesh, radiation, temperature, entropy law and units from the checkpoint.
+# units/density_cgs stays 1e-6; the final inflow density is 1e-6 in code units.
 
 <job>
 basename = bhl_density_ramp
@@ -13,26 +13,22 @@ nlim = -1
 density_ramp_final_cgs = 1.0e-12
 density_ramp_duration  = 30000.0
 density_ramp_hold      = 20000.0
-density_ramp_scale_b   = true   # constant pgas+prad beta; false keeps original B
+density_ramp_scale_b   = true   # preserve original total-pressure beta
 density_ramp_set_tlim  = true
-density_ramp_track_floors = true
-density_ramp_local_entropy = true
-# Entropy coefficients from the standalone reference runs (ambient code rho=1).
-density_ramp_floor_mid_cgs = 1.0e-9
-density_ramp_floor_low_cgs = 1.0e-12
-density_ramp_sfloor_mid = 1.0e-10
-density_ramp_sfloor_low = 1.0e-9
-# Omit density_ramp_start: first restart time is saved automatically.
+# Compatibility flags: floors are fixed, and the original entropy law is used.
+density_ramp_track_floors = false
+density_ramp_local_entropy = false
+# Omit density_ramp_start: the first restart time is saved automatically.
 
 <mhd>
-# Initial floors; the pgen scales them with the current inflow density.
-# Original anchor values are saved separately for all subsequent restarts.
-dfloor = 1.0e-7
-pfloor = 3.3333333333333335e-13
+# Fixed final-target floors, used from the first restart through the final hold.
+dfloor = 1.0e-13
+pfloor = 3.3333333333333335e-19
+# sfloor, sfloor1/2 and rho1/2 remain exactly as saved in the dense checkpoint.
 
 <coord>
-dexcise = 1.0e-7
-pexcise = 3.3333333333333335e-13
+dexcise = 1.0e-13
+pexcise = 3.3333333333333335e-19
 
 <output1>
 # Write a fresh history header for the added reservoir diagnostics.

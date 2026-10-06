@@ -78,69 +78,39 @@ Keep `units/density_cgs = 1e-6` and `problem/rho0 = 1`. The final density is
 `1e-6` in these fixed code units. Changing the unit normalization during a
 restart changes the meaning of stored gas, magnetic and radiation variables.
 
-## Floors in physical units
+## Fixed final-target floors
 
-`density_ramp_track_floors=true` updates the active EOS and coordinate floors;
-it does not just edit the input file. The initial density/pressure/excision
-floors come from the checkpoint plus the partial input. The pgen saves their
-original values as `problem/density_ramp_dfloor0`, `pfloor0`, `dexcise0`, and
-`pexcise0` (all names have the `density_ramp_` prefix). With
-`f = rho_inf(t)/rho0`, their runtime values are the original values times `f`.
-They therefore keep the same physical ratios to the prescribed inflow.
+The restart input sets the final-target gas and excision floors from the first
+continuation and keeps them constant throughout the ramp and hold:
 
-For the standard `rho0=1`, fixed `units/density_cgs=1e-6` setup:
+| Parameter | Fixed value, in checkpoint code units |
+|---|---:|
+| `mhd/dfloor` | 1e-13 |
+| `mhd/pfloor` | 3.3333333333333335e-19 |
+| `coord/dexcise` | 1e-13 |
+| `coord/pexcise` | 3.3333333333333335e-19 |
 
-| Ambient density, g/cm^3 | dfloor / dexcise | pfloor / pexcise | Entropy coefficient at ambient density |
-|---|---:|---:|---:|
-| 1e-6 | 1e-7 | 3.3333333333333335e-13 | original effective value |
-| 1e-9 | 1e-10 | 3.3333333333333335e-16 | 1e-8 |
-| 1e-12 | 1e-13 | 3.3333333333333335e-19 | 1e-5 |
+With `units/density_cgs=1e-6`, the final upstream code density is 1e-6 and the
+upstream pressure is 1.53e-14. These floors are respectively 1e-7 and about
+2.18e-5 of the final upstream values. They remain well below the imposed wind.
+The pgen validates that the active floors are positive, finite and below the
+final upstream state. The input must be updated before rebuilding/launching.
 
-The original entropy profile is saved separately as `density_ramp_sfloor0`,
-`sfloor10`, `sfloor20`, `rho10`, and `rho20`. The standalone 1e-9 run uses
-`sfloor=sfloor1=sfloor2=1e-10`; the 1e-12 run uses `1e-9`. Because the entropy
-floor imposes `p >= s * rho^gamma`, converting a reference coefficient into the
-unchanged checkpoint density unit requires
+The original entropy law (`sfloor`, `sfloor1/2`, `rho1/2`) is inherited from the
+dense checkpoint, unchanged. Its original C2P implementation and EOS structure
+are restored. No local entropy wrapper, interpolation cache, floor-update task
+or floor-related communication is added. Radiation's W limiter and its
+no-new-floor admission rule remain exactly as before.
 
-```
-rho_anchor = rho_anchor_cgs / fixed_density_unit
-s_anchor = s_reference * rho_anchor^(1-gamma)
-```
+The legacy `density_ramp_track_floors` and `density_ramp_local_entropy` options
+are retired; the pgen records them as false if they were present in an older
+header. Fixed floor values in the input/checkpoint are authoritative, with no
+rescaling on subsequent restarts. For a clean rerun of the earlier slow ramp,
+start from the original dense checkpoint; rebuilding cannot undo heating
+already stored in an old ramp checkpoint.
 
-The default **local entropy floor** (`density_ramp_local_entropy=true`) is
-applied inside every MHD C2P calculation, including the relativistic root
-iteration, final primitive recovery, FOFC and radiation C2P checks. Hydro's C2P
-uses the same local law when this pgen enables it. At or above the original
-ambient density, it retains the original density-dependent entropy floor. At
-1e-9 and 1e-12 g/cm^3 it matches the converted standalone-run coefficients.
-Between these anchors it interpolates logarithmically in local rest-mass density
-and coefficient; below the lowest anchor it holds the final coefficient. The
-higher-density gas left in the box is not assigned the much larger coefficient
-appropriate to rarefied gas. Already rarefied material can be affected when this
-local prescription is first enabled; this is an explicit change to the floor law.
-
-Setting `density_ramp_local_entropy=false` instead applies a spatially uniform,
-time-dependent entropy profile, interpolated through the same reference runs;
-the density anchors `rho1/2` then also scale by `f`. This can artificially heat
-dense gas that remains in the box. Local entropy is the default for the transient.
-
-The pgen restores the current floors before Driver initialization, updates them
-in `before_stagen` before reconstruction/FOFC/radiation coupling, and updates
-them to the timestep endpoint in `after_timeintegrator` before output and AMR.
-As for the boundary forcing, stage floors use the current mesh time (a one-step
-timing uncertainty). Checkpoint headers record current active values plus the
-original anchors; resuming never treats current floors as new initial anchors.
-The EOS additions are disabled by default for all other problem generators.
-
-The partial input now supplies the **initial** density/pressure/excision floors,
-not their final low values. Repeated `-i` overrides are safe: saved original
-anchors plus absolute ramp time restore the correct current floor values. If
-PBS command-line floor arguments conflict with these settings, update them;
-for this pgen, saved `problem/density_ramp_*0` anchors govern the subsequent
-schedule. Other temperature/magnetization and radiation opacity limiter settings
-are inherited, independently of this density/entropy/excision prescription.
-To use fixed floors instead, set `density_ramp_track_floors=false` and provide
-sufficiently low `mhd/dfloor` and `mhd/pfloor` yourself.
+Other temperature/magnetization ceilings and radiation opacity settings are
+inherited from the original dense run.
 
 ## Later restarts and diagnostics
 
@@ -155,7 +125,7 @@ The existing `mdot`, `edot`, `ldot`, and magnetic-flux histories are retained.
 Eleven columns are added: `rho_inf` (code density), `rho_cgs`, `By_inf` (code
 field), and `t_ramp` (M). They describe the supplied reservoir, not the
 instantaneous density near the hole. The additional columns `dfloor`, `pfloor`,
-`sf_at_inf` and `dexcise` report the active EOS/coordinate density, pressure,
+`sf_at_inf` and `dexcise` report the fixed EOS/coordinate density, pressure,
 effective entropy coefficient at the prescribed ambient density, and excision
 density floor (all in fixed code units). Actual local entropy coefficients
 elsewhere depend on the local gas density. `pgas_inf`, `prad_inf` and
@@ -193,11 +163,11 @@ midway through a compressed-time ramp to verify the saved start and final hold.
 It verifies the original total-pressure beta remains constant in the supplied
 wind throughout the ramp and hold, including the actual injected magnetic field.
 It also checks the default `30000+20000 M` end time, fractional timestamp
-precision, finite evolved state, active floor updates through restart/hold,
-repeated partial-input restarts, both entropy reference points, and rejection
-of incompatible pressure floors in fixed-floor mode. The companion
-`scripts/check_bhl_entropy_floor.cpp` checks the original disabled behavior,
-continuity and dense-gas preservation, and sends cold states through the real
-SRMHD C2P solver to verify it actually applies the local entropy floor.
+precision, finite evolved state, fixed floors through restart/hold,
+repeated partial-input restarts, unchanged entropy parameters, and rejection
+of floors incompatible with the final upstream state. The companion
+`scripts/check_bhl_entropy_floor.cpp` sends cold states through the original
+SRMHD C2P solver to verify cold-state admissibility and the tiny fixed final
+pressure floor.
 This checks restart/boundary behavior on a CPU; the Aurora SYCL build and the
 full production run still need to be performed on Aurora.

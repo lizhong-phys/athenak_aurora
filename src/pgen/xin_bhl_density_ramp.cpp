@@ -28,10 +28,9 @@
 //! v_wind is physical v/c; the normal-frame velocity is gamma_inf*v_wind.
 //!
 //! Only boundary ghosts are forced; the checkpoint interior evolves normally.
-//! density_ramp_track_floors=true scales active density/pressure/excision floors
-//! with the inflow. density_ramp_local_entropy=true uses LOCAL gas density for
-//! entropy floors matched to the 1e-9 and 1e-12 reference runs; dense gas retains
-//! its original prescription. Saved initial floor anchors survive all restarts.
+//! Density, pressure and excision floors are fixed at the final target values
+//! in the restart input. The entropy prescription is exactly the original one;
+//! there are no floor-update tasks or per-cell entropy wrappers.
 //! See docs/bhl_density_ramp.md and the partial restart input for the floor law.
 
 #include <stdio.h>
@@ -53,9 +52,7 @@
 
 #include "athena.hpp"
 #include "parameter_input.hpp"
-#include "driver/driver.hpp"
 #include "mesh/mesh.hpp"
-#include "tasklist/task_list.hpp"
 #include "coordinates/adm.hpp"
 #include "coordinates/coordinates.hpp"
 #include "coordinates/cartesian_ks.hpp"
@@ -135,89 +132,6 @@ void SetRealPrecise(ParameterInput *pin, const std::string &block,
   std::ostringstream text;
   text << std::setprecision(std::numeric_limits<Real>::max_digits10) << value;
   pin->SetString(block, name, text.str());
-}
-
-struct RampFloors {
-  bool track, local_entropy;
-  Real dfloor0, pfloor0, dexcise0, pexcise0;
-  Real sfloor0, sfloor10, sfloor20, rho10, rho20;
-  Real rho_mid, rho_low, s_mid, s_low;
-};
-RampFloors ramp_floors;
-
-Real ReadFloorAnchor(ParameterInput *pin, const std::string &name, Real value) {
-  const Real saved = pin->GetOrAddReal("problem", "density_ramp_"+name, value);
-  SetRealPrecise(pin, "problem", "density_ramp_"+name, saved);
-  return saved;
-}
-
-// Convert the standalone-run entropy coefficient into the unchanged density
-// unit. Between reference runs interpolate logarithmically, avoiding jumps.
-Real InterpolateEntropy(const Real rho, const Real initial) {
-  if (rho >= bhl.rho0) return initial;
-  if (rho <= ramp_floors.rho_low) return ramp_floors.s_low;
-  Real hi, lo, s_hi, s_lo;
-  if (rho >= ramp_floors.rho_mid) {
-    hi = bhl.rho0; lo = ramp_floors.rho_mid;
-    s_hi = initial; s_lo = ramp_floors.s_mid;
-  } else {
-    hi = ramp_floors.rho_mid; lo = ramp_floors.rho_low;
-    s_hi = ramp_floors.s_mid; s_lo = ramp_floors.s_low;
-  }
-  const Real fraction = std::log(rho/hi)/std::log(lo/hi);
-  return s_hi*std::exp(fraction*std::log(s_lo/s_hi));
-}
-
-// Updating ParameterInput alone does not affect already-constructed physics.
-// Set the active host EOS/coordinate data that future device kernels capture,
-// then serialize the same values for inspection of a later checkpoint header.
-void UpdateRampFloors(Mesh *pm, ParameterInput *pin, const Real time) {
-  if (!ramp_floors.track) return;
-  auto *pack = pm->pmb_pack;
-  auto &eos = (pack->pmhd != nullptr) ? pack->pmhd->peos->eos_data
-                                     : pack->phydro->peos->eos_data;
-  auto &coord = pack->pcoord->coord_data;
-  const Real rho = bhl.InflowDensity(time);
-  const Real factor = rho/bhl.rho0;
-  eos.dfloor = ramp_floors.dfloor0*factor;
-  eos.pfloor = ramp_floors.pfloor0*factor;
-  coord.dexcise = ramp_floors.dexcise0*factor;
-  coord.pexcise = ramp_floors.pexcise0*factor;
-  bhl.dexcise = coord.dexcise;
-  bhl.pexcise = coord.pexcise;
-  eos.bhl_local_entropy = ramp_floors.local_entropy;
-  if (ramp_floors.local_entropy) {
-    // Dense material retains its original entropy law while rarefied material
-    // follows the low-density reference runs, irrespective of advection delay.
-    eos.sfloor = ramp_floors.sfloor0;
-    eos.sfloor1 = ramp_floors.sfloor10;
-    eos.sfloor2 = ramp_floors.sfloor20;
-    eos.rho1 = ramp_floors.rho10;
-    eos.rho2 = ramp_floors.rho20;
-    eos.bhl_rho_start = bhl.rho0;
-    eos.bhl_rho_mid = ramp_floors.rho_mid;
-    eos.bhl_rho_low = ramp_floors.rho_low;
-    eos.bhl_s_mid = ramp_floors.s_mid;
-    eos.bhl_s_low = ramp_floors.s_low;
-  } else {
-    // Optional uniform-in-time prescription. It can heat dense material still
-    // in the box as the reference entropy coefficient rises; local is default.
-    eos.sfloor = InterpolateEntropy(rho, ramp_floors.sfloor0);
-    eos.sfloor1 = InterpolateEntropy(rho, ramp_floors.sfloor10);
-    eos.sfloor2 = InterpolateEntropy(rho, ramp_floors.sfloor20);
-    eos.rho1 = ramp_floors.rho10*factor;
-    eos.rho2 = ramp_floors.rho20*factor;
-  }
-  const std::string fluid = (pack->pmhd != nullptr) ? "mhd" : "hydro";
-  SetRealPrecise(pin, fluid, "dfloor", eos.dfloor);
-  SetRealPrecise(pin, fluid, "pfloor", eos.pfloor);
-  SetRealPrecise(pin, fluid, "sfloor", eos.sfloor);
-  SetRealPrecise(pin, fluid, "sfloor1", eos.sfloor1);
-  SetRealPrecise(pin, fluid, "sfloor2", eos.sfloor2);
-  SetRealPrecise(pin, fluid, "rho1", eos.rho1);
-  SetRealPrecise(pin, fluid, "rho2", eos.rho2);
-  SetRealPrecise(pin, "coord", "dexcise", coord.dexcise);
-  SetRealPrecise(pin, "coord", "pexcise", coord.pexcise);
 }
 
 } // namespace
@@ -375,70 +289,25 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
               << "density conversion and ramp end must be finite." << std::endl;
     exit(EXIT_FAILURE);
   }
-  auto &eos = (pmbp->pmhd != nullptr) ? pmbp->pmhd->peos->eos_data
-                                     : pmbp->phydro->peos->eos_data;
-  ramp_floors.track = pin->GetOrAddBoolean("problem", "density_ramp_track_floors", true);
-  if (ramp_floors.track) {
-    ramp_floors.local_entropy =
-        pin->GetOrAddBoolean("problem", "density_ramp_local_entropy", true);
-    // Capture the ORIGINAL floor anchors once. Restarted headers contain the
-    // current floors, so re-reading them as anchors would scale them twice.
-    ramp_floors.dfloor0 = ReadFloorAnchor(pin, "dfloor0", eos.dfloor);
-    ramp_floors.pfloor0 = ReadFloorAnchor(pin, "pfloor0", eos.pfloor);
-    ramp_floors.dexcise0 = ReadFloorAnchor(pin, "dexcise0", coord.dexcise);
-    ramp_floors.pexcise0 = ReadFloorAnchor(pin, "pexcise0", coord.pexcise);
-    ramp_floors.sfloor0 = ReadFloorAnchor(pin, "sfloor0", eos.sfloor);
-    ramp_floors.sfloor10 = ReadFloorAnchor(pin, "sfloor10", eos.sfloor1);
-    ramp_floors.sfloor20 = ReadFloorAnchor(pin, "sfloor20", eos.sfloor2);
-    ramp_floors.rho10 = ReadFloorAnchor(pin, "rho10", eos.rho1);
-    ramp_floors.rho20 = ReadFloorAnchor(pin, "rho20", eos.rho2);
-    const Real mid_cgs = pin->GetOrAddReal("problem", "density_ramp_floor_mid_cgs", 1e-9);
-    const Real low_cgs = pin->GetOrAddReal("problem", "density_ramp_floor_low_cgs", 1e-12);
-    const Real mid_s = pin->GetOrAddReal("problem", "density_ramp_sfloor_mid", 1e-10);
-    const Real low_s = pin->GetOrAddReal("problem", "density_ramp_sfloor_low", 1e-9);
-    ramp_floors.rho_mid = mid_cgs/bhl.density_unit;
-    ramp_floors.rho_low = low_cgs/bhl.density_unit;
-    ramp_floors.s_mid = mid_s*std::pow(ramp_floors.rho_mid, 1.0-bhl.gamma_adi);
-    ramp_floors.s_low = low_s*std::pow(ramp_floors.rho_low, 1.0-bhl.gamma_adi);
-    const Real anchors[] = {ramp_floors.dfloor0, ramp_floors.pfloor0,
-        ramp_floors.dexcise0, ramp_floors.pexcise0, ramp_floors.sfloor0,
-        ramp_floors.sfloor10, ramp_floors.sfloor20, ramp_floors.rho10,
-        ramp_floors.rho20, ramp_floors.rho_mid, ramp_floors.rho_low,
-        ramp_floors.s_mid, ramp_floors.s_low};
-    bool valid = bhl.gamma_adi > 1.0 && ramp_floors.dfloor0 < bhl.rho0 &&
-                 ramp_floors.pfloor0 < bhl.rho0*bhl.t0 &&
-                 ramp_floors.rho20 > ramp_floors.rho10 &&
-                 bhl.rho0 > ramp_floors.rho_mid &&
-                 ramp_floors.rho_mid > ramp_floors.rho_low;
-    for (const Real value : anchors) valid = valid && std::isfinite(value) && value > 0;
-    if (!valid) {
-      std::cout << "### FATAL ERROR: invalid density-ramp floor anchors or entropy "
-                << "density ordering (start > mid > low required)." << std::endl;
-      exit(EXIT_FAILURE);
-    }
-    // Restore floors BEFORE Driver initialization and its first C2P call.
-    UpdateRampFloors(pmy_mesh_, pin, pmy_mesh_->time);
-    TaskID none(0);
-    Mesh *pm = pmy_mesh_;
-    // before_stagen completes before reconstruction, FOFC and radiation coupling.
-    pmbp->tl_map["before_stagen"]->AddTask(
-        [pm, pin](Driver*, int) {
-          UpdateRampFloors(pm, pin, pm->time);
-          return TaskStatus::complete;
-        }, none);
-    // Driver increments mesh time immediately after this list, then writes
-    // outputs and performs AMR. Put the endpoint floors in those checkpoints.
-    pmbp->tl_map["after_timeintegrator"]->AddTask(
-        [pm, pin](Driver*, int) {
-          UpdateRampFloors(pm, pin, pm->time + pm->dt);
-          return TaskStatus::complete;
-        }, none);
-  } else if (eos.dfloor >= bhl.rho_final || eos.pfloor >= bhl.rho_final*bhl.t0) {
-    std::cout << "### FATAL ERROR: gas floors exceed the final inflow state in "
-              << "fixed-floor mode. Enable density_ramp_track_floors or lower "
-              << "the density and pressure floors." << std::endl;
+  // Floors are fixed input parameters, already loaded by the EOS/coordinates.
+  // They must remain below the lowest-density upstream state for the whole run.
+  const auto &eos = (pmbp->pmhd != nullptr) ? pmbp->pmhd->peos->eos_data
+                                          : pmbp->phydro->peos->eos_data;
+  if (!std::isfinite(eos.dfloor) || !std::isfinite(eos.pfloor) ||
+      eos.dfloor <= 0.0 || eos.pfloor <= 0.0 ||
+      eos.dfloor >= bhl.rho_final || eos.pfloor >= bhl.rho_final*bhl.t0 ||
+      (coord.bh_excise && (!std::isfinite(coord.dexcise) ||
+       !std::isfinite(coord.pexcise) || coord.dexcise <= 0.0 || coord.pexcise <= 0.0 ||
+       coord.dexcise >= bhl.rho_final || coord.pexcise >= bhl.rho_final*bhl.t0))) {
+    std::cout << "### FATAL ERROR: fixed gas/excision floors must be positive, "
+              << "finite and below the final inflow state. Use the updated "
+              << "fixed-floor restart input." << std::endl;
     exit(EXIT_FAILURE);
   }
+  // Retired adaptive options may be present in an older checkpoint header.
+  // Record the actual fixed-floor mode without adding any timestep tasks.
+  pin->SetBoolean("problem", "density_ramp_track_floors", false);
+  pin->SetBoolean("problem", "density_ramp_local_entropy", false);
   // Driver is constructed after UserProblem, so this sets its absolute tlim.
   // Disable this for short tests or to deliberately extend the final hold.
   if (pin->GetOrAddBoolean("problem", "density_ramp_set_tlim", true)) {
@@ -452,6 +321,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
               << bhl.rho0*bhl.density_unit << " -> " << final_cgs
               << "; B=" << (bhl.scale_b ? "constant total-pressure beta" : "fixed amplitude")
               << "; initial beta_total=" << bhl.beta_total0
+              << "; floors=fixed; entropy=original"
               << std::endl;
   }
 
@@ -1406,8 +1276,13 @@ void WindFluxes(HistoryData *pdata, Mesh *pm) {
   pdata->label[offset+7] = "dexcise";
   pdata->hdata[offset+4] = rank_weight*eos.dfloor;
   pdata->hdata[offset+5] = rank_weight*eos.pfloor;
-  const Real sf = (pmbp->pmhd != nullptr || eos.bhl_local_entropy) ?
-                  eos.EntropyFloor(rho_inj) : eos.sfloor;
+  Real sf = eos.sfloor;
+  if (pmbp->pmhd != nullptr) {
+    // History-only evaluation of the unchanged MHD entropy law.
+    const Real log_s = log10(eos.sfloor1) + (log10(rho_inj)-log10(eos.rho1)) *
+        (log10(eos.sfloor2)-log10(eos.sfloor1))/(log10(eos.rho2)-log10(eos.rho1));
+    sf = fmax(eos.sfloor, pow(10.0, log_s));
+  }
   pdata->hdata[offset+6] = rank_weight*sf;
   pdata->hdata[offset+7] = rank_weight*pmbp->pcoord->coord_data.dexcise;
   const Real pgas = rho_inj*bhl.t0;

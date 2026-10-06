@@ -1,5 +1,4 @@
-// Host-side checks of the same inline SRMHD solver used by GRMHD.
-// Compile with the serial AthenaK build's include flags and Kokkos libraries.
+// Regression checks using the original inline SRMHD solver and fixed final floors.
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -9,66 +8,51 @@
 #include "eos/eos.hpp"
 #include "eos/ideal_c2p_mhd.hpp"
 
-void CheckClose(Real actual, Real expected) {
-  if (!std::isfinite(actual) || std::abs(actual/expected - 1.0) > 1e-10) {
-    std::cerr << "actual=" << actual << " expected=" << expected << std::endl;
-    std::exit(EXIT_FAILURE);
-  }
+Real OriginalEntropy(const EOS_Data &eos, const Real d) {
+  const Real log_s = log10(eos.sfloor1) + (log10(d)-log10(eos.rho1)) *
+      (log10(eos.sfloor2)-log10(eos.sfloor1))/(log10(eos.rho2)-log10(eos.rho1));
+  return fmax(eos.sfloor, pow(10.0, log_s));
 }
 
 int main() {
   EOS_Data eos{};
   eos.gamma = 5.0/3.0;
-  eos.sfloor = 1e-9;
-  eos.sfloor1 = 3e-9;
-  eos.sfloor2 = 1e-8;
-  eos.rho1 = 10.0;
-  eos.rho2 = 1000.0;
-  // Verify compatibility of the default-disabled path across density regimes.
-  for (Real d : {1e-13, 1e-6, 1e-3, 1.0, 10.0, 1000.0}) {
-    const Real log_s = log10(eos.sfloor1) + (log10(d)-log10(eos.rho1)) *
-        (log10(eos.sfloor2)-log10(eos.sfloor1)) /
-        (log10(eos.rho2)-log10(eos.rho1));
-    CheckClose(eos.EntropyFloor(d), fmax(eos.sfloor, pow(10.0, log_s)));
+  eos.dfloor = 1e-13;
+  eos.pfloor = 3.3333333333333335e-19;
+  eos.sfloor = 1e-9; eos.sfloor1 = 3e-9; eos.sfloor2 = 1e-8;
+  eos.rho1 = 10.0; eos.rho2 = 1000.0;
+  // Existing cold gas must remain admissible under the original entropy law,
+  // including the densities that triggered the unnecessary radiation trials.
+  for (Real d : {0.003, 0.01, 0.1, 1.0, 10.0}) {
+    const Real p = 1.1*fmax(eos.pfloor, OriginalEntropy(eos,d)*pow(d,eos.gamma));
+    MHDPrim1D w{};
+    w.d = d; w.e = p/(eos.gamma-1.0);
+    w.vx = 0.1/sqrt(1.0-0.1*0.1);
+    w.by = sqrt(2*1.53e-8/(10*(1-0.1*0.1)));
+    HydCons1D h{};
+    SingleP2C_IdealSRMHD(w,eos.gamma,h);
+    MHDCons1D u{};
+    u.d=h.d; u.e=h.e; u.mx=h.mx; u.my=h.my; u.mz=h.mz; u.by=w.by;
+    HydPrim1D recovered{};
+    bool df=false,ef=false,failed=false; int iterations=0;
+    SingleC2P_IdealSRMHD(u,eos,SQR(u.mx)+SQR(u.my)+SQR(u.mz),SQR(u.by),
+                        0.0,recovered,df,ef,failed,iterations);
+    if (df || ef || failed ||
+        fabs((eos.gamma-1.0)*recovered.e/p - 1.0) > 1e-5) return EXIT_FAILURE;
   }
-  const Real dense_s = eos.EntropyFloor(1.0);
-  eos.bhl_local_entropy = true;
-  eos.bhl_rho_start = 1.0;
-  eos.bhl_rho_mid = 1e-3;
-  eos.bhl_rho_low = 1e-6;
-  eos.bhl_s_mid = 1e-10*pow(1e-3, 1.0-eos.gamma);
-  eos.bhl_s_low = 1e-9*pow(1e-6, 1.0-eos.gamma);
-  CheckClose(eos.EntropyFloor(1.0), dense_s);
-  CheckClose(eos.EntropyFloor(10.0), 3e-9);
-  CheckClose(eos.EntropyFloor(1e-3), 1e-8);
-  CheckClose(eos.EntropyFloor(1e-6), 1e-5);
-  CheckClose(eos.EntropyFloor(1e-10), 1e-5);
-  // Continuity at all three anchors, including both sides of the middle node.
-  for (Real d : {1.0, 1e-3, 1e-6}) {
-    const Real at = eos.EntropyFloor(d);
-    CheckClose(eos.EntropyFloor(d*(1.0-1e-12)), at);
-    CheckClose(eos.EntropyFloor(d*(1.0+1e-12)), at);
+  // Verify the final pressure floor in the actual solver, including rare gas.
+  for (Real d : {1.0,1e-3,1e-6,1e-10}) {
+    MHDCons1D u{};
+    u.d=d; u.e=1e-30;
+    HydPrim1D w{};
+    bool df=false,ef=false,failed=false; int iterations=0;
+    SingleC2P_IdealSRMHD(u,eos,0.0,0.0,0.0,w,df,ef,failed,iterations);
+    const Real expected=fmax(eos.pfloor,OriginalEntropy(eos,d)*pow(d,eos.gamma));
+    if (failed || !ef || !std::isfinite(w.e) ||
+        fabs((eos.gamma-1.0)*w.e/expected - 1.0) > 1e-10) return EXIT_FAILURE;
   }
-  // A deliberately cold rest state must actually be heated to the new entropy
-  // floor by C2P, rather than merely reporting the right diagnostic coefficient.
-  for (Real d : {1.0, 1e-3, 1e-6}) {
-    eos.dfloor = 1e-7*d;
-    eos.pfloor = 3.3333333333333335e-13*d;
-    MHDCons1D cons{};
-    cons.d = d;
-    cons.e = d*1e-16/(eos.gamma-1.0);
-    HydPrim1D prim{};
-    bool density_used = false, energy_used = false, failure = false;
-    int iterations = 0;
-    SingleC2P_IdealSRMHD(cons, eos, 0.0, 0.0, 0.0, prim,
-                        density_used, energy_used, failure, iterations);
-    if (failure || !energy_used) return EXIT_FAILURE;
-    CheckClose(prim.d, d);
-    CheckClose((eos.gamma-1.0)*prim.e,
-               fmax(eos.pfloor, eos.EntropyFloor(d)*pow(d, eos.gamma)));
-  }
-  std::cout << "PASS: original entropy law unchanged when disabled; reference "
-            << "conversion; dense-gas preservation; continuity; cold SRMHD C2P "
-            << "uses the local entropy floor." << std::endl;
+  std::cout << "PASS: original entropy law and cold-state admissibility; fixed "
+            << "1e-13 density / 3.3333333333333335e-19 pressure floors in SRMHD C2P."
+            << std::endl;
   return EXIT_SUCCESS;
 }

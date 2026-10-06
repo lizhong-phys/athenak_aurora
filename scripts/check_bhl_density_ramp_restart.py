@@ -51,7 +51,7 @@ def run(binary, directory, args, succeeds=True):
         assert result.returncode == 0, result.stdout + result.stderr
     else:
         assert result.returncode != 0, "Expected incompatible-floor rejection"
-        assert "gas floors exceed the final inflow state" in result.stdout, (
+        assert "fixed gas/excision floors" in result.stdout, (
             result.stdout + result.stderr)
         return None
     restart = sorted((directory / "rst").glob("*.rst"))[-1]
@@ -134,7 +134,8 @@ rotate_geo = false
 kappa_s = 0.34
 kappa_a = 0
 kappa_p = 0
-compton = false
+compton = true
+rad_wlimit = true
 <units>
 bhmass_msun = 100
 density_cgs = 1e-6
@@ -160,7 +161,7 @@ single_file_per_rank = false
         seed, seed_path = run(old, root / "seed", ["-i", str(seed_input)])
         _, start, _, seed_cycle, indcs, seed_state = seed
         run(ramp, root / "bad_floors", ["-r", str(seed_path), "-i", str(override),
-            "problem/density_ramp_track_floors=false"], succeeds=False)
+            "mhd/dfloor=1e-6"], succeeds=False)
 
         base = ["-r", str(seed_path), "-i", str(override)]
         default, _ = run(ramp, root / "defaults", base + [f"time/nlim={seed_cycle}"])
@@ -169,8 +170,8 @@ single_file_per_rank = false
         close(float(params["time/tlim"]), start + 50000, tolerance=1e-13)
         close(time, start)
         close(float(params["units/density_cgs"]), 1e-6)
-        close(float(params["mhd/dfloor"]), 1e-7)
-        close(float(params["mhd/pfloor"]), 3.3333333333333335e-13)
+        close(float(params["mhd/dfloor"]), 1e-13)
+        close(float(params["mhd/pfloor"]), 3.3333333333333335e-19)
         # Use the same physical constants as units.hpp to derive the ORIGINAL
         # total beta. beta_target=10 in the old pgen denotes gas beta.
         c = 2.99792458e10
@@ -232,11 +233,8 @@ single_file_per_rank = false
         close(float(params["mhd/pfloor"]), 3.3333333333333335e-19)
         close(float(params["coord/dexcise"]), 1e-13)
         close(float(params["coord/pexcise"]), 3.3333333333333335e-19)
-        # Original anchors must survive updates to the active checkpoint fields.
-        close(float(params["problem/density_ramp_dfloor0"]), 1e-7)
-        close(float(params["problem/density_ramp_sfloor0"]), 1e-9)
-        close(float(params["problem/density_ramp_sfloor10"]), 3e-9)
-        close(float(params["problem/density_ramp_sfloor20"]), 1e-8)
+        assert params["problem/density_ramp_track_floors"] in ("false", "0")
+        assert params["problem/density_ramp_local_entropy"] in ("false", "0")
         rows = history(root / "middle") + history(root / "finish")
         for row in rows:
             elapsed = row["time"] - start
@@ -248,42 +246,41 @@ single_file_per_rank = false
             close(row["prad_inf"], prad)
             close(row["beta_tot"], beta_total, tolerance=1e-11)
             close(row["t_ramp"], elapsed)
-            close(row["dfloor"]/expected, 1e-7)
-            close(row["pfloor"]/expected, 3.3333333333333335e-13)
-            close(row["dexcise"]/expected, 1e-7)
-        close(rows[-1]["sf_at_inf"], 1e-5)
+            close(row["dfloor"], 1e-13)
+            close(row["pfloor"], 3.3333333333333335e-19)
+            close(row["dexcise"], 1e-13)
+        close(rows[-1]["sf_at_inf"], 1e-9)
         assert sum(row["time"] >= start+0.048 for row in rows) >= 2
-        # A repeated -i restores INITIAL input floors but must not re-anchor or
-        # double-scale the saved profile on a later restart.
+        # A repeated -i must preserve the fixed floors and saved absolute clock.
         repeated, _ = run(ramp, root / "repeated_input", ["-r", str(middle_path),
             "-i", str(override), f"time/nlim={middle_cycle}"] + fast)
         repeated_params = repeated[0]
-        close(float(repeated_params["mhd/dfloor"]), 1e-7*rho)
-        close(float(repeated_params["mhd/pfloor"]), 3.3333333333333335e-13*rho)
+        close(float(repeated_params["mhd/dfloor"]), 1e-13)
+        close(float(repeated_params["mhd/pfloor"]), 3.3333333333333335e-19)
         # Probe exactly the 1e-9 reference point without advancing the flow.
         mid_start = middle_time - 0.024
         exact_mid, _ = run(ramp, root / "exact_mid", ["-r", str(middle_path),
             f"time/nlim={middle_cycle}", f"problem/density_ramp_start={mid_start:.17g}"])
         mid_rows = history(root / "exact_mid")
         close(mid_rows[-1]["rho_inf"], 1e-3)
-        close(mid_rows[-1]["dfloor"], 1e-10)
-        close(mid_rows[-1]["pfloor"], 3.3333333333333335e-16)
-        close(mid_rows[-1]["sf_at_inf"], 1e-8)
-        # The optional uniform entropy prescription also restores its converted
-        # coefficients and density anchors when starting from a checkpoint.
-        global_mid, _ = run(ramp, root / "global_mid", ["-r", str(middle_path),
-            f"time/nlim={middle_cycle}", f"problem/density_ramp_start={mid_start:.17g}",
-            "problem/density_ramp_local_entropy=false"])
-        for name in ("sfloor", "sfloor1", "sfloor2"):
-            close(float(global_mid[0]["mhd/"+name]), 1e-8)
-        close(float(global_mid[0]["mhd/rho1"]), 0.01)
-        close(float(global_mid[0]["mhd/rho2"]), 1.0)
-        close(history(root / "global_mid")[-1]["sf_at_inf"], 1e-8)
+        close(mid_rows[-1]["dfloor"], 1e-13)
+        close(mid_rows[-1]["pfloor"], 3.3333333333333335e-19)
+        close(mid_rows[-1]["sf_at_inf"], 1e-9)
+        # Retired adaptive settings from an older header cannot enable a new
+        # entropy prescription or a floor-update task in the fixed-floor pgen.
+        legacy, _ = run(ramp, root / "legacy_options", ["-r", str(middle_path),
+            f"time/nlim={middle_cycle}", "problem/density_ramp_track_floors=true",
+            "problem/density_ramp_local_entropy=true"])
+        for name, expected in (("sfloor", 1e-9), ("sfloor1", 3e-9),
+                               ("sfloor2", 1e-8), ("rho1", 10.0), ("rho2", 1000.0)):
+            close(float(legacy[0]["mhd/"+name]), expected)
+        assert legacy[0]["problem/density_ramp_track_floors"] in ("false", "0")
+        assert legacy[0]["problem/density_ramp_local_entropy"] in ("false", "0")
         print("PASS: old-checkpoint continuation preserves active state; default 30000+20000 M "
               "schedule; original total-pressure beta and actual inflow ghosts in both B modes; "
               "restart persistence; "
-              "logarithmic history/hold; active density/pressure/excision floors; "
-              "entropy reference points; repeated-input restart; floor rejection; "
+              "logarithmic history/hold; fixed density/pressure/excision floors; "
+              "original entropy law; repeated-input restart; floor rejection; "
               "finite MHD+radiation state.")
 
 
